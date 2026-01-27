@@ -8,12 +8,14 @@ Phase 1 baseline dimension set:
 
 Hard invariants:
 - Dimension keys are fixed identifiers, not free text
-- Dimension values are stable IDs; names may change without altering history
+- Dimension values are stable IDs; names are immutable once created
+- DimensionValue must reference an existing Dimension (FK enforced)
+- Inactive dimensions cannot be used in postings
 - Required dimensions are enforced by posting rules
 """
 
-from sqlalchemy import Boolean, Index, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, ForeignKeyConstraint, Index, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from finance_kernel.db.base import TrackedBase
 
@@ -23,6 +25,10 @@ class Dimension(TrackedBase):
     Dimension definition.
 
     Defines the available dimensions for multi-dimensional accounting.
+
+    Invariants:
+    - code is unique and immutable
+    - is_active=False prevents use in new postings
     """
 
     __tablename__ = "dimensions"
@@ -74,20 +80,39 @@ class DimensionValue(TrackedBase):
 
     Represents a specific value that can be assigned to a dimension
     (e.g., a specific project, org unit, or contract).
+
+    Invariants:
+    - dimension_code must reference an existing Dimension.code (FK enforced)
+    - code is immutable once created
+    - name is immutable once created (stable for audit trail)
+    - is_active=False prevents use in new postings
     """
 
     __tablename__ = "dimension_values"
 
     __table_args__ = (
         UniqueConstraint("dimension_code", "code", name="uq_dimension_value"),
+        ForeignKeyConstraint(
+            ["dimension_code"],
+            ["dimensions.code"],
+            name="fk_dimension_value_dimension",
+            ondelete="RESTRICT",  # Prevent deleting dimensions with values
+        ),
         Index("idx_dimval_dimension", "dimension_code"),
         Index("idx_dimval_active", "is_active"),
     )
 
-    # Which dimension this value belongs to
+    # Which dimension this value belongs to (FK to dimensions.code)
     dimension_code: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
+    )
+
+    # Relationship to parent Dimension
+    dimension: Mapped["Dimension"] = relationship(
+        "Dimension",
+        primaryjoin="DimensionValue.dimension_code == foreign(Dimension.code)",
+        lazy="joined",
     )
 
     # Value identifier (stable, never changes)

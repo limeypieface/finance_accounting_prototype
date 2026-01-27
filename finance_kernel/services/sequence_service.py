@@ -7,6 +7,7 @@ locking to prevent sequence gaps and duplicates under concurrency.
 """
 
 from sqlalchemy import BigInteger, String, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from finance_kernel.db.base import Base
@@ -84,19 +85,43 @@ class SequenceService:
         Returns:
             The next sequence value.
         """
+        # Expire any cached counter objects to ensure fresh read from DB
+        # This is critical when expire_on_commit=False and session is reused
+        self._session.expire_all()
+
         # Try to get and lock the existing counter
+        # Use populate_existing=True to force refresh of identity map
         counter = self._session.execute(
             select(SequenceCounter)
             .where(SequenceCounter.name == sequence_name)
             .with_for_update()  # Row-level lock
+            .execution_options(populate_existing=True)
         ).scalar_one_or_none()
 
         if counter is None:
             # Create new counter (first use of this sequence)
-            counter = SequenceCounter(name=sequence_name, current_value=1)
-            self._session.add(counter)
-            self._session.flush()
-            return 1
+            # Handle race condition: another thread might create it simultaneously
+            # Use a savepoint so we don't roll back other work in the transaction
+            savepoint = self._session.begin_nested()
+            try:
+                counter = SequenceCounter(name=sequence_name, current_value=1)
+                self._session.add(counter)
+                self._session.flush()
+                savepoint.commit()
+                return 1
+            except IntegrityError:
+                # Another thread created the counter, rollback savepoint and retry
+                savepoint.rollback()
+                # Clear any stale state from the failed insert
+                self._session.expire_all()
+                # Re-acquire the counter with lock
+                counter = self._session.execute(
+                    select(SequenceCounter)
+                    .where(SequenceCounter.name == sequence_name)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                ).scalar_one()
+                # Fall through to increment
 
         # Increment and return
         counter.current_value += 1

@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
     "sqlalchemy>=2.0.0",
     "pydantic>=2.0.0",
+    "psycopg2-binary>=2.9.0",  # PostgreSQL driver
 ]
 
 [project.optional-dependencies]
@@ -52,6 +53,7 @@ markers = [
     "concurrency: Concurrency tests",
     "replay: Replay and determinism tests",
     "audit: Audit trail tests",
+    "postgres: Tests requiring PostgreSQL (true concurrency)",
 ]
 
 [tool.black]

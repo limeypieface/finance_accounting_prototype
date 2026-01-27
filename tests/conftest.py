@@ -2,11 +2,20 @@
 Pytest fixtures for the finance kernel test suite.
 
 Provides:
-- In-memory SQLite database sessions
+- PostgreSQL database sessions for all tests
 - Test data generators
 - Common test utilities
+
+Environment Variables:
+- DATABASE_URL: PostgreSQL connection URL (e.g., postgresql://user:pass@localhost/db)
+  If not set, uses default local PostgreSQL URL.
+
+Requirements:
+- PostgreSQL must be running locally (brew services start postgresql@15)
+- Database 'finance_kernel_test' must exist with user 'finance'
 """
 
+import os
 import pytest
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -15,7 +24,15 @@ from uuid import uuid4, UUID
 
 from sqlalchemy.orm import Session
 
-from finance_kernel.db.engine import init_engine, create_tables, drop_tables, get_session
+from finance_kernel.db.engine import (
+    init_engine_from_url,
+    create_tables,
+    drop_tables,
+    get_session,
+    get_session_factory,
+    reset_engine,
+    is_postgres,
+)
 from finance_kernel.db.base import Base
 from finance_kernel.db.immutability import register_immutability_listeners, unregister_immutability_listeners
 from finance_kernel.models.account import Account, AccountType, NormalBalance, AccountTag
@@ -42,12 +59,32 @@ import finance_kernel.domain.strategies.generic_strategy  # noqa: F401
 # Test actor ID for all test operations
 TEST_ACTOR_ID = uuid4()
 
+# Default PostgreSQL URL for local installation
+DEFAULT_POSTGRES_URL = "postgresql://finance:finance_test_pwd@localhost:5432/finance_kernel_test"
+
+
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line(
+        "markers", "postgres: mark test as requiring PostgreSQL"
+    )
+
+
+def get_database_url() -> str:
+    """Get database URL from environment, or use default PostgreSQL URL."""
+    return os.environ.get("DATABASE_URL", DEFAULT_POSTGRES_URL)
+
 
 @pytest.fixture(scope="function")
 def engine():
-    """Create an in-memory SQLite engine for testing."""
-    engine = init_engine(db_path=None, echo=False)
+    """Create a PostgreSQL database engine for testing.
+
+    Uses DATABASE_URL if set, otherwise default local PostgreSQL.
+    """
+    db_url = get_database_url()
+    engine = init_engine_from_url(db_url, echo=False)
     yield engine
+    reset_engine()
 
 
 @pytest.fixture(scope="function")
@@ -60,6 +97,66 @@ def tables(engine):
     # Clean up listeners before dropping tables
     unregister_immutability_listeners()
     drop_tables()
+
+
+# =============================================================================
+# Concurrency testing fixtures (higher connection pool)
+# =============================================================================
+
+
+@pytest.fixture(scope="module")
+def postgres_engine():
+    """
+    Create a PostgreSQL engine with larger connection pool for concurrency testing.
+
+    This fixture is module-scoped for efficiency - tables are created once
+    per test module and shared across tests.
+    """
+    db_url = get_database_url()
+
+    # Reset any existing engine first
+    reset_engine()
+
+    engine = init_engine_from_url(db_url, echo=False, pool_size=30, max_overflow=20)
+
+    # Create tables
+    create_tables()
+    register_immutability_listeners()
+
+    yield engine
+
+    # Cleanup
+    unregister_immutability_listeners()
+    drop_tables()
+    reset_engine()
+
+
+@pytest.fixture(scope="function")
+def pg_session(postgres_engine) -> Generator[Session, None, None]:
+    """
+    Provide a PostgreSQL session for concurrency testing.
+
+    Each test gets a fresh session that is rolled back after the test.
+    """
+    session = get_session()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+@pytest.fixture(scope="function")
+def pg_session_factory(postgres_engine):
+    """
+    Provide the session factory for creating sessions in concurrent threads.
+
+    Each thread should create its own session using this factory.
+    """
+    return get_session_factory()
 
 
 @pytest.fixture(scope="function")
@@ -128,13 +225,6 @@ def posting_orchestrator(session: Session, deterministic_clock):
 def reference_data_loader(session: Session):
     """Provide a ReferenceDataLoader instance."""
     return ReferenceDataLoader(session)
-
-
-@pytest.fixture
-def bookkeeper():
-    """Provide a Bookkeeper instance."""
-    from finance_kernel.domain.bookkeeper import Bookkeeper
-    return Bookkeeper()
 
 
 # Selector fixtures

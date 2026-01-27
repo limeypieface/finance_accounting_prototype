@@ -29,6 +29,40 @@ from finance_kernel.domain.dtos import EventEnvelope, LineSpec, LineSide as Doma
 from finance_kernel.domain.values import Money
 from finance_kernel.exceptions import ImmutabilityViolationError, AuditChainBrokenError
 from finance_kernel.db.immutability import unregister_immutability_listeners, register_immutability_listeners
+from finance_kernel.db.engine import get_engine, is_postgres
+from contextlib import contextmanager
+
+
+@contextmanager
+def disabled_immutability():
+    """
+    Context manager that disables both ORM and database-level immutability enforcement.
+
+    Use this for tests that need to simulate tampering with audit data.
+    """
+    from finance_kernel.db.triggers import (
+        install_immutability_triggers,
+        uninstall_immutability_triggers,
+    )
+
+    engine = get_engine()
+
+    # Disable ORM listeners
+    unregister_immutability_listeners()
+
+    # Disable database triggers (PostgreSQL only)
+    if is_postgres():
+        uninstall_immutability_triggers(engine)
+
+    try:
+        yield
+    finally:
+        # Re-enable ORM listeners
+        register_immutability_listeners()
+
+        # Re-enable database triggers (PostgreSQL only)
+        if is_postgres():
+            install_immutability_triggers(engine)
 
 
 def _register_test_strategy(event_type: str) -> None:
@@ -191,6 +225,75 @@ class TestR10JournalEntryImmutability:
         # Verify modification succeeded
         refreshed = session.get(JournalEntry, entry.id)
         assert refreshed.description == "Modified description"
+
+    def test_posted_entry_cannot_be_modified_via_merge(
+        self,
+        session,
+        posting_orchestrator: PostingOrchestrator,
+        standard_accounts,
+        current_period,
+        test_actor_id,
+        deterministic_clock,
+    ):
+        """
+        Test that detaching, modifying, and merging a posted entry is blocked.
+
+        This tests a potential attack vector where someone:
+        1. Fetches a posted JournalEntry
+        2. Detaches it from the session (session.expunge)
+        3. Modifies it while detached
+        4. Uses session.merge() to save changes
+
+        The ORM immutability listeners should catch this on merge.
+        """
+        event_type = "test.r10.merge_attack"
+        _register_test_strategy(event_type)
+
+        # Post an entry
+        result = posting_orchestrator.post_event(
+            event_id=uuid4(),
+            event_type=event_type,
+            occurred_at=deterministic_clock.now(),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+            producer="test",
+            payload={"test": "merge_attack"},
+        )
+
+        assert result.status == PostingStatus.POSTED
+
+        # Commit to persist the entry before testing the merge attack
+        session.commit()
+
+        # Fetch the posted entry
+        entry = session.get(JournalEntry, result.journal_entry_id)
+        assert entry is not None
+        assert entry.status == JournalEntryStatus.POSTED
+        original_description = entry.description
+        entry_id = entry.id
+
+        # Detach from session
+        session.expunge(entry)
+
+        # Modify while detached (no ORM listener fires yet)
+        entry.description = "Tampered via merge attack"
+
+        # Attempt to merge back - should be blocked
+        with pytest.raises(ImmutabilityViolationError) as exc_info:
+            merged = session.merge(entry)
+            session.flush()
+
+        assert "JournalEntry" in str(exc_info.value)
+        assert "Cannot modify" in str(exc_info.value)
+
+        # Rollback and verify original data is intact
+        session.rollback()
+
+        # Re-fetch to confirm no changes persisted
+        fresh_entry = session.get(JournalEntry, entry_id)
+        assert fresh_entry is not None
+        assert fresh_entry.description == original_description
+
 
 
 class TestR10JournalLineImmutability:
@@ -437,16 +540,15 @@ class TestR11HashChainEnforcement:
         # Validate chain is initially valid
         assert auditor_service.validate_chain() is True
 
-        # Temporarily disable immutability to simulate tampering
-        unregister_immutability_listeners()
-
         try:
-            # Tamper with the hash using raw SQL
-            session.execute(
-                text("UPDATE audit_events SET hash = 'tampered_hash' WHERE id = :id"),
-                {"id": str(event1.id)},
-            )
-            session.flush()
+            # Disable both ORM and DB-level immutability to simulate tampering
+            with disabled_immutability():
+                # Tamper with the hash using raw SQL
+                session.execute(
+                    text("UPDATE audit_events SET hash = 'tampered_hash' WHERE id = :id"),
+                    {"id": str(event1.id)},
+                )
+                session.flush()
 
             # Expire all objects to force reload from DB
             session.expire_all()
@@ -456,9 +558,7 @@ class TestR11HashChainEnforcement:
                 auditor_service.validate_chain()
 
         finally:
-            # Re-enable immutability and rollback
             session.rollback()
-            register_immutability_listeners()
 
     def test_tampered_prev_hash_breaks_chain_validation(
         self,
@@ -487,16 +587,15 @@ class TestR11HashChainEnforcement:
         # Validate chain is initially valid
         assert auditor_service.validate_chain() is True
 
-        # Temporarily disable immutability to simulate tampering
-        unregister_immutability_listeners()
-
         try:
-            # Tamper with the prev_hash using raw SQL
-            session.execute(
-                text("UPDATE audit_events SET prev_hash = 'wrong_prev_hash' WHERE id = :id"),
-                {"id": str(event2.id)},
-            )
-            session.flush()
+            # Disable both ORM and DB-level immutability to simulate tampering
+            with disabled_immutability():
+                # Tamper with the prev_hash using raw SQL
+                session.execute(
+                    text("UPDATE audit_events SET prev_hash = 'wrong_prev_hash' WHERE id = :id"),
+                    {"id": str(event2.id)},
+                )
+                session.flush()
 
             # Expire all objects to force reload from DB
             session.expire_all()
@@ -506,9 +605,7 @@ class TestR11HashChainEnforcement:
                 auditor_service.validate_chain()
 
         finally:
-            # Re-enable immutability and rollback
             session.rollback()
-            register_immutability_listeners()
 
     def test_first_event_must_have_null_prev_hash(
         self,
@@ -534,16 +631,15 @@ class TestR11HashChainEnforcement:
         # Chain should be valid
         assert auditor_service.validate_chain() is True
 
-        # Temporarily disable immutability to simulate tampering
-        unregister_immutability_listeners()
-
         try:
-            # Tamper: add a prev_hash to the first event
-            session.execute(
-                text("UPDATE audit_events SET prev_hash = 'fake_prev' WHERE id = :id"),
-                {"id": str(event1.id)},
-            )
-            session.flush()
+            # Disable both ORM and DB-level immutability to simulate tampering
+            with disabled_immutability():
+                # Tamper: add a prev_hash to the first event
+                session.execute(
+                    text("UPDATE audit_events SET prev_hash = 'fake_prev' WHERE id = :id"),
+                    {"id": str(event1.id)},
+                )
+                session.flush()
 
             # Expire all objects to force reload from DB
             session.expire_all()
@@ -554,7 +650,6 @@ class TestR11HashChainEnforcement:
 
         finally:
             session.rollback()
-            register_immutability_listeners()
 
 
 class TestR11AuditCoverage:
@@ -619,3 +714,287 @@ class TestR11AuditCoverage:
         trace = auditor_service.get_trace("JournalEntry", result.journal_entry_id)
         assert not trace.is_empty
         assert trace.last_action == AuditAction.JOURNAL_POSTED
+
+
+class TestR10DatabaseTriggers:
+    """
+    R10 Defense-in-Depth: Database-level trigger enforcement.
+
+    These tests verify that PostgreSQL triggers block modifications
+    even when bypassing the ORM (bulk updates, raw SQL).
+    """
+
+    @pytest.fixture
+    def posted_entry_via_raw_sql(self, pg_session_factory, pg_session):
+        """Create a posted journal entry using raw SQL for trigger testing."""
+        from finance_kernel.db.triggers import triggers_installed
+        from finance_kernel.db.engine import get_engine
+
+        # Skip if triggers not installed (e.g., SQLite)
+        engine = get_engine()
+        if not triggers_installed(engine):
+            pytest.skip("Database triggers not installed (requires PostgreSQL)")
+
+        actor_id = uuid4()
+        event_id = uuid4()
+        entry_id = uuid4()
+
+        # Create minimal test data via raw SQL
+        # Event model extends Base (no created_at columns)
+        pg_session.execute(
+            text("""
+                INSERT INTO events (id, event_id, event_type, occurred_at, effective_date,
+                                   actor_id, producer, payload, payload_hash, schema_version,
+                                   ingested_at)
+                VALUES (:id, :event_id, 'test.trigger', NOW(), CURRENT_DATE,
+                       :actor_id, 'test', '{}', 'hash123', 1, NOW())
+            """),
+            {"id": uuid4(), "event_id": event_id, "actor_id": actor_id},
+        )
+
+        # JournalEntry extends TrackedBase (has created_at, created_by_id)
+        pg_session.execute(
+            text("""
+                INSERT INTO journal_entries (id, source_event_id, source_event_type,
+                                            occurred_at, effective_date, actor_id,
+                                            status, idempotency_key, posting_rule_version,
+                                            created_at, created_by_id)
+                VALUES (:id, :event_id, 'test.trigger', NOW(), CURRENT_DATE, :actor_id,
+                       'posted', :idempotency_key, 1, NOW(), :actor_id)
+            """),
+            {
+                "id": entry_id,
+                "event_id": event_id,
+                "actor_id": actor_id,
+                "idempotency_key": f"test:trigger:{entry_id}",
+            },
+        )
+
+        pg_session.commit()
+        return entry_id
+
+    def test_bulk_update_blocked_by_trigger(
+        self, pg_session_factory, pg_session, posted_entry_via_raw_sql
+    ):
+        """Test that bulk UPDATE statements are blocked by database triggers."""
+        from sqlalchemy.exc import IntegrityError, ProgrammingError
+
+        entry_id = posted_entry_via_raw_sql
+
+        # Attempt bulk update via Core (bypasses ORM listeners)
+        # Cast UUID to string for raw SQL since id column uses UUIDString type
+        with pytest.raises((IntegrityError, ProgrammingError)) as exc_info:
+            pg_session.execute(
+                text("UPDATE journal_entries SET description = 'hacked' WHERE id = :id"),
+                {"id": str(entry_id)},
+            )
+            pg_session.commit()
+
+        assert "R10 Violation" in str(exc_info.value) or "restrict_violation" in str(exc_info.value)
+        pg_session.rollback()
+
+    def test_raw_sql_delete_blocked_by_trigger(
+        self, pg_session_factory, pg_session, posted_entry_via_raw_sql
+    ):
+        """Test that raw SQL DELETE is blocked by database triggers."""
+        from sqlalchemy.exc import IntegrityError, ProgrammingError
+
+        entry_id = posted_entry_via_raw_sql
+
+        # Attempt raw SQL delete
+        # Cast UUID to string for raw SQL since id column uses UUIDString type
+        with pytest.raises((IntegrityError, ProgrammingError)) as exc_info:
+            pg_session.execute(
+                text("DELETE FROM journal_entries WHERE id = :id"),
+                {"id": str(entry_id)},
+            )
+            pg_session.commit()
+
+        assert "R10 Violation" in str(exc_info.value) or "restrict_violation" in str(exc_info.value)
+        pg_session.rollback()
+
+    def test_audit_event_update_blocked_by_trigger(self, pg_session_factory, pg_session):
+        """Test that audit events cannot be modified via raw SQL."""
+        from sqlalchemy.exc import IntegrityError, ProgrammingError
+        from finance_kernel.db.triggers import triggers_installed
+        from finance_kernel.db.engine import get_engine
+
+        engine = get_engine()
+        if not triggers_installed(engine):
+            pytest.skip("Database triggers not installed (requires PostgreSQL)")
+
+        actor_id = uuid4()
+
+        # Create an audit event via raw SQL
+        # AuditEvent extends Base (no created_at columns)
+        pg_session.execute(
+            text("""
+                INSERT INTO audit_events (id, seq, action, entity_type, entity_id,
+                                         actor_id, occurred_at, payload, payload_hash,
+                                         hash)
+                VALUES (:id, 1, 'test_action', 'Test', :entity_id, :actor_id,
+                       NOW(), '{}', 'payload_hash', 'original_hash')
+            """),
+            {"id": uuid4(), "entity_id": uuid4(), "actor_id": actor_id},
+        )
+        pg_session.commit()
+
+        # Attempt to update the audit event
+        with pytest.raises((IntegrityError, ProgrammingError)) as exc_info:
+            pg_session.execute(
+                text("UPDATE audit_events SET hash = 'tampered' WHERE seq = 1")
+            )
+            pg_session.commit()
+
+        assert "R10 Violation" in str(exc_info.value) or "restrict_violation" in str(exc_info.value)
+        pg_session.rollback()
+
+    def test_audit_event_delete_blocked_by_trigger(self, pg_session_factory, pg_session):
+        """Test that audit events cannot be deleted via raw SQL."""
+        from sqlalchemy.exc import IntegrityError, ProgrammingError
+        from finance_kernel.db.triggers import triggers_installed
+        from finance_kernel.db.engine import get_engine
+
+        engine = get_engine()
+        if not triggers_installed(engine):
+            pytest.skip("Database triggers not installed (requires PostgreSQL)")
+
+        actor_id = uuid4()
+
+        # Create an audit event via raw SQL
+        # AuditEvent extends Base (no created_at columns)
+        pg_session.execute(
+            text("""
+                INSERT INTO audit_events (id, seq, action, entity_type, entity_id,
+                                         actor_id, occurred_at, payload, payload_hash,
+                                         hash)
+                VALUES (:id, 999, 'test_delete', 'Test', :entity_id, :actor_id,
+                       NOW(), '{}', 'payload_hash', 'hash_to_delete')
+            """),
+            {"id": uuid4(), "entity_id": uuid4(), "actor_id": actor_id},
+        )
+        pg_session.commit()
+
+        # Attempt to delete the audit event
+        with pytest.raises((IntegrityError, ProgrammingError)) as exc_info:
+            pg_session.execute(text("DELETE FROM audit_events WHERE seq = 999"))
+            pg_session.commit()
+
+        assert "R10 Violation" in str(exc_info.value) or "restrict_violation" in str(exc_info.value)
+        pg_session.rollback()
+
+    def test_posting_transition_allowed_by_trigger(self, pg_session_factory, pg_session):
+        """Test that the initial posting transition (draft -> posted) IS allowed."""
+        from finance_kernel.db.triggers import triggers_installed
+        from finance_kernel.db.engine import get_engine
+
+        engine = get_engine()
+        if not triggers_installed(engine):
+            pytest.skip("Database triggers not installed (requires PostgreSQL)")
+
+        actor_id = uuid4()
+        event_id = uuid4()
+        entry_id = uuid4()
+
+        # Create event and draft entry
+        # Event extends Base (no created_at columns)
+        pg_session.execute(
+            text("""
+                INSERT INTO events (id, event_id, event_type, occurred_at, effective_date,
+                                   actor_id, producer, payload, payload_hash, schema_version,
+                                   ingested_at)
+                VALUES (:id, :event_id, 'test.post', NOW(), CURRENT_DATE,
+                       :actor_id, 'test', '{}', 'hash123', 1, NOW())
+            """),
+            {"id": uuid4(), "event_id": event_id, "actor_id": actor_id},
+        )
+
+        # JournalEntry extends TrackedBase (has created_at, created_by_id)
+        pg_session.execute(
+            text("""
+                INSERT INTO journal_entries (id, source_event_id, source_event_type,
+                                            occurred_at, effective_date, actor_id,
+                                            status, idempotency_key, posting_rule_version,
+                                            created_at, created_by_id)
+                VALUES (:id, :event_id, 'test.post', NOW(), CURRENT_DATE, :actor_id,
+                       'draft', :idempotency_key, 1, NOW(), :actor_id)
+            """),
+            {
+                "id": entry_id,
+                "event_id": event_id,
+                "actor_id": actor_id,
+                "idempotency_key": f"test:post:{entry_id}",
+            },
+        )
+        pg_session.commit()
+
+        # Transition from draft to posted should succeed
+        # Cast UUID to string for raw SQL since id column uses UUIDString type
+        pg_session.execute(
+            text("UPDATE journal_entries SET status = 'posted' WHERE id = :id"),
+            {"id": str(entry_id)},
+        )
+        pg_session.commit()
+
+        # Verify status changed
+        result = pg_session.execute(
+            text("SELECT status FROM journal_entries WHERE id = :id"),
+            {"id": str(entry_id)},
+        ).fetchone()
+
+        assert result[0] == "posted"
+
+    def test_merge_attack_blocked_by_trigger(
+        self,
+        pg_session_factory,
+        pg_session,
+        posted_entry_via_raw_sql,
+    ):
+        """
+        Test that database triggers block merge attacks even if ORM listeners fail.
+
+        This tests a potential attack vector where someone:
+        1. Fetches a posted JournalEntry
+        2. Detaches it from the session (session.expunge)
+        3. Modifies it while detached
+        4. Uses session.merge() to save changes
+
+        Defense-in-depth: Even if ORM listeners were bypassed, PostgreSQL
+        triggers should still block the UPDATE statement.
+        """
+        from sqlalchemy.exc import IntegrityError, ProgrammingError
+
+        entry_id = posted_entry_via_raw_sql
+
+        # Fetch the posted entry
+        entry = pg_session.get(JournalEntry, entry_id)
+        assert entry is not None
+        assert entry.status == JournalEntryStatus.POSTED
+        original_description = entry.description
+
+        # Detach from session
+        pg_session.expunge(entry)
+
+        # Modify while detached
+        entry.description = "Tampered via merge - trigger should block"
+
+        # Temporarily disable ORM listeners to test trigger-only protection
+        unregister_immutability_listeners()
+        try:
+            with pytest.raises((IntegrityError, ProgrammingError, ImmutabilityViolationError)) as exc_info:
+                merged = pg_session.merge(entry)
+                pg_session.flush()
+
+            error_msg = str(exc_info.value)
+            # Should be blocked by database trigger
+            assert "R10 Violation" in error_msg or "restrict_violation" in error_msg or "Cannot modify" in error_msg
+        finally:
+            # Re-enable ORM listeners
+            register_immutability_listeners()
+
+        pg_session.rollback()
+
+        # Verify original data intact
+        fresh_entry = pg_session.get(JournalEntry, entry_id)
+        assert fresh_entry is not None
+        assert fresh_entry.description == original_description

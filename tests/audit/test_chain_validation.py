@@ -10,6 +10,7 @@ Verifies:
 
 import pytest
 import hashlib
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from uuid import uuid4
@@ -26,6 +27,43 @@ from finance_kernel.domain.strategy_registry import StrategyRegistry
 from finance_kernel.domain.strategy import BasePostingStrategy
 from finance_kernel.domain.dtos import EventEnvelope, LineSpec, LineSide, ReferenceData
 from finance_kernel.domain.values import Money
+from finance_kernel.db.engine import get_engine, is_postgres
+
+
+@contextmanager
+def disabled_immutability():
+    """
+    Context manager that disables both ORM and database-level immutability enforcement.
+
+    Use this for tests that need to simulate tampering with audit data.
+    """
+    from finance_kernel.db.immutability import (
+        register_immutability_listeners,
+        unregister_immutability_listeners,
+    )
+    from finance_kernel.db.triggers import (
+        install_immutability_triggers,
+        uninstall_immutability_triggers,
+    )
+
+    engine = get_engine()
+
+    # Disable ORM listeners
+    unregister_immutability_listeners()
+
+    # Disable database triggers (PostgreSQL only)
+    if is_postgres():
+        uninstall_immutability_triggers(engine)
+
+    try:
+        yield
+    finally:
+        # Re-enable ORM listeners
+        register_immutability_listeners()
+
+        # Re-enable database triggers (PostgreSQL only)
+        if is_postgres():
+            install_immutability_triggers(engine)
 
 
 @dataclass
@@ -325,16 +363,17 @@ class TestTamperDetection:
                 )
             ).scalar_one()
 
-            # Tamper with the payload hash
+            # Tamper with the payload hash (disable immutability enforcement first)
             original_payload_hash = audit_event.payload_hash
             tampered_hash = "tampered_" + original_payload_hash[:50]
 
-            session.execute(
-                update(AuditEvent)
-                .where(AuditEvent.id == audit_event.id)
-                .values(payload_hash=tampered_hash)
-            )
-            session.flush()
+            with disabled_immutability():
+                session.execute(
+                    update(AuditEvent)
+                    .where(AuditEvent.id == audit_event.id)
+                    .values(payload_hash=tampered_hash)
+                )
+                session.flush()
 
             # Validate chain - should detect tampering
             validator = AuditChainValidator(session)
@@ -382,12 +421,15 @@ class TestTamperDetection:
 
             if len(events) >= 2:
                 second_event = events[1]
-                session.execute(
-                    update(AuditEvent)
-                    .where(AuditEvent.id == second_event.id)
-                    .values(prev_hash="broken_link")
-                )
-                session.flush()
+
+                # Disable immutability to simulate tampering
+                with disabled_immutability():
+                    session.execute(
+                        update(AuditEvent)
+                        .where(AuditEvent.id == second_event.id)
+                        .values(prev_hash="broken_link")
+                    )
+                    session.flush()
 
                 # Validate
                 validator = AuditChainValidator(session)

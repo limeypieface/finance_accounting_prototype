@@ -1,10 +1,220 @@
 """
-Custom exception hierarchy for the finance kernel.
+Typed Exception Hierarchy for the Finance Kernel (R18 Compliance).
 
-All exceptions inherit from FinanceKernelError for easy catching.
+===============================================================================
+WHY TYPED EXCEPTIONS
+===============================================================================
 
-R18 Compliance: All domain errors use typed exceptions with machine-readable codes.
-No string-matching on error messages required - use exception type or code attribute.
+Financial systems must handle errors precisely. Generic exceptions like
+ValueError or RuntimeError force callers to parse error messages - which is:
+  - Fragile (message wording changes break code)
+  - Non-portable (different languages, logs, APIs)
+  - Hard to test (string matching in tests is brittle)
+
+R18 Compliance requires:
+  1. Every error has a TYPED exception class (catch by type, not message)
+  2. Every exception has a CODE attribute (machine-readable, API-safe)
+  3. Exceptions carry structured DATA (not just a message string)
+
+Example - WRONG way to handle errors:
+    try:
+        post_event(event)
+    except Exception as e:
+        if "closed period" in str(e):  # FRAGILE - message might change
+            handle_closed_period()
+
+Example - RIGHT way (what this module enables):
+    try:
+        post_event(event)
+    except ClosedPeriodError as e:  # Typed catch
+        log.warning(f"Period {e.period_code} is closed")  # Structured data
+        api_response(code=e.code, period=e.period_code)   # Machine-readable
+
+===============================================================================
+EXCEPTION HIERARCHY
+===============================================================================
+
+All exceptions inherit from FinanceKernelError:
+
+    FinanceKernelError (base)
+    |
+    +-- EventError
+    |   +-- EventNotFoundError
+    |   +-- EventAlreadyExistsError
+    |   +-- PayloadMismatchError
+    |   +-- UnsupportedSchemaVersionError
+    |
+    +-- PostingError
+    |   +-- AlreadyPostedError
+    |   +-- UnbalancedEntryError
+    |   +-- InvalidAccountError
+    |   +-- MissingDimensionError
+    |   +-- InvalidDimensionValueError
+    |   +-- InactiveDimensionError
+    |   +-- InactiveDimensionValueError
+    |   +-- DimensionNotFoundError
+    |
+    +-- PeriodError
+    |   +-- ClosedPeriodError
+    |   +-- PeriodNotFoundError
+    |   +-- PeriodAlreadyClosedError
+    |   +-- PeriodOverlapError
+    |   +-- PeriodImmutableError
+    |   +-- AdjustmentsNotAllowedError
+    |
+    +-- AccountError
+    |   +-- AccountNotFoundError
+    |   +-- AccountInactiveError
+    |   +-- AccountReferencedError
+    |   +-- RoundingAccountNotFoundError
+    |
+    +-- CurrencyError
+    |   +-- InvalidCurrencyError
+    |   +-- CurrencyMismatchError
+    |   +-- ExchangeRateNotFoundError
+    |
+    +-- AuditError
+    |   +-- AuditChainBrokenError
+    |
+    +-- ReversalError
+    |   +-- EntryNotPostedError
+    |   +-- EntryAlreadyReversedError
+    |
+    +-- ConcurrencyError
+    |   +-- OptimisticLockError
+    |
+    +-- ImmutabilityError
+    |   +-- ImmutabilityViolationError
+    |
+    +-- RoundingError
+    |   +-- MultipleRoundingLinesError
+    |   +-- RoundingAmountExceededError
+    |
+    +-- ExchangeRateError
+        +-- ExchangeRateImmutableError
+        +-- ExchangeRateReferencedError
+        +-- InvalidExchangeRateError
+        +-- ExchangeRateArbitrageError
+
+===============================================================================
+ERROR CODES - QUICK REFERENCE
+===============================================================================
+
+Category        | Code                        | When Raised
+----------------|-----------------------------|-----------------------------------------
+Event           | EVENT_NOT_FOUND             | Event ID doesn't exist
+                | EVENT_ALREADY_EXISTS        | Duplicate event ID (idempotency)
+                | PAYLOAD_MISMATCH            | Same ID, different payload (tampering?)
+                | UNSUPPORTED_SCHEMA_VERSION  | Event version not supported
+----------------|-----------------------------|-----------------------------------------
+Posting         | ALREADY_POSTED              | Event already has journal entry (OK)
+                | UNBALANCED_ENTRY            | Debits != Credits
+                | INVALID_ACCOUNT             | Account can't be posted to
+                | MISSING_DIMENSION           | Required dimension not provided
+                | INVALID_DIMENSION_VALUE     | Dimension value doesn't exist
+                | INACTIVE_DIMENSION          | Dimension is deactivated
+                | INACTIVE_DIMENSION_VALUE    | Dimension value is deactivated
+                | DIMENSION_NOT_FOUND         | Dimension code doesn't exist
+                | POSTING_RULE_NOT_FOUND      | No strategy for event type
+----------------|-----------------------------|-----------------------------------------
+Period          | CLOSED_PERIOD               | Posting to closed period (R12)
+                | PERIOD_NOT_FOUND            | No period covers this date
+                | PERIOD_ALREADY_CLOSED       | Period already closed
+                | PERIOD_OVERLAP              | Date range conflicts (R12)
+                | PERIOD_IMMUTABLE            | Modifying closed period (R13)
+                | ADJUSTMENTS_NOT_ALLOWED     | Period disallows adjustments (R13)
+----------------|-----------------------------|-----------------------------------------
+Account         | ACCOUNT_NOT_FOUND           | Account ID doesn't exist
+                | ACCOUNT_INACTIVE            | Account is deactivated
+                | ACCOUNT_REFERENCED          | Can't delete, has posted lines
+                | ROUNDING_ACCOUNT_NOT_FOUND  | No rounding account for currency
+----------------|-----------------------------|-----------------------------------------
+Currency        | INVALID_CURRENCY            | Not a valid ISO 4217 code
+                | CURRENCY_MISMATCH           | Mixed currencies in operation
+                | EXCHANGE_RATE_NOT_FOUND     | No rate for currency pair/date
+----------------|-----------------------------|-----------------------------------------
+Audit           | AUDIT_CHAIN_BROKEN          | Hash chain validation failed (R10)
+----------------|-----------------------------|-----------------------------------------
+Reversal        | ENTRY_NOT_POSTED            | Can only reverse posted entries
+                | ENTRY_ALREADY_REVERSED      | Entry was already reversed
+----------------|-----------------------------|-----------------------------------------
+Concurrency     | OPTIMISTIC_LOCK_CONFLICT    | Concurrent modification detected
+----------------|-----------------------------|-----------------------------------------
+Immutability    | IMMUTABILITY_VIOLATION      | Modifying immutable record (R10)
+----------------|-----------------------------|-----------------------------------------
+Rounding        | MULTIPLE_ROUNDING_LINES     | >1 rounding line (fraud prevention)
+                | ROUNDING_AMOUNT_EXCEEDED    | Rounding too large (fraud prevention)
+----------------|-----------------------------|-----------------------------------------
+Exchange Rate   | EXCHANGE_RATE_IMMUTABLE     | Rate used, can't modify
+                | EXCHANGE_RATE_REFERENCED    | Rate used, can't delete
+                | INVALID_EXCHANGE_RATE       | Rate is zero/negative/invalid
+                | EXCHANGE_RATE_ARBITRAGE     | Rate creates arbitrage opportunity
+
+===============================================================================
+HANDLING PATTERNS
+===============================================================================
+
+1. CATCH SPECIFIC EXCEPTIONS (not base classes):
+
+    try:
+        orchestrator.post(event)
+    except ClosedPeriodError as e:
+        # Handle closed period specifically
+        notify_user(f"Period {e.period_code} is closed")
+    except PostingError as e:
+        # Catch-all for other posting issues
+        log.error(f"Posting failed: {e.code}")
+
+2. USE STRUCTURED DATA (not message parsing):
+
+    except UnbalancedEntryError as e:
+        return {
+            "error": e.code,
+            "debits": e.debits,
+            "credits": e.credits,
+            "currency": e.currency,
+        }
+
+3. IDEMPOTENCY HANDLING (AlreadyPostedError is success):
+
+    try:
+        entry = orchestrator.post(event)
+    except AlreadyPostedError as e:
+        # This is OK - event was already processed
+        entry = get_entry(e.journal_entry_id)
+    return entry
+
+4. AUDIT CHAIN ERRORS (critical - investigate immediately):
+
+    except AuditChainBrokenError as e:
+        alert_security_team(e)
+        halt_processing()  # Don't continue with broken audit trail
+
+===============================================================================
+DESIGN DECISIONS
+===============================================================================
+
+1. WHY INHERIT FROM Exception (not ValueError, etc.)?
+   Domain exceptions should be catchable as a group. Inheriting from
+   built-in types mixes domain errors with programming errors.
+
+2. WHY code CLASS ATTRIBUTE (not instance)?
+   Codes are static per exception type. Class attribute enables:
+   - ClosedPeriodError.code without instantiation
+   - API documentation generation
+   - Static analysis
+
+3. WHY STORE ALL CONTEXT AS ATTRIBUTES?
+   Exceptions may be logged, serialized, or sent to APIs. Structured
+   attributes survive; parsed message strings don't.
+
+4. WHY SEPARATE ERROR CATEGORIES?
+   Enables middleware to handle categories differently:
+   - PeriodError -> user-facing "try different date"
+   - ImmutabilityError -> log security alert
+   - ConcurrencyError -> auto-retry
+
+===============================================================================
 """
 
 
@@ -148,14 +358,38 @@ class InvalidDimensionValueError(PostingError):
         super().__init__(f"Invalid value '{value}' for dimension {dimension_code}")
 
 
-class PostingRuleNotFoundError(PostingError):
-    """No posting rule found for event type."""
+class InactiveDimensionError(PostingError):
+    """Dimension is inactive and cannot be used for posting."""
 
-    code: str = "POSTING_RULE_NOT_FOUND"
+    code: str = "INACTIVE_DIMENSION"
 
-    def __init__(self, event_type: str):
-        self.event_type = event_type
-        super().__init__(f"No posting rule found for event type: {event_type}")
+    def __init__(self, dimension_code: str):
+        self.dimension_code = dimension_code
+        super().__init__(f"Dimension '{dimension_code}' is inactive and cannot be used for posting")
+
+
+class InactiveDimensionValueError(PostingError):
+    """Dimension value is inactive and cannot be used for posting."""
+
+    code: str = "INACTIVE_DIMENSION_VALUE"
+
+    def __init__(self, dimension_code: str, value: str):
+        self.dimension_code = dimension_code
+        self.value = value
+        super().__init__(
+            f"Dimension value '{value}' for dimension '{dimension_code}' "
+            "is inactive and cannot be used for posting"
+        )
+
+
+class DimensionNotFoundError(PostingError):
+    """Dimension with given code was not found."""
+
+    code: str = "DIMENSION_NOT_FOUND"
+
+    def __init__(self, dimension_code: str):
+        self.dimension_code = dimension_code
+        super().__init__(f"Dimension not found: {dimension_code}")
 
 
 # Period-related exceptions
@@ -460,4 +694,155 @@ class ImmutabilityViolationError(ImmutabilityError):
         self.reason = reason
         super().__init__(
             f"Immutability violation on {entity_type} {entity_id}: {reason}"
+        )
+
+
+# Rounding-related exceptions
+
+
+class RoundingError(FinanceKernelError):
+    """Base exception for rounding-related errors."""
+
+    code: str = "ROUNDING_ERROR"
+
+
+class MultipleRoundingLinesError(RoundingError):
+    """
+    Entry has more than one line marked is_rounding=True.
+
+    From journal.py docstring: "exactly one line must be marked is_rounding=true"
+    This invariant prevents hidden manipulation via multiple rounding entries.
+    """
+
+    code: str = "MULTIPLE_ROUNDING_LINES"
+
+    def __init__(self, entry_id: str, rounding_count: int):
+        self.entry_id = entry_id
+        self.rounding_count = rounding_count
+        super().__init__(
+            f"Entry {entry_id} has {rounding_count} rounding lines. "
+            f"At most ONE line can have is_rounding=True."
+        )
+
+
+class RoundingAmountExceededError(RoundingError):
+    """
+    Rounding line amount exceeds the maximum allowed threshold.
+
+    Rounding is for sub-penny currency conversion remainders only.
+    A large "rounding" adjustment is not rounding - it's an error or fraud.
+    Typical threshold: 0.01 per non-rounding line (1 minor unit).
+    """
+
+    code: str = "ROUNDING_AMOUNT_EXCEEDED"
+
+    # Maximum allowed rounding per non-rounding line (1 minor unit)
+    MAX_ROUNDING_PER_LINE = "0.01"
+
+    def __init__(self, entry_id: str, rounding_amount: str, threshold: str, currency: str):
+        self.entry_id = entry_id
+        self.rounding_amount = rounding_amount
+        self.threshold = threshold
+        self.currency = currency
+        super().__init__(
+            f"Rounding amount {rounding_amount} {currency} exceeds threshold {threshold} {currency} "
+            f"for entry {entry_id}. Rounding is for sub-penny currency conversion only."
+        )
+
+
+# Exchange Rate related exceptions
+
+
+class ExchangeRateError(FinanceKernelError):
+    """Base exception for exchange rate related errors."""
+
+    code: str = "EXCHANGE_RATE_ERROR"
+
+
+class ExchangeRateImmutableError(ExchangeRateError):
+    """
+    Attempted to modify an ExchangeRate that has been used in journal lines.
+
+    Once an ExchangeRate is referenced by any JournalLine (via exchange_rate_id),
+    it becomes immutable. This prevents retroactive manipulation of historical
+    multi-currency transactions.
+    """
+
+    code: str = "EXCHANGE_RATE_IMMUTABLE"
+
+    def __init__(self, rate_id: str, from_currency: str, to_currency: str):
+        self.rate_id = rate_id
+        self.from_currency = from_currency
+        self.to_currency = to_currency
+        super().__init__(
+            f"ExchangeRate {rate_id} ({from_currency}/{to_currency}) is immutable: "
+            f"it has been used in posted journal entries"
+        )
+
+
+class ExchangeRateReferencedError(ExchangeRateError):
+    """
+    Attempted to delete an ExchangeRate that is referenced by journal lines.
+
+    Exchange rates cannot be deleted once used in any JournalLine, as this
+    would break the audit trail and make historical entries uninterpretable.
+    """
+
+    code: str = "EXCHANGE_RATE_REFERENCED"
+
+    def __init__(self, rate_id: str, reference_count: int):
+        self.rate_id = rate_id
+        self.reference_count = reference_count
+        super().__init__(
+            f"ExchangeRate {rate_id} cannot be deleted: "
+            f"referenced by {reference_count} journal line(s)"
+        )
+
+
+class InvalidExchangeRateError(ExchangeRateError):
+    """
+    Exchange rate value is invalid (zero, negative, or mathematically impossible).
+
+    Exchange rates must be positive non-zero values. A rate of zero would
+    make currency conversion undefined, and negative rates are meaningless.
+    """
+
+    code: str = "INVALID_EXCHANGE_RATE"
+
+    def __init__(self, rate_value: str, reason: str):
+        self.rate_value = rate_value
+        self.reason = reason
+        super().__init__(
+            f"Invalid exchange rate value {rate_value}: {reason}"
+        )
+
+
+class ExchangeRateArbitrageError(ExchangeRateError):
+    """
+    Exchange rate creates an arbitrage opportunity with its inverse.
+
+    If rate A/B = X exists, then the inverse rate B/A must equal 1/X
+    (within tolerance). Inconsistent rates could be exploited to create
+    phantom value or hide losses.
+    """
+
+    code: str = "EXCHANGE_RATE_ARBITRAGE"
+
+    def __init__(
+        self,
+        from_currency: str,
+        to_currency: str,
+        forward_rate: str,
+        inverse_rate: str,
+        expected_inverse: str,
+    ):
+        self.from_currency = from_currency
+        self.to_currency = to_currency
+        self.forward_rate = forward_rate
+        self.inverse_rate = inverse_rate
+        self.expected_inverse = expected_inverse
+        super().__init__(
+            f"Arbitrage detected: {from_currency}/{to_currency} rate {forward_rate} "
+            f"implies inverse {expected_inverse}, but {to_currency}/{from_currency} "
+            f"rate is {inverse_rate}. This inconsistency could hide value manipulation."
         )

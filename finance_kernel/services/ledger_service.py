@@ -31,6 +31,10 @@ from finance_kernel.domain.dtos import (
     ProposedJournalEntry,
     ProposedLine,
 )
+from finance_kernel.exceptions import (
+    MultipleRoundingLinesError,
+    RoundingAmountExceededError,
+)
 from finance_kernel.models.audit_event import AuditAction
 from finance_kernel.models.journal import (
     JournalEntry,
@@ -219,6 +223,9 @@ class LedgerService:
         lines: tuple[ProposedLine, ...],
     ) -> list[JournalLine]:
         """Create journal lines for an entry."""
+        # Validate rounding invariants BEFORE creating lines
+        self._validate_rounding_invariants(entry.id, lines)
+
         journal_lines = []
 
         for i, spec in enumerate(lines):
@@ -240,6 +247,62 @@ class LedgerService:
 
         self._session.flush()
         return journal_lines
+
+    def _validate_rounding_invariants(
+        self,
+        entry_id: UUID,
+        lines: tuple[ProposedLine, ...],
+    ) -> None:
+        """
+        Validate rounding invariants for journal lines.
+
+        Enforces:
+        1. At most ONE line can have is_rounding=True
+        2. Rounding amount must be < 0.01 per non-rounding line
+
+        These invariants prevent fraud via:
+        - Multiple hidden rounding lines
+        - Large "rounding" amounts that hide embezzlement
+
+        Args:
+            entry_id: The journal entry ID (for error messages).
+            lines: The proposed lines to validate.
+
+        Raises:
+            MultipleRoundingLinesError: If more than one rounding line.
+            RoundingAmountExceededError: If rounding amount exceeds threshold.
+        """
+        from decimal import Decimal
+
+        # Separate rounding and non-rounding lines
+        rounding_lines = [line for line in lines if line.is_rounding]
+        non_rounding_lines = [line for line in lines if not line.is_rounding]
+
+        # Invariant 1: At most ONE rounding line
+        if len(rounding_lines) > 1:
+            raise MultipleRoundingLinesError(
+                entry_id=str(entry_id),
+                rounding_count=len(rounding_lines),
+            )
+
+        # Invariant 2: Rounding amount threshold
+        if rounding_lines:
+            rounding_line = rounding_lines[0]
+            rounding_amount = rounding_line.amount
+
+            # Max allowed: 0.01 per non-rounding line (minimum 0.01)
+            max_allowed = max(
+                Decimal("0.01"),
+                Decimal("0.01") * len(non_rounding_lines),
+            )
+
+            if rounding_amount > max_allowed:
+                raise RoundingAmountExceededError(
+                    entry_id=str(entry_id),
+                    rounding_amount=str(rounding_amount),
+                    threshold=str(max_allowed),
+                    currency=rounding_line.currency,
+                )
 
     def _finalize_posting(
         self,

@@ -352,7 +352,8 @@ class TestUnicodeHandling:
         """
         Unicode characters in memo fields should be handled.
         """
-        unicode_memo = "支払い 💰 مدفوعات <script>alert('xss')</script> \x00\x01"
+        # Note: PostgreSQL doesn't allow NUL (\x00) in text, use other control chars
+        unicode_memo = "支払い 💰 مدفوعات <script>alert('xss')</script> \t\n\r"
         event_type = "test.unicode_memo"
 
         class UnicodeStrategy(BasePostingStrategy):
@@ -416,7 +417,7 @@ class TestUnicodeHandling:
         unicode_payload = {
             "description": "日本語テスト 🎉 العربية",
             "amount": "100.00",
-            "special": "null\x00byte",
+            "special": "null_byte\t\n",  # Note: PostgreSQL doesn't allow NUL (\x00)
         }
 
         result = ingestor_service.ingest(

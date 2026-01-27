@@ -1,20 +1,110 @@
 """
-Append-only persistence enforcement (R10 Compliance).
+ORM-Level Immutability Enforcement (R10 Compliance - Layer 1 of 2).
 
-This module provides SQLAlchemy ORM event listeners that enforce
-immutability rules on critical financial records:
+===============================================================================
+WHY THIS EXISTS
+===============================================================================
 
-- JournalEntry: Immutable after status becomes POSTED
-- JournalLine: Immutable when parent entry is POSTED
-- AuditEvent: Always immutable after insert
+Financial records must be tamper-proof. Auditors and regulators require that
+posted transactions cannot be modified - only reversed with new entries that
+create a visible paper trail.
 
-Updates and deletes are forbidden at the ORM layer.
+This module is the FIRST layer of "defense in depth" for data integrity:
 
-Hard invariants:
-- Posted JournalEntry records cannot be modified
-- JournalLine records cannot be modified once parent is posted
-- AuditEvent records are append-only - no modifications ever
-- Violations raise ImmutabilityViolationError
+  Layer 1: THIS FILE (ORM event listeners)
+    - Catches modifications through Python/SQLAlchemy code
+    - Works on both SQLite (tests) and PostgreSQL (production)
+    - Fires BEFORE the SQL is sent to the database
+
+  Layer 2: db/sql/*.sql (PostgreSQL triggers)
+    - Catches raw SQL, bulk UPDATE statements, direct psql access
+    - PostgreSQL-only (SQLite has no trigger support)
+    - Fires AT the database level, independent of application code
+
+Both layers enforce the SAME rules. An attacker must bypass BOTH to tamper
+with data. This is intentional redundancy, not duplication.
+
+See also:
+  - db/triggers.py - Loads and installs PostgreSQL triggers
+  - db/sql/*.sql - The actual trigger SQL
+  - db/README.md - Full documentation of both layers
+
+===============================================================================
+HOW IT WORKS
+===============================================================================
+
+SQLAlchemy fires events before UPDATE/DELETE operations reach the database.
+We register listeners that intercept these events and check our invariants:
+
+    session.flush()
+         |
+         v
+    [before_update event] --> _check_*_immutability() --> ImmutabilityViolationError
+         |                                                        ^
+         v                                                        |
+    [before_delete event] --> _check_*_delete() -----------------+
+         |
+         v
+    SQL sent to database (only if checks pass)
+
+If a check fails, we raise ImmutabilityViolationError and the transaction
+is aborted. The database is never modified.
+
+===============================================================================
+PROTECTED ENTITIES
+===============================================================================
+
+Entity          | When Immutable                    | Why
+----------------|-----------------------------------|----------------------------------
+JournalEntry    | After status = POSTED             | Posted = finalized, auditable
+JournalLine     | When parent entry is POSTED       | Lines are part of the entry
+AuditEvent      | ALWAYS (from creation)            | Audit trail is sacred
+Account         | Structural fields when referenced | Changing type would corrupt reports
+FiscalPeriod    | After status = CLOSED             | Closed = year-end finalized
+Dimension       | Code when values exist            | Code is FK target
+DimensionValue  | Code/name always                  | Referenced in journal dimensions
+ExchangeRate    | When referenced by journal lines  | Changing rate alters history
+
+===============================================================================
+DESIGN DECISIONS
+===============================================================================
+
+1. WHY ALLOW updated_at/updated_by_id CHANGES?
+   These are audit metadata fields, not financial data. They track WHO looked
+   at a record, not the record's content. Blocking them would break audit logging.
+
+2. WHY CHECK "WAS POSTED" NOT "IS POSTED"?
+   The posting workflow itself must set status=POSTED. We allow the transition
+   DRAFT->POSTED, but block any changes AFTER that transition completes.
+   We detect this by checking SQLAlchemy's attribute history.
+
+3. WHY INLINE IMPORTS?
+   Avoids circular imports. Models import from db, db imports from models.
+   Inline imports defer resolution until the function runs.
+
+4. WHY BOTH ORM AND SQL ENFORCEMENT?
+   - ORM catches application bugs and most attacks
+   - SQL catches: raw SQL injection, bulk operations, rogue migrations,
+     direct database access by compromised accounts
+   - Defense in depth: assume any single layer can be bypassed
+
+===============================================================================
+USAGE
+===============================================================================
+
+Called automatically during application startup:
+
+    from finance_kernel.db.immutability import register_immutability_listeners
+    register_immutability_listeners()  # Called once at startup
+
+To temporarily disable (TESTS ONLY - never in production):
+
+    from finance_kernel.db.immutability import unregister_immutability_listeners
+    unregister_immutability_listeners()
+    # ... do forbidden operation ...
+    register_immutability_listeners()
+
+===============================================================================
 """
 
 from sqlalchemy import event
@@ -32,36 +122,49 @@ def _check_journal_entry_immutability(mapper, connection, target):
     This check allows the posting workflow to complete (setting status to POSTED
     and posted_at), but prevents any subsequent modifications once the entry
     has been posted and flushed.
+
+    Logic explained:
+        1. If status is changing FROM posted -> anything: block (was already posted)
+        2. If status is NOT changing AND is posted: block (already posted, other field changing)
+        3. If status is changing TO posted (DRAFT->POSTED): allow (this IS the posting)
     """
     from finance_kernel.models.journal import JournalEntry, JournalEntryStatus
 
     if not isinstance(target, JournalEntry):
         return
 
-    # Get the history of the status attribute
     from sqlalchemy.orm.attributes import get_history
 
+    # SQLAlchemy tracks attribute changes as "history":
+    #   - history.deleted = old values (what was in DB before)
+    #   - history.added = new values (what we're trying to set)
+    #   - history.unchanged = values that didn't change
     status_history = get_history(target, "status")
 
-    # Check if the entry WAS posted before this update (status was POSTED in DB)
+    # Determine if this entry was ALREADY posted before this update began.
+    # This is the key question: are we IN the posting workflow, or AFTER it?
     was_posted_before = False
+
     if status_history.deleted:
-        # Status is changing - check what it was before
+        # Status IS changing. Check what the OLD value was.
+        # If old value was POSTED, someone is trying to modify a posted entry.
         old_status = status_history.deleted[0]
         if isinstance(old_status, str):
             was_posted_before = old_status == "posted"
         else:
             was_posted_before = old_status == JournalEntryStatus.POSTED
     elif not status_history.added:
-        # Status is not changing - check current value
-        # If unchanged and POSTED, entry was already posted
+        # Status is NOT changing (no deleted, no added = unchanged).
+        # If current status is POSTED, the entry was already posted and
+        # someone is trying to modify a different field.
         current_status = target.status
         if isinstance(current_status, str):
             was_posted_before = current_status == "posted"
         else:
             was_posted_before = current_status == JournalEntryStatus.POSTED
 
-    # If entry was already posted, prevent any modifications
+    # If the entry was already posted, block ALL field modifications
+    # (except audit fields like updated_at)
     if was_posted_before:
         from sqlalchemy import inspect
 
@@ -173,6 +276,542 @@ def _check_audit_event_delete(mapper, connection, target):
     )
 
 
+# =============================================================================
+# Account Structural Immutability
+# =============================================================================
+#
+# Accounts have two types of fields:
+#   - Structural: account_type, normal_balance, code
+#     These determine how the account behaves in financial reports.
+#     Changing them after posting would corrupt historical reports.
+#
+#   - Non-structural: name, tags, is_active, parent_id
+#     These are display/organizational. Changing them is safe.
+#
+# We only lock structural fields, and only after the account is referenced
+# by a posted journal line. Before first use, accounts can be freely edited.
+# =============================================================================
+
+# Structural fields that become immutable once account is referenced by posted lines
+ACCOUNT_STRUCTURAL_FIELDS = frozenset({"account_type", "normal_balance", "code"})
+
+
+def _account_has_posted_references(connection, account_id: str) -> bool:
+    """
+    Check if an account OR ANY OF ITS DESCENDANTS has posted journal lines.
+
+    This protects the financial integrity of the entire account hierarchy.
+    If a parent account's structural fields change, it corrupts the meaning
+    of all descendant balances in financial reports.
+
+    Args:
+        connection: SQLAlchemy connection
+        account_id: The account ID to check
+
+    Returns:
+        True if account or any descendant has posted references, False otherwise
+    """
+    from sqlalchemy import text
+
+    # Use a recursive CTE to find all descendants, then check for posted journal lines
+    result = connection.execute(
+        text("""
+            WITH RECURSIVE account_tree AS (
+                -- Base case: the account itself
+                SELECT id FROM accounts WHERE id = :account_id
+                UNION ALL
+                -- Recursive case: all children
+                SELECT a.id
+                FROM accounts a
+                JOIN account_tree t ON a.parent_id = t.id
+            )
+            SELECT EXISTS (
+                SELECT 1 FROM journal_lines jl
+                JOIN journal_entries je ON jl.journal_entry_id = je.id
+                WHERE jl.account_id IN (SELECT id FROM account_tree)
+                AND je.status = 'posted'
+            )
+        """),
+        {"account_id": account_id},
+    )
+    return result.scalar()
+
+
+def _check_account_structural_immutability(mapper, connection, target):
+    """
+    Prevent changes to structural fields on accounts referenced by posted journal lines.
+
+    R10 Compliance: Account type, normal_balance, and code are immutable
+    once the account is referenced by posted journal entries.
+
+    Non-structural fields (name, tags, is_active, etc.) can still be modified.
+    """
+    from finance_kernel.models.account import Account
+    from sqlalchemy.orm.attributes import get_history
+
+    if not isinstance(target, Account):
+        return
+
+    # Check which structural fields have changed
+    changed_structural_fields = []
+    for field in ACCOUNT_STRUCTURAL_FIELDS:
+        history = get_history(target, field)
+        if history.has_changes():
+            changed_structural_fields.append(field)
+
+    # If no structural fields changed, allow the update
+    if not changed_structural_fields:
+        return
+
+    # Structural fields changed - check if account has posted references
+    if _account_has_posted_references(connection, str(target.id)):
+        raise ImmutabilityViolationError(
+            entity_type="Account",
+            entity_id=str(target.id),
+            reason=(
+                f"Cannot modify structural field(s) {changed_structural_fields} "
+                "on account referenced by posted journal entries"
+            ),
+        )
+
+
+def _is_last_rounding_account(connection, account_id: str, currency: str | None) -> bool:
+    """
+    Check if this is the last rounding account for the given currency.
+
+    Args:
+        connection: SQLAlchemy connection
+        account_id: The account ID being deleted
+        currency: The currency of the account (None for multi-currency)
+
+    Returns:
+        True if this is the last rounding account for the currency, False otherwise
+    """
+    from sqlalchemy import text
+
+    if currency:
+        # Check for currency-specific rounding accounts
+        result = connection.execute(
+            text("""
+                SELECT COUNT(*) FROM accounts
+                WHERE tags::text LIKE '%rounding%'
+                AND currency = :currency
+                AND id != :account_id
+            """),
+            {"currency": currency, "account_id": account_id},
+        )
+    else:
+        # Check for global/multi-currency rounding accounts (currency IS NULL)
+        result = connection.execute(
+            text("""
+                SELECT COUNT(*) FROM accounts
+                WHERE tags::text LIKE '%rounding%'
+                AND currency IS NULL
+                AND id != :account_id
+            """),
+            {"account_id": account_id},
+        )
+
+    other_rounding_count = result.scalar()
+    return other_rounding_count == 0
+
+
+def _check_account_delete(mapper, connection, target):
+    """
+    Prevent deletion of the last rounding account per currency.
+
+    Invariant: At least one rounding account must exist per currency or ledger.
+    """
+    from finance_kernel.models.account import Account, AccountTag
+
+    if not isinstance(target, Account):
+        return
+
+    # Check if this is a rounding account
+    if target.tags is None or AccountTag.ROUNDING.value not in target.tags:
+        return  # Not a rounding account, allow deletion
+
+    # This is a rounding account - check if it's the last one for its currency
+    if _is_last_rounding_account(connection, str(target.id), target.currency):
+        currency_desc = target.currency if target.currency else "multi-currency/global"
+        raise ImmutabilityViolationError(
+            entity_type="Account",
+            entity_id=str(target.id),
+            reason=(
+                f"Cannot delete the last rounding account for {currency_desc}. "
+                "At least one rounding account must exist per currency."
+            ),
+        )
+
+
+# =============================================================================
+# FiscalPeriod Closed Immutability
+# =============================================================================
+
+
+def _check_fiscal_period_immutability(mapper, connection, target):
+    """
+    Prevent modifications to closed FiscalPeriod records.
+
+    R10 Compliance: Closed fiscal periods are immutable.
+
+    This check allows the closing workflow to complete (transition from OPEN to CLOSED),
+    but prevents any subsequent modifications once the period has been closed.
+
+    The only allowed modification is the one-way transition: OPEN -> CLOSED
+
+    Logic explained:
+        1. OPEN -> CLOSED: ALLOW (this is the year-end close)
+        2. CLOSED -> anything: BLOCK (cannot reopen or modify closed periods)
+        3. Any field change when status=CLOSED: BLOCK
+    """
+    from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
+    from sqlalchemy.orm.attributes import get_history
+
+    if not isinstance(target, FiscalPeriod):
+        return
+
+    status_history = get_history(target, "status")
+
+    # First, check for the ONE allowed transition: OPEN -> CLOSED
+    # This is the year-end closing workflow and must be permitted.
+    if status_history.deleted and status_history.added:
+        old_status = status_history.deleted[0]
+        new_status = status_history.added[0]
+
+        # Normalize to enum values for comparison
+        if isinstance(old_status, str):
+            old_status = PeriodStatus(old_status)
+        if isinstance(new_status, str):
+            new_status = PeriodStatus(new_status)
+
+        # Allow OPEN -> CLOSED transition (this is the closing workflow)
+        if old_status == PeriodStatus.OPEN and new_status == PeriodStatus.CLOSED:
+            return  # This is allowed
+
+    # Check if the period WAS closed before this update
+    was_closed_before = False
+    if status_history.deleted:
+        old_status = status_history.deleted[0]
+        if isinstance(old_status, str):
+            was_closed_before = old_status == "closed"
+        else:
+            was_closed_before = old_status == PeriodStatus.CLOSED
+    elif not status_history.added:
+        # Status is not changing - check current value
+        current_status = target.status
+        if isinstance(current_status, str):
+            was_closed_before = current_status == "closed"
+        else:
+            was_closed_before = current_status == PeriodStatus.CLOSED
+
+    # If period was already closed, prevent any modifications
+    if was_closed_before:
+        from sqlalchemy import inspect
+
+        insp = inspect(target)
+        for attr in insp.attrs:
+            # Allow updated_at/updated_by_id to change (they're audit fields)
+            if attr.key in ("updated_at", "updated_by_id"):
+                continue
+            hist = attr.history
+            if hist.has_changes():
+                raise ImmutabilityViolationError(
+                    entity_type="FiscalPeriod",
+                    entity_id=str(target.id),
+                    reason=f"Cannot modify field '{attr.key}' on closed fiscal period",
+                )
+
+
+def _period_has_journal_entries(connection, start_date, end_date) -> bool:
+    """
+    Check if any journal entries have effective_date within the period's date range.
+
+    Args:
+        connection: SQLAlchemy connection
+        start_date: Period start date
+        end_date: Period end date
+
+    Returns:
+        True if period has journal entries, False otherwise
+    """
+    from sqlalchemy import text
+
+    result = connection.execute(
+        text("""
+            SELECT EXISTS (
+                SELECT 1 FROM journal_entries
+                WHERE effective_date >= :start_date
+                AND effective_date <= :end_date
+            )
+        """),
+        {"start_date": start_date, "end_date": end_date},
+    )
+    return result.scalar()
+
+
+def _check_fiscal_period_delete(mapper, connection, target):
+    """
+    Prevent deletion of FiscalPeriod records that are closed or have journal entries.
+
+    R10 Compliance:
+    - Closed fiscal periods cannot be deleted
+    - Periods with journal entries cannot be deleted (data integrity)
+    """
+    from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
+
+    if not isinstance(target, FiscalPeriod):
+        return
+
+    # Rule 1: Closed periods cannot be deleted
+    if target.status == PeriodStatus.CLOSED:
+        raise ImmutabilityViolationError(
+            entity_type="FiscalPeriod",
+            entity_id=str(target.id),
+            reason="Closed fiscal periods cannot be deleted",
+        )
+
+    # Rule 2: Periods with journal entries cannot be deleted (even if open)
+    if _period_has_journal_entries(connection, target.start_date, target.end_date):
+        raise ImmutabilityViolationError(
+            entity_type="FiscalPeriod",
+            entity_id=str(target.id),
+            reason="Cannot delete fiscal period with journal entries",
+        )
+
+
+# =============================================================================
+# Dimension and DimensionValue Immutability
+# =============================================================================
+
+# Immutable fields on DimensionValue after creation
+DIMENSION_VALUE_IMMUTABLE_FIELDS = frozenset({"code", "name", "dimension_code"})
+
+
+def _check_dimension_value_immutability(mapper, connection, target):
+    """
+    Prevent changes to immutable fields on DimensionValue.
+
+    Invariant: code, name, and dimension_code are immutable once created.
+    This ensures audit trail integrity - dimension values referenced in
+    historical journal lines must remain stable.
+    """
+    from finance_kernel.models.dimensions import DimensionValue
+    from sqlalchemy.orm.attributes import get_history
+
+    if not isinstance(target, DimensionValue):
+        return
+
+    # Check which immutable fields have changed
+    changed_fields = []
+    for field in DIMENSION_VALUE_IMMUTABLE_FIELDS:
+        history = get_history(target, field)
+        if history.has_changes():
+            changed_fields.append(field)
+
+    if changed_fields:
+        raise ImmutabilityViolationError(
+            entity_type="DimensionValue",
+            entity_id=str(target.id),
+            reason=f"Cannot modify immutable field(s) {changed_fields} on DimensionValue",
+        )
+
+
+def _check_dimension_code_immutability(mapper, connection, target):
+    """
+    Prevent changes to Dimension.code once the dimension has values.
+
+    The dimension code is the FK target for DimensionValue, so changing it
+    would orphan existing values.
+    """
+    from finance_kernel.models.dimensions import Dimension
+    from sqlalchemy.orm.attributes import get_history
+    from sqlalchemy import text
+
+    if not isinstance(target, Dimension):
+        return
+
+    # Check if code has changed
+    code_history = get_history(target, "code")
+    if not code_history.has_changes():
+        return
+
+    old_code = code_history.deleted[0] if code_history.deleted else None
+    if old_code is None:
+        return
+
+    # Check if dimension has any values
+    result = connection.execute(
+        text("SELECT EXISTS (SELECT 1 FROM dimension_values WHERE dimension_code = :code)"),
+        {"code": old_code},
+    )
+    has_values = result.scalar()
+
+    if has_values:
+        raise ImmutabilityViolationError(
+            entity_type="Dimension",
+            entity_id=str(target.id),
+            reason=f"Cannot change code on dimension with existing values (old code: {old_code})",
+        )
+
+
+# =============================================================================
+# ExchangeRate Immutability
+# =============================================================================
+#
+# Exchange rates convert between currencies. If you change a rate after it's
+# been used in a journal entry, you silently change the value of that entry.
+#
+# Example of the attack this prevents:
+#   1. Post entry: 100 USD -> 85 EUR at rate 0.85
+#   2. Later, change rate to 0.90
+#   3. Historical reports now show 90 EUR instead of 85 EUR
+#   4. 5 EUR has "disappeared" with no audit trail
+#
+# Once an exchange rate is referenced by ANY journal line, its rate value
+# is frozen forever. Create a new rate record for new transactions.
+# =============================================================================
+
+
+def _exchange_rate_is_referenced(connection, rate_id: str) -> int:
+    """
+    Check if an ExchangeRate is referenced by any JournalLine.
+
+    Args:
+        connection: SQLAlchemy connection
+        rate_id: The exchange rate ID to check
+
+    Returns:
+        Count of JournalLines referencing this rate
+    """
+    from sqlalchemy import text
+
+    result = connection.execute(
+        text("""
+            SELECT COUNT(*) FROM journal_lines
+            WHERE exchange_rate_id = :rate_id
+        """),
+        {"rate_id": rate_id},
+    )
+    return result.scalar() or 0
+
+
+def _validate_exchange_rate_value(rate_value, rate_id: str = None):
+    """
+    Validate that an exchange rate value is positive and non-zero.
+
+    Args:
+        rate_value: The rate value to validate
+        rate_id: Optional rate ID for error messages
+
+    Raises:
+        InvalidExchangeRateError: If rate is zero, negative, or invalid
+    """
+    from decimal import Decimal
+    from finance_kernel.exceptions import InvalidExchangeRateError
+
+    if rate_value is None:
+        raise InvalidExchangeRateError(
+            rate_value="None",
+            reason="Exchange rate cannot be null"
+        )
+
+    # Convert to Decimal if needed
+    if not isinstance(rate_value, Decimal):
+        try:
+            rate_value = Decimal(str(rate_value))
+        except Exception:
+            raise InvalidExchangeRateError(
+                rate_value=str(rate_value),
+                reason="Exchange rate must be a valid number"
+            )
+
+    if rate_value <= Decimal("0"):
+        raise InvalidExchangeRateError(
+            rate_value=str(rate_value),
+            reason="Exchange rate must be positive (greater than zero)"
+        )
+
+    # Check for unreasonably large rates (potential data entry error)
+    if rate_value > Decimal("1000000"):
+        raise InvalidExchangeRateError(
+            rate_value=str(rate_value),
+            reason="Exchange rate exceeds maximum allowed value (1,000,000)"
+        )
+
+
+def _check_exchange_rate_insert(mapper, connection, target):
+    """
+    Validate exchange rate value on insert.
+
+    Ensures new exchange rates have valid positive values.
+    """
+    from finance_kernel.models.exchange_rate import ExchangeRate
+
+    if not isinstance(target, ExchangeRate):
+        return
+
+    _validate_exchange_rate_value(target.rate, str(target.id) if target.id else "new")
+
+
+def _check_exchange_rate_immutability(mapper, connection, target):
+    """
+    Prevent updates to ExchangeRate records that have been used in journal lines.
+
+    Once an ExchangeRate is referenced by any JournalLine (via exchange_rate_id),
+    its rate value becomes immutable. This prevents retroactive manipulation
+    of historical multi-currency transactions.
+
+    Also validates that rate values are always positive.
+    """
+    from finance_kernel.models.exchange_rate import ExchangeRate
+    from finance_kernel.exceptions import ExchangeRateImmutableError
+    from sqlalchemy.orm.attributes import get_history
+
+    if not isinstance(target, ExchangeRate):
+        return
+
+    # Always validate that rate is positive
+    _validate_exchange_rate_value(target.rate, str(target.id))
+
+    # Check if the rate value is changing
+    rate_history = get_history(target, "rate")
+    if not rate_history.has_changes():
+        return  # Rate not changing, allow other updates
+
+    # Rate is changing - check if this rate has been used
+    reference_count = _exchange_rate_is_referenced(connection, str(target.id))
+
+    if reference_count > 0:
+        raise ExchangeRateImmutableError(
+            rate_id=str(target.id),
+            from_currency=target.from_currency,
+            to_currency=target.to_currency,
+        )
+
+
+def _check_exchange_rate_delete(mapper, connection, target):
+    """
+    Prevent deletion of ExchangeRate records that are referenced by journal lines.
+
+    Exchange rates cannot be deleted once used, as this would break the audit
+    trail and make historical entries uninterpretable.
+    """
+    from finance_kernel.models.exchange_rate import ExchangeRate
+    from finance_kernel.exceptions import ExchangeRateReferencedError
+
+    if not isinstance(target, ExchangeRate):
+        return
+
+    reference_count = _exchange_rate_is_referenced(connection, str(target.id))
+
+    if reference_count > 0:
+        raise ExchangeRateReferencedError(
+            rate_id=str(target.id),
+            reference_count=reference_count,
+        )
+
+
 def register_immutability_listeners():
     """
     Register all immutability enforcement event listeners.
@@ -185,6 +824,10 @@ def register_immutability_listeners():
     """
     from finance_kernel.models.journal import JournalEntry, JournalLine
     from finance_kernel.models.audit_event import AuditEvent
+    from finance_kernel.models.account import Account
+    from finance_kernel.models.fiscal_period import FiscalPeriod
+    from finance_kernel.models.dimensions import Dimension, DimensionValue
+    from finance_kernel.models.exchange_rate import ExchangeRate
 
     # JournalEntry listeners
     event.listen(JournalEntry, "before_update", _check_journal_entry_immutability)
@@ -198,6 +841,25 @@ def register_immutability_listeners():
     event.listen(AuditEvent, "before_update", _check_audit_event_immutability)
     event.listen(AuditEvent, "before_delete", _check_audit_event_delete)
 
+    # Account listeners
+    event.listen(Account, "before_update", _check_account_structural_immutability)
+    event.listen(Account, "before_delete", _check_account_delete)
+
+    # FiscalPeriod listeners
+    event.listen(FiscalPeriod, "before_update", _check_fiscal_period_immutability)
+    event.listen(FiscalPeriod, "before_delete", _check_fiscal_period_delete)
+
+    # Dimension listeners
+    event.listen(Dimension, "before_update", _check_dimension_code_immutability)
+
+    # DimensionValue listeners
+    event.listen(DimensionValue, "before_update", _check_dimension_value_immutability)
+
+    # ExchangeRate listeners
+    event.listen(ExchangeRate, "before_insert", _check_exchange_rate_insert)
+    event.listen(ExchangeRate, "before_update", _check_exchange_rate_immutability)
+    event.listen(ExchangeRate, "before_delete", _check_exchange_rate_delete)
+
 
 def unregister_immutability_listeners():
     """
@@ -208,6 +870,10 @@ def unregister_immutability_listeners():
     """
     from finance_kernel.models.journal import JournalEntry, JournalLine
     from finance_kernel.models.audit_event import AuditEvent
+    from finance_kernel.models.account import Account
+    from finance_kernel.models.fiscal_period import FiscalPeriod
+    from finance_kernel.models.dimensions import Dimension, DimensionValue
+    from finance_kernel.models.exchange_rate import ExchangeRate
 
     # JournalEntry listeners
     event.remove(JournalEntry, "before_update", _check_journal_entry_immutability)
@@ -220,3 +886,22 @@ def unregister_immutability_listeners():
     # AuditEvent listeners
     event.remove(AuditEvent, "before_update", _check_audit_event_immutability)
     event.remove(AuditEvent, "before_delete", _check_audit_event_delete)
+
+    # Account listeners
+    event.remove(Account, "before_update", _check_account_structural_immutability)
+    event.remove(Account, "before_delete", _check_account_delete)
+
+    # FiscalPeriod listeners
+    event.remove(FiscalPeriod, "before_update", _check_fiscal_period_immutability)
+    event.remove(FiscalPeriod, "before_delete", _check_fiscal_period_delete)
+
+    # Dimension listeners
+    event.remove(Dimension, "before_update", _check_dimension_code_immutability)
+
+    # DimensionValue listeners
+    event.remove(DimensionValue, "before_update", _check_dimension_value_immutability)
+
+    # ExchangeRate listeners
+    event.remove(ExchangeRate, "before_insert", _check_exchange_rate_insert)
+    event.remove(ExchangeRate, "before_update", _check_exchange_rate_immutability)
+    event.remove(ExchangeRate, "before_delete", _check_exchange_rate_delete)

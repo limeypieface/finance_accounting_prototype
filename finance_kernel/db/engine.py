@@ -1,7 +1,7 @@
 """
-SQLite engine and session management.
+Database engine and session management.
 
-Provides thread-safe session handling for the finance kernel.
+Supports both SQLite (for development/testing) and PostgreSQL (for production/concurrency testing).
 """
 
 from contextlib import contextmanager
@@ -11,6 +11,7 @@ from typing import Generator
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool, QueuePool
 
 # Module-level engine and session factory
 _engine: Engine | None = None
@@ -29,7 +30,7 @@ def init_engine(
     echo: bool = False,
 ) -> Engine:
     """
-    Initialize the SQLAlchemy engine.
+    Initialize the SQLAlchemy engine with SQLite.
 
     Args:
         db_path: Path to SQLite database file. If None, uses in-memory database.
@@ -57,6 +58,59 @@ def init_engine(
 
     # Enable foreign keys for SQLite
     event.listen(_engine, "connect", _enable_foreign_keys)
+
+    _SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False)
+
+    return _engine
+
+
+def init_engine_from_url(
+    database_url: str,
+    echo: bool = False,
+    pool_size: int = 20,
+    max_overflow: int = 10,
+    pool_pre_ping: bool = True,
+) -> Engine:
+    """
+    Initialize the SQLAlchemy engine from a database URL.
+
+    Supports PostgreSQL and other databases via URL.
+
+    Args:
+        database_url: Database connection URL (e.g., postgresql://user:pass@host/db)
+        echo: If True, log all SQL statements.
+        pool_size: Number of connections to keep in the pool.
+        max_overflow: Max connections beyond pool_size.
+        pool_pre_ping: If True, test connections before use (handles stale connections).
+
+    Returns:
+        SQLAlchemy Engine instance.
+    """
+    global _engine, _SessionFactory
+
+    # Detect database type from URL
+    is_sqlite = database_url.startswith("sqlite")
+
+    if is_sqlite:
+        # SQLite doesn't support connection pooling the same way
+        _engine = create_engine(
+            database_url,
+            echo=echo,
+            connect_args={"check_same_thread": False},
+        )
+        event.listen(_engine, "connect", _enable_foreign_keys)
+    else:
+        # PostgreSQL and other databases - use connection pooling
+        _engine = create_engine(
+            database_url,
+            echo=echo,
+            poolclass=QueuePool,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            pool_pre_ping=pool_pre_ping,
+            # PostgreSQL-specific: Better handling of concurrent transactions
+            isolation_level="READ COMMITTED",
+        )
 
     _SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False)
 
@@ -122,16 +176,25 @@ def session_scope() -> Generator[Session, None, None]:
         session.close()
 
 
-def create_tables() -> None:
+def create_tables(install_triggers: bool = True) -> None:
     """
     Create all tables defined in the models.
 
     Must be called after all models are imported.
+
+    Args:
+        install_triggers: If True and using PostgreSQL, install database-level
+                         immutability triggers for R10 compliance.
     """
     from finance_kernel.db.base import Base
 
     engine = get_engine()
     Base.metadata.create_all(engine)
+
+    # Install PostgreSQL triggers for defense-in-depth
+    if install_triggers and engine.dialect.name == "postgresql":
+        from finance_kernel.db.triggers import install_immutability_triggers
+        install_immutability_triggers(engine)
 
 
 def drop_tables() -> None:
@@ -141,4 +204,39 @@ def drop_tables() -> None:
     from finance_kernel.db.base import Base
 
     engine = get_engine()
+
+    # Uninstall triggers first (if PostgreSQL)
+    if engine.dialect.name == "postgresql":
+        from finance_kernel.db.triggers import uninstall_immutability_triggers
+        uninstall_immutability_triggers(engine)
+
     Base.metadata.drop_all(engine)
+
+
+def reset_engine() -> None:
+    """
+    Reset the engine and session factory.
+
+    Useful for test cleanup when switching between database backends.
+    """
+    global _engine, _SessionFactory
+
+    if _engine is not None:
+        _engine.dispose()
+        _engine = None
+
+    _SessionFactory = None
+
+
+def is_postgres() -> bool:
+    """Check if the current engine is PostgreSQL."""
+    if _engine is None:
+        return False
+    return _engine.dialect.name == "postgresql"
+
+
+def is_sqlite() -> bool:
+    """Check if the current engine is SQLite."""
+    if _engine is None:
+        return False
+    return _engine.dialect.name == "sqlite"

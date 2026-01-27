@@ -1,1 +1,0 @@
-"""Concrete posting rule implementations."""

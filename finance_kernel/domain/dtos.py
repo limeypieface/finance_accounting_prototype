@@ -17,14 +17,53 @@ Data flow:
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from finance_kernel.domain.values import Currency, ExchangeRate, Money
+
+if TYPE_CHECKING:
+    from finance_kernel.models.account import Account as AccountModel
+    from finance_kernel.models.event import Event as EventModel
+    from finance_kernel.models.exchange_rate import ExchangeRate as ExchangeRateModel
+    from finance_kernel.models.fiscal_period import FiscalPeriod as FiscalPeriodModel
+    from finance_kernel.models.journal import (
+        JournalEntry as JournalEntryModel,
+        JournalLine as JournalLineModel,
+    )
+
+
+def _deep_freeze_dict(d: dict[str, Any]) -> MappingProxyType:
+    """
+    Deep-freeze a dictionary by converting nested dicts to MappingProxyType
+    and nested lists to tuples.
+
+    R2.5 Compliance: Prevents mutation of strategy inputs.
+    """
+    frozen = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            frozen[k] = _deep_freeze_dict(v)
+        elif isinstance(v, list):
+            frozen[k] = tuple(_deep_freeze_value(item) for item in v)
+        else:
+            frozen[k] = v
+    return MappingProxyType(frozen)
+
+
+def _deep_freeze_value(v: Any) -> Any:
+    """Deep-freeze a single value."""
+    if isinstance(v, dict):
+        return _deep_freeze_dict(v)
+    elif isinstance(v, list):
+        return tuple(_deep_freeze_value(item) for item in v)
+    return v
 
 
 class LineSide(str, Enum):
@@ -176,6 +215,8 @@ class EventEnvelope:
 
     Contains all data needed for posting without ORM references.
     This is the input to the posting strategy.
+
+    R2.5 Compliance: Payload is deep-frozen to prevent mutation by strategies.
     """
 
     event_id: UUID
@@ -184,14 +225,45 @@ class EventEnvelope:
     effective_date: date
     actor_id: UUID
     producer: str
-    payload: dict[str, Any]
+    payload: dict[str, Any] | MappingProxyType
     payload_hash: str
     schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        """R2.5: Deep-freeze the payload to prevent mutation by strategies."""
+        if isinstance(self.payload, dict) and not isinstance(self.payload, MappingProxyType):
+            object.__setattr__(self, "payload", _deep_freeze_dict(self.payload))
 
     @property
     def idempotency_key(self) -> str:
         """Generate the idempotency key for this event."""
         return f"{self.producer}:{self.event_type}:{self.event_id}"
+
+    @classmethod
+    def from_model(cls, model: "EventModel") -> "EventEnvelope":
+        """
+        Create an EventEnvelope from an Event ORM model.
+
+        Sindri compatibility: This method follows the from_model() pattern
+        used throughout the Sindri codebase for ORM-to-DTO conversion.
+
+        Args:
+            model: Event ORM model instance.
+
+        Returns:
+            EventEnvelope DTO.
+        """
+        return cls(
+            event_id=model.event_id,
+            event_type=model.event_type,
+            occurred_at=model.occurred_at,
+            effective_date=model.effective_date,
+            actor_id=model.actor_id,
+            producer=model.producer,
+            payload=dict(model.payload) if model.payload else {},
+            payload_hash=model.payload_hash,
+            schema_version=model.schema_version,
+        )
 
 
 @dataclass(frozen=True)
@@ -344,6 +416,54 @@ class JournalEntryRecord:
     posting_rule_version: int = 1
     reversal_of_id: UUID | None = None
 
+    @classmethod
+    def from_model(cls, model: "JournalEntryModel") -> "JournalEntryRecord":
+        """
+        Create a JournalEntryRecord from a JournalEntry ORM model.
+
+        Sindri compatibility: This method follows the from_model() pattern
+        used throughout the Sindri codebase for ORM-to-DTO conversion.
+
+        Args:
+            model: JournalEntry ORM model instance.
+
+        Returns:
+            JournalEntryRecord DTO.
+        """
+        # Convert lines from ORM to DTO
+        lines = tuple(
+            ProposedLine(
+                account_id=line.account_id,
+                account_code=line.account.code if line.account else "",
+                side=LineSide(line.side.value),
+                money=Money.of(line.amount, line.currency),
+                dimensions=dict(line.dimensions) if line.dimensions else None,
+                memo=line.line_memo,
+                is_rounding=line.is_rounding,
+                exchange_rate_id=line.exchange_rate_id,
+                line_seq=line.line_seq,
+            )
+            for line in sorted(model.lines, key=lambda x: x.line_seq)
+        )
+
+        return cls(
+            id=model.id,
+            seq=model.seq or 0,
+            idempotency_key=model.idempotency_key,
+            event_id=model.source_event_id,
+            event_type=model.source_event_type,
+            occurred_at=model.occurred_at,
+            effective_date=model.effective_date,
+            posted_at=model.posted_at or model.created_at,
+            actor_id=model.actor_id,
+            status=EntryStatus(model.status.value),
+            lines=lines,
+            description=model.description,
+            metadata=dict(model.entry_metadata) if model.entry_metadata else None,
+            posting_rule_version=model.posting_rule_version,
+            reversal_of_id=model.reversal_of_id,
+        )
+
 
 @dataclass(frozen=True)
 class ReferenceData:
@@ -355,14 +475,32 @@ class ReferenceData:
     strategies access to the database.
 
     R4 Compliance: Uses Currency and ExchangeRate value objects.
+    R2.5 Compliance: All mutable fields are deep-frozen to prevent mutation.
     """
 
-    account_ids_by_code: dict[str, UUID]
+    account_ids_by_code: dict[str, UUID] | MappingProxyType
     active_account_codes: frozenset[str]
     valid_currencies: frozenset[Currency]  # R4: Currency value objects
-    rounding_account_ids: dict[str, UUID]  # currency code -> rounding account ID
+    rounding_account_ids: dict[str, UUID] | MappingProxyType  # currency code -> rounding account ID
     exchange_rates: tuple[ExchangeRate, ...] | None = None  # R4: ExchangeRate value objects
     required_dimensions: frozenset[str] = field(default_factory=frozenset)
+    # Dimension validation data
+    active_dimensions: frozenset[str] = field(default_factory=frozenset)  # Active dimension codes
+    active_dimension_values: dict[str, frozenset[str]] | MappingProxyType = field(default_factory=dict)  # dim_code -> active value codes
+
+    def __post_init__(self) -> None:
+        """R2.5: Deep-freeze mutable fields to prevent mutation by strategies."""
+        # Freeze account_ids_by_code
+        if isinstance(self.account_ids_by_code, dict) and not isinstance(self.account_ids_by_code, MappingProxyType):
+            object.__setattr__(self, "account_ids_by_code", MappingProxyType(dict(self.account_ids_by_code)))
+
+        # Freeze rounding_account_ids
+        if isinstance(self.rounding_account_ids, dict) and not isinstance(self.rounding_account_ids, MappingProxyType):
+            object.__setattr__(self, "rounding_account_ids", MappingProxyType(dict(self.rounding_account_ids)))
+
+        # Freeze active_dimension_values
+        if isinstance(self.active_dimension_values, dict) and not isinstance(self.active_dimension_values, MappingProxyType):
+            object.__setattr__(self, "active_dimension_values", MappingProxyType(dict(self.active_dimension_values)))
 
     def get_account_id(self, code: str) -> UUID | None:
         """Get account ID by code."""
@@ -413,6 +551,33 @@ class ReferenceData:
                 return rate
         return None
 
+    def is_dimension_active(self, dimension_code: str) -> bool:
+        """Check if a dimension is active."""
+        return dimension_code in self.active_dimensions
+
+    def is_dimension_value_active(self, dimension_code: str, value_code: str) -> bool:
+        """Check if a dimension value is active."""
+        active_values = self.active_dimension_values.get(dimension_code, frozenset())
+        return value_code in active_values
+
+    def validate_dimensions(self, dimensions: dict[str, str] | None) -> list[str]:
+        """
+        Validate dimensions for posting.
+
+        Returns list of error messages (empty if valid).
+        """
+        errors = []
+        if dimensions is None:
+            return errors
+
+        for dim_code, value_code in dimensions.items():
+            if not self.is_dimension_active(dim_code):
+                errors.append(f"Dimension '{dim_code}' is inactive")
+            elif not self.is_dimension_value_active(dim_code, value_code):
+                errors.append(f"Dimension value '{value_code}' for '{dim_code}' is inactive or invalid")
+
+        return errors
+
 
 # =============================================================================
 # Period DTOs (R3 Compliance)
@@ -458,6 +623,32 @@ class FiscalPeriodInfo:
         """Check if a date falls within this period."""
         return self.start_date <= check_date <= self.end_date
 
+    @classmethod
+    def from_model(cls, model: "FiscalPeriodModel") -> "FiscalPeriodInfo":
+        """
+        Create a FiscalPeriodInfo from a FiscalPeriod ORM model.
+
+        Sindri compatibility: This method follows the from_model() pattern
+        used throughout the Sindri codebase for ORM-to-DTO conversion.
+
+        Args:
+            model: FiscalPeriod ORM model instance.
+
+        Returns:
+            FiscalPeriodInfo DTO.
+        """
+        return cls(
+            id=model.id,
+            period_code=model.period_code,
+            name=model.name,
+            start_date=model.start_date,
+            end_date=model.end_date,
+            status=PeriodStatus(model.status.value),
+            allows_adjustments=model.allows_adjustments,
+            closed_at=model.closed_at,
+            closed_by_id=model.closed_by_id,
+        )
+
 
 @dataclass(frozen=True)
 class AccountInfo:
@@ -475,6 +666,31 @@ class AccountInfo:
     is_active: bool
     parent_id: UUID | None = None
     description: str | None = None
+
+    @classmethod
+    def from_model(cls, model: "AccountModel") -> "AccountInfo":
+        """
+        Create an AccountInfo from an Account ORM model.
+
+        Sindri compatibility: This method follows the from_model() pattern
+        used throughout the Sindri codebase for ORM-to-DTO conversion.
+
+        Args:
+            model: Account ORM model instance.
+
+        Returns:
+            AccountInfo DTO.
+        """
+        return cls(
+            id=model.id,
+            account_code=model.code,
+            name=model.name,
+            account_type=model.account_type.value,
+            normal_balance=model.normal_balance.value,
+            is_active=model.is_active,
+            parent_id=model.parent_id,
+            description=None,  # Account model doesn't have description field
+        )
 
 
 @dataclass(frozen=True)
@@ -502,3 +718,32 @@ class ExchangeRateInfo:
     @property
     def rate_value(self) -> Decimal:
         return self.rate.rate
+
+    @classmethod
+    def from_model(cls, model: "ExchangeRateModel") -> "ExchangeRateInfo":
+        """
+        Create an ExchangeRateInfo from an ExchangeRate ORM model.
+
+        Sindri compatibility: This method follows the from_model() pattern
+        used throughout the Sindri codebase for ORM-to-DTO conversion.
+
+        Args:
+            model: ExchangeRate ORM model instance.
+
+        Returns:
+            ExchangeRateInfo DTO.
+        """
+        # Create the ExchangeRate value object
+        rate_value_object = ExchangeRate(
+            from_currency=Currency(model.from_currency),
+            to_currency=Currency(model.to_currency),
+            rate=model.rate,
+            rate_id=model.id,
+        )
+
+        return cls(
+            id=model.id,
+            rate=rate_value_object,
+            effective_at=model.effective_at,
+            source=model.source,
+        )

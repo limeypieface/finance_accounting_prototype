@@ -295,6 +295,7 @@ class PostingOrchestrator:
         event_id: UUID,
         required_dimensions: set[str] | None = None,
         strategy_version: int | None = None,
+        is_adjustment: bool = False,
     ) -> PostingResult:
         """
         Post an already-ingested event.
@@ -304,10 +305,13 @@ class PostingOrchestrator:
         - Replay scenarios
         - Re-posting with different strategy version
 
+        R13 Compliance: Enforces allows_adjustments policy when is_adjustment=True.
+
         Args:
             event_id: ID of the already-ingested event.
             required_dimensions: Optional dimension codes.
             strategy_version: Optional specific strategy version (for replay).
+            is_adjustment: Whether this is an adjusting entry (R13).
 
         Returns:
             PostingResult with status and journal entry details.
@@ -322,9 +326,22 @@ class PostingOrchestrator:
                 message="Event not found",
             )
 
-        # Check period
+        # Check period is open (and allows adjustments if applicable)
+        # R13 Compliance: Enforces allows_adjustments policy (same as post_event)
+        from finance_kernel.exceptions import AdjustmentsNotAllowedError
+
         try:
-            self._period_service.validate_effective_date(event_envelope.effective_date)
+            self._period_service.validate_adjustment_allowed(
+                event_envelope.effective_date,
+                is_adjustment=is_adjustment,
+            )
+        except AdjustmentsNotAllowedError as e:
+            # R13: Adjustment policy violation
+            return PostingResult(
+                status=PostingStatus.ADJUSTMENTS_NOT_ALLOWED,
+                event_id=event_id,
+                message=str(e),
+            )
         except Exception as e:
             return PostingResult(
                 status=PostingStatus.PERIOD_CLOSED,

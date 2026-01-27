@@ -203,7 +203,12 @@ class BasePostingStrategy(PostingStrategy):
         if balance_errors:
             return StrategyResult.failure(*balance_errors)
 
-        # 6. Create proposed entry
+        # 6. Validate rounding invariants (fraud prevention)
+        rounding_errors = self._validate_rounding_invariants(balanced_lines)
+        if rounding_errors:
+            return StrategyResult.failure(*rounding_errors)
+
+        # 7. Create proposed entry
         try:
             entry = ProposedJournalEntry(
                 event_envelope=event,
@@ -388,6 +393,78 @@ class BasePostingStrategy(PostingStrategy):
             result_lines.append(rounding_line)
 
         return result_lines, errors
+
+    def _validate_rounding_invariants(
+        self,
+        lines: list[ProposedLine],
+    ) -> list[ValidationError]:
+        """
+        Validate rounding invariants to prevent fraud.
+
+        Enforces:
+        1. At most ONE line can have is_rounding=True per entry
+        2. Rounding amount must be < 0.01 per non-rounding line
+
+        These invariants prevent:
+        - Multiple hidden rounding lines (could inject extra amounts)
+        - Large "rounding" amounts (could hide embezzlement)
+
+        Args:
+            lines: The proposed lines to validate.
+
+        Returns:
+            List of validation errors (empty if valid).
+        """
+        errors = []
+
+        # Separate rounding and non-rounding lines
+        rounding_lines = [line for line in lines if line.is_rounding]
+        non_rounding_lines = [line for line in lines if not line.is_rounding]
+
+        # Invariant 1: At most ONE rounding line per entry
+        if len(rounding_lines) > 1:
+            errors.append(
+                ValidationError(
+                    code="MULTIPLE_ROUNDING_LINES",
+                    message=(
+                        f"Entry has {len(rounding_lines)} rounding lines. "
+                        f"At most ONE line can have is_rounding=True."
+                    ),
+                    details={
+                        "rounding_count": len(rounding_lines),
+                        "rounding_amounts": [str(line.amount) for line in rounding_lines],
+                    },
+                )
+            )
+
+        # Invariant 2: Rounding amount threshold
+        # Max allowed: 0.01 per non-rounding line (minimum 0.01)
+        if rounding_lines:
+            max_allowed = max(
+                Decimal("0.01"),
+                Decimal("0.01") * len(non_rounding_lines),
+            )
+
+            for i, rounding_line in enumerate(rounding_lines):
+                if rounding_line.amount > max_allowed:
+                    errors.append(
+                        ValidationError(
+                            code="ROUNDING_AMOUNT_EXCEEDED",
+                            message=(
+                                f"Rounding amount {rounding_line.amount} {rounding_line.currency} "
+                                f"exceeds maximum allowed {max_allowed}. "
+                                f"Large 'rounding' is not rounding - it may indicate fraud."
+                            ),
+                            details={
+                                "rounding_amount": str(rounding_line.amount),
+                                "currency": rounding_line.currency,
+                                "max_allowed": str(max_allowed),
+                                "non_rounding_line_count": len(non_rounding_lines),
+                            },
+                        )
+                    )
+
+        return errors
 
     def _get_description(self, event: EventEnvelope) -> str | None:
         """Get description from event payload."""

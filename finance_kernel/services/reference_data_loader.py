@@ -17,6 +17,7 @@ from finance_kernel.domain.currency import CurrencyRegistry
 from finance_kernel.domain.dtos import ReferenceData
 from finance_kernel.domain.values import Currency, ExchangeRate as ExchangeRateValue
 from finance_kernel.models.account import Account, AccountTag
+from finance_kernel.models.dimensions import Dimension, DimensionValue
 from finance_kernel.models.exchange_rate import ExchangeRate
 
 
@@ -80,6 +81,9 @@ class ReferenceDataLoader:
             Currency(code) for code in CurrencyRegistry.all_codes()
         )
 
+        # Load dimension data for validation
+        active_dimensions, active_dimension_values = self._load_dimension_data()
+
         return ReferenceData(
             account_ids_by_code=account_ids_by_code,
             active_account_codes=active_account_codes,
@@ -87,6 +91,8 @@ class ReferenceDataLoader:
             rounding_account_ids=rounding_account_ids,
             exchange_rates=exchange_rates,
             required_dimensions=required_dimensions,
+            active_dimensions=active_dimensions,
+            active_dimension_values=active_dimension_values,
         )
 
     def _load_accounts(self) -> list[Account]:
@@ -153,6 +159,36 @@ class ReferenceDataLoader:
                 seen.add(key)
 
         return tuple(rate_values)
+
+    def _load_dimension_data(self) -> tuple[frozenset[str], dict[str, frozenset[str]]]:
+        """
+        Load dimension data for validation.
+
+        Returns:
+            Tuple of (active_dimensions, active_dimension_values)
+            - active_dimensions: frozenset of active dimension codes
+            - active_dimension_values: dict mapping dimension_code -> frozenset of active value codes
+        """
+        # Load active dimensions
+        dimensions = self._session.execute(
+            select(Dimension).where(Dimension.is_active == True)  # noqa: E712
+        ).scalars().all()
+        active_dimensions = frozenset(dim.code for dim in dimensions)
+
+        # Load active dimension values grouped by dimension
+        dimension_values = self._session.execute(
+            select(DimensionValue).where(DimensionValue.is_active == True)  # noqa: E712
+        ).scalars().all()
+
+        active_dimension_values: dict[str, frozenset[str]] = {}
+        for dv in dimension_values:
+            if dv.dimension_code not in active_dimension_values:
+                active_dimension_values[dv.dimension_code] = frozenset()
+            active_dimension_values[dv.dimension_code] = (
+                active_dimension_values[dv.dimension_code] | {dv.code}
+            )
+
+        return active_dimensions, active_dimension_values
 
     def load_for_currencies(
         self,
