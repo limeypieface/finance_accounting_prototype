@@ -118,6 +118,15 @@ These invariants are **non-negotiable**. The system is designed to make violatio
 |------|------|-------------|-------------|
 | **R20** | Test class mapping | Every invariant must have: unit tests, concurrency tests, crash tests, replay tests | test_r20_test_class_mapping.py |
 
+### Planned Invariants (TODO)
+
+| Rule | Name | Description | Enforcement |
+|------|------|-------------|-------------|
+| **R21** | Reference snapshot determinism | Every posted JournalEntry must record immutable version identifiers for all reference data used during posting (chart_of_accounts_version, dimension_schema_version, rounding_policy_version, currency_registry_version) | Persist version fields on JournalEntry; validate presence at post time |
+| **R22** | Rounding line isolation | Only the Bookkeeper may generate `is_rounding=true` JournalLines. Strategies are prohibited from targeting rounding accounts directly. | Strategy interface guardrails; runtime validation in Bookkeeper; DB trigger |
+| **R23** | Strategy lifecycle governance | Each strategy must declare `supported_from_version`, `supported_to_version` (nullable), and `replay_policy` (strict/permissive). Replay must enforce compatibility. | StrategyRegistry validation at registration; replay validator |
+| **R24** | Canonical ledger hash | A deterministic, canonical hash of the ledger must be computable over sorted (account_id, currency, dimension tuple, seq) and stable across rebuilds. | LedgerSelector canonicalization; hash generator; CI determinism tests |
+
 ### Invariant Test Coverage
 
 All invariants have comprehensive test coverage across four categories:
