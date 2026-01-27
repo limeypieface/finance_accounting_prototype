@@ -68,6 +68,55 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "postgres: mark test as requiring PostgreSQL"
     )
+    config.addinivalue_line(
+        "markers", "slow_locks: mark test as potentially waiting for DB locks"
+    )
+
+
+def _kill_orphaned_connections():
+    """
+    Kill any orphaned database connections from previous test runs.
+
+    This prevents tests from hanging when previous runs left connections
+    open with uncommitted transactions holding locks.
+    """
+    import psycopg2
+    try:
+        # Connect to postgres database (not the test database) to kill connections
+        conn = psycopg2.connect(
+            dbname="postgres",
+            user="finance",
+            host="localhost",
+            port=5432,
+        )
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT pg_terminate_backend(pid)
+            FROM pg_stat_activity
+            WHERE datname = 'finance_kernel_test'
+            AND pid <> pg_backend_pid()
+        """)
+        terminated = cur.rowcount
+        cur.close()
+        conn.close()
+        if terminated > 0:
+            print(f"\n[conftest] Killed {terminated} orphaned DB connection(s)")
+    except Exception as e:
+        # Don't fail if we can't connect - DB might not be running
+        print(f"\n[conftest] Could not clean orphaned connections: {e}")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_orphaned_connections():
+    """
+    Session-scoped fixture that runs once at the start of the test session
+    to kill any orphaned database connections.
+    """
+    _kill_orphaned_connections()
+    yield
+    # Also clean up at the end
+    _kill_orphaned_connections()
 
 
 def get_database_url() -> str:
