@@ -54,6 +54,7 @@ markers = [
     "replay: Replay and determinism tests",
     "audit: Audit trail tests",
     "postgres: Tests requiring PostgreSQL (true concurrency)",
+    "slow_locks: Tests that wait for database locks (may hang if orphaned connections exist)",
 ]
 
 [tool.black]

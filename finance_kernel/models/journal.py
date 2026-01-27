@@ -144,6 +144,36 @@ class JournalEntry(TrackedBase):
         default=1,
     )
 
+    # ==========================================================================
+    # R21: Reference Snapshot Determinism
+    # Every posted JournalEntry must record immutable version identifiers for
+    # all reference data used during posting. This enables deterministic replay.
+    # ==========================================================================
+
+    # Chart of accounts version at time of posting
+    coa_version: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,  # Nullable for draft entries, required at post time
+    )
+
+    # Dimension schema version at time of posting
+    dimension_schema_version: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # Rounding policy version at time of posting
+    rounding_policy_version: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # Currency registry version at time of posting
+    currency_registry_version: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
     # Monotonic global sequence number (assigned at posting)
     seq: Mapped[int | None] = mapped_column(
         BigInteger,

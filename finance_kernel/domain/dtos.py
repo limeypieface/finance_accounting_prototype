@@ -307,6 +307,8 @@ class ProposedJournalEntry:
     account_ids, and NO side effects.
 
     This is deterministic: same input always produces same output.
+
+    R21 Compliance: Includes reference snapshot versions for deterministic replay.
     """
 
     event_envelope: EventEnvelope
@@ -315,6 +317,12 @@ class ProposedJournalEntry:
     metadata: dict[str, Any] | None = None
     posting_rule_version: int = 1
     rounding_rule_version: int = 1
+
+    # R21: Reference snapshot version identifiers (required for deterministic replay)
+    coa_version: int = 1
+    dimension_schema_version: int = 1
+    rounding_policy_version: int = 1
+    currency_registry_version: int = 1
 
     def __post_init__(self) -> None:
         # Validation is performed by the strategy, but we enforce
@@ -398,6 +406,8 @@ class JournalEntryRecord:
     - Assigned sequence number
     - Posted timestamp
     - Final status
+
+    R21 Compliance: Includes reference snapshot versions for deterministic replay.
     """
 
     id: UUID
@@ -415,6 +425,12 @@ class JournalEntryRecord:
     metadata: dict[str, Any] | None = None
     posting_rule_version: int = 1
     reversal_of_id: UUID | None = None
+
+    # R21: Reference snapshot version identifiers
+    coa_version: int | None = None
+    dimension_schema_version: int | None = None
+    rounding_policy_version: int | None = None
+    currency_registry_version: int | None = None
 
     @classmethod
     def from_model(cls, model: "JournalEntryModel") -> "JournalEntryRecord":
@@ -462,6 +478,11 @@ class JournalEntryRecord:
             metadata=dict(model.entry_metadata) if model.entry_metadata else None,
             posting_rule_version=model.posting_rule_version,
             reversal_of_id=model.reversal_of_id,
+            # R21: Reference snapshot versions
+            coa_version=model.coa_version,
+            dimension_schema_version=model.dimension_schema_version,
+            rounding_policy_version=model.rounding_policy_version,
+            currency_registry_version=model.currency_registry_version,
         )
 
 
@@ -476,6 +497,7 @@ class ReferenceData:
 
     R4 Compliance: Uses Currency and ExchangeRate value objects.
     R2.5 Compliance: All mutable fields are deep-frozen to prevent mutation.
+    R21 Compliance: Includes version identifiers for deterministic replay.
     """
 
     account_ids_by_code: dict[str, UUID] | MappingProxyType
@@ -487,6 +509,16 @@ class ReferenceData:
     # Dimension validation data
     active_dimensions: frozenset[str] = field(default_factory=frozenset)  # Active dimension codes
     active_dimension_values: dict[str, frozenset[str]] | MappingProxyType = field(default_factory=dict)  # dim_code -> active value codes
+
+    # ==========================================================================
+    # R21: Reference Snapshot Version Identifiers
+    # These versions must be recorded on JournalEntry at post time for
+    # deterministic replay.
+    # ==========================================================================
+    coa_version: int = 1  # Chart of accounts version
+    dimension_schema_version: int = 1  # Dimension schema version
+    rounding_policy_version: int = 1  # Rounding policy version
+    currency_registry_version: int = 1  # Currency registry version
 
     def __post_init__(self) -> None:
         """R2.5: Deep-freeze mutable fields to prevent mutation by strategies."""

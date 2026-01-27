@@ -118,14 +118,14 @@ These invariants are **non-negotiable**. The system is designed to make violatio
 |------|------|-------------|-------------|
 | **R20** | Test class mapping | Every invariant must have: unit tests, concurrency tests, crash tests, replay tests | test_r20_test_class_mapping.py |
 
-### Planned Invariants (TODO)
+### Replay & Determinism Invariants
 
 | Rule | Name | Description | Enforcement |
 |------|------|-------------|-------------|
-| **R21** | Reference snapshot determinism | Every posted JournalEntry must record immutable version identifiers for all reference data used during posting (chart_of_accounts_version, dimension_schema_version, rounding_policy_version, currency_registry_version) | Persist version fields on JournalEntry; validate presence at post time |
-| **R22** | Rounding line isolation | Only the Bookkeeper may generate `is_rounding=true` JournalLines. Strategies are prohibited from targeting rounding accounts directly. | Strategy interface guardrails; runtime validation in Bookkeeper; DB trigger |
-| **R23** | Strategy lifecycle governance | Each strategy must declare `supported_from_version`, `supported_to_version` (nullable), and `replay_policy` (strict/permissive). Replay must enforce compatibility. | StrategyRegistry validation at registration; replay validator |
-| **R24** | Canonical ledger hash | A deterministic, canonical hash of the ledger must be computable over sorted (account_id, currency, dimension tuple, seq) and stable across rebuilds. | LedgerSelector canonicalization; hash generator; CI determinism tests |
+| **R21** | Reference snapshot determinism | Every posted JournalEntry must record immutable version identifiers for all reference data used during posting (coa_version, dimension_schema_version, rounding_policy_version, currency_registry_version) | JournalEntry model fields; LedgerService._validate_reference_snapshots(); MissingReferenceSnapshotError |
+| **R22** | Rounding line isolation | Only the Bookkeeper may generate `is_rounding=true` JournalLines. Strategies are prohibited from targeting rounding accounts directly. | BasePostingStrategy._validate_no_rounding_lines(); DB triggers (06_rounding.sql) |
+| **R23** | Strategy lifecycle governance | Each strategy must declare `supported_from_version`, `supported_to_version` (nullable), and `replay_policy` (strict/permissive). Replay must enforce compatibility. | PostingStrategy lifecycle properties; StrategyRegistry._validate_lifecycle(); StrategyRegistry.get_for_replay() |
+| **R24** | Canonical ledger hash | A deterministic, canonical hash of the ledger must be computable over sorted (account_id, currency, dimension tuple, seq) and stable across rebuilds. | LedgerSelector.canonical_hash(); LedgerSelector.verify_canonical_hash() |
 
 ### Invariant Test Coverage
 
@@ -337,7 +337,7 @@ with get_session() as session:
 ### Creating a Posting Strategy
 
 ```python
-from finance_kernel.domain.strategy import BasePostingStrategy
+from finance_kernel.domain.strategy import BasePostingStrategy, ReplayPolicy
 from finance_kernel.domain.strategy_registry import StrategyRegistry
 
 class InvoiceCreatedStrategy(BasePostingStrategy):
@@ -349,14 +349,28 @@ class InvoiceCreatedStrategy(BasePostingStrategy):
     def version(self) -> int:
         return 1
 
-    def _compute_line_specs(self, event: EventEnvelope, ref: ReferenceData) -> tuple[LineSpec, ...]:
+    # R23: Lifecycle governance (optional - defaults shown)
+    @property
+    def supported_from_version(self) -> int:
+        return 1  # Supports all system versions from v1
+
+    @property
+    def supported_to_version(self) -> int | None:
+        return None  # Still current (not deprecated)
+
+    @property
+    def replay_policy(self) -> ReplayPolicy:
+        return ReplayPolicy.STRICT  # Replay must use exact version
+
+    def _compute_line_specs(self, event: EventEnvelope, ref: ReferenceData) -> list[LineSpec]:
         amount = Money.of(Decimal(event.payload["amount"]), event.payload["currency"])
-        return (
+        # R22: Never set is_rounding=True - only Bookkeeper can do that
+        return [
             LineSpec(account_code="1200", side=LineSide.DEBIT, money=amount),   # AR
             LineSpec(account_code="4000", side=LineSide.CREDIT, money=amount),  # Revenue
-        )
+        ]
 
-# Register at application startup
+# Register at application startup (R23: validates lifecycle at registration)
 StrategyRegistry.register(InvoiceCreatedStrategy())
 ```
 

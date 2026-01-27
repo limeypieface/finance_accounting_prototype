@@ -6,9 +6,14 @@ R20. Test class mapping - Concurrency tests (race safety)
 These tests verify that invariants hold under concurrent access patterns.
 Note: SQLite in-memory mode limits true multi-process testing, so these
 tests use sequential simulation of concurrent scenarios.
+
+Run with: pytest tests/concurrency/test_race_safety.py -v
+Skip with: pytest -m "not slow_locks"
 """
 
 import pytest
+
+pytestmark = pytest.mark.slow_locks
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from decimal import Decimal

@@ -33,7 +33,7 @@ from finance_kernel.models.account import Account, AccountType, NormalBalance, A
 from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
 
 
-pytestmark = pytest.mark.postgres
+pytestmark = [pytest.mark.postgres, pytest.mark.slow_locks]
 
 
 def cleanup_test_data(session):

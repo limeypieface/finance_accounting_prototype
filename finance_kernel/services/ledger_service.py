@@ -32,6 +32,7 @@ from finance_kernel.domain.dtos import (
     ProposedLine,
 )
 from finance_kernel.exceptions import (
+    MissingReferenceSnapshotError,
     MultipleRoundingLinesError,
     RoundingAmountExceededError,
 )
@@ -210,6 +211,11 @@ class LedgerService:
             description=proposed.description,
             entry_metadata=proposed.metadata,
             created_by_id=event.actor_id,
+            # R21: Reference snapshot version identifiers for deterministic replay
+            coa_version=proposed.coa_version,
+            dimension_schema_version=proposed.dimension_schema_version,
+            rounding_policy_version=proposed.rounding_policy_version,
+            currency_registry_version=proposed.currency_registry_version,
         )
 
         self._session.add(entry)
@@ -304,12 +310,48 @@ class LedgerService:
                     currency=rounding_line.currency,
                 )
 
+    def _validate_reference_snapshots(
+        self,
+        entry: JournalEntry,
+    ) -> None:
+        """
+        R21: Validate reference snapshot versions are present at post time.
+
+        Every posted JournalEntry must record immutable version identifiers
+        for all reference data used during posting.
+
+        Args:
+            entry: The journal entry being posted.
+
+        Raises:
+            MissingReferenceSnapshotError: If required fields are missing.
+        """
+        missing_fields = []
+
+        if entry.coa_version is None:
+            missing_fields.append("coa_version")
+        if entry.dimension_schema_version is None:
+            missing_fields.append("dimension_schema_version")
+        if entry.rounding_policy_version is None:
+            missing_fields.append("rounding_policy_version")
+        if entry.currency_registry_version is None:
+            missing_fields.append("currency_registry_version")
+
+        if missing_fields:
+            raise MissingReferenceSnapshotError(
+                entry_id=str(entry.id),
+                missing_fields=missing_fields,
+            )
+
     def _finalize_posting(
         self,
         entry: JournalEntry,
         proposed: ProposedJournalEntry,
     ) -> LedgerResult:
         """Assign sequence, set status to posted, create audit."""
+        # R21: Validate reference snapshots are present before posting
+        self._validate_reference_snapshots(entry)
+
         # Assign sequence number (transactional)
         seq = self._sequence_service.next_value(SequenceService.JOURNAL_ENTRY)
         entry.seq = seq
@@ -329,7 +371,7 @@ class LedgerService:
                 line_count=len(proposed.lines),
             )
 
-        # Build result record
+        # Build result record (R21: Include reference snapshot versions)
         record = JournalEntryRecord(
             id=entry.id,
             seq=seq,
@@ -345,6 +387,11 @@ class LedgerService:
             description=proposed.description,
             metadata=proposed.metadata,
             posting_rule_version=proposed.posting_rule_version,
+            # R21: Reference snapshot versions
+            coa_version=entry.coa_version,
+            dimension_schema_version=entry.dimension_schema_version,
+            rounding_policy_version=entry.rounding_policy_version,
+            currency_registry_version=entry.currency_registry_version,
         )
 
         return LedgerResult.success(record)

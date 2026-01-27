@@ -6,8 +6,11 @@ Provides read-only access to the ledger with support for:
 - Trial balance computation
 - Account balance queries
 - Dimension filtering
+- R24: Canonical ledger hash computation
 """
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -379,3 +382,190 @@ class LedgerSelector(BaseSelector[JournalLine]):
             result.debit_total or Decimal("0"),
             result.credit_total or Decimal("0"),
         )
+
+    # =========================================================================
+    # R24: Canonical Ledger Hash
+    # =========================================================================
+
+    def canonical_hash(
+        self,
+        as_of_date: date | None = None,
+        currency: str | None = None,
+    ) -> str:
+        """
+        Compute a deterministic, canonical hash of the ledger (R24).
+
+        The hash is computed over sorted (account_id, currency, dimensions, seq)
+        and is stable across rebuilds. This enables:
+        - Verifying ledger consistency after replay
+        - Detecting tampering or corruption
+        - Validating distributed ledger agreement
+
+        Args:
+            as_of_date: Optional cutoff date for the hash.
+            currency: Optional currency filter.
+
+        Returns:
+            SHA-256 hash of the canonical ledger representation.
+        """
+        canonical_lines = self._get_canonical_lines(as_of_date, currency)
+        return self._compute_hash(canonical_lines)
+
+    def _get_canonical_lines(
+        self,
+        as_of_date: date | None = None,
+        currency: str | None = None,
+    ) -> list[dict]:
+        """
+        Get lines in canonical order for hashing (R24).
+
+        Canonical order: sorted by (account_id, currency, dimensions_json, seq)
+        This ensures the same ledger state always produces the same hash.
+
+        Args:
+            as_of_date: Optional cutoff date.
+            currency: Optional currency filter.
+
+        Returns:
+            List of line dictionaries in canonical order.
+        """
+        # Query all posted lines
+        query = (
+            select(
+                JournalLine.id,
+                JournalLine.journal_entry_id,
+                JournalLine.account_id,
+                JournalLine.side,
+                JournalLine.amount,
+                JournalLine.currency,
+                JournalLine.dimensions,
+                JournalLine.is_rounding,
+                JournalLine.line_seq,
+                JournalEntry.seq.label("entry_seq"),
+            )
+            .join(JournalEntry)
+            .where(JournalEntry.status == JournalEntryStatus.POSTED)
+        )
+
+        if as_of_date is not None:
+            query = query.where(JournalEntry.effective_date <= as_of_date)
+
+        if currency is not None:
+            query = query.where(JournalLine.currency == currency)
+
+        # Order by entry seq first (global ordering), then line seq within entry
+        query = query.order_by(JournalEntry.seq, JournalLine.line_seq)
+
+        results = self.session.execute(query).all()
+
+        # Build canonical representations
+        canonical_lines = []
+        for row in results:
+            # Canonicalize dimensions: sorted keys, JSON serialized
+            dims_canonical = self._canonicalize_dimensions(row.dimensions)
+
+            canonical_lines.append({
+                "account_id": str(row.account_id),
+                "currency": row.currency,
+                "dimensions": dims_canonical,
+                "entry_seq": row.entry_seq,
+                "line_seq": row.line_seq,
+                "side": row.side.value,
+                "amount": str(row.amount),
+                "is_rounding": row.is_rounding,
+            })
+
+        # Sort by (account_id, currency, dimensions, entry_seq, line_seq)
+        canonical_lines.sort(key=lambda x: (
+            x["account_id"],
+            x["currency"],
+            x["dimensions"],
+            x["entry_seq"],
+            x["line_seq"],
+        ))
+
+        return canonical_lines
+
+    def _canonicalize_dimensions(self, dimensions: dict | None) -> str:
+        """
+        Canonicalize dimensions to a deterministic string (R24).
+
+        Ensures the same dimension set always produces the same string
+        regardless of dict key ordering in Python.
+
+        Args:
+            dimensions: The dimensions dict or None.
+
+        Returns:
+            JSON string with sorted keys, or empty string if None.
+        """
+        if dimensions is None or not dimensions:
+            return ""
+        # Sort keys and serialize to JSON
+        return json.dumps(dimensions, sort_keys=True, separators=(",", ":"))
+
+    def _compute_hash(self, canonical_lines: list[dict]) -> str:
+        """
+        Compute SHA-256 hash of canonical lines (R24).
+
+        Args:
+            canonical_lines: Lines in canonical order.
+
+        Returns:
+            Hex-encoded SHA-256 hash.
+        """
+        hasher = hashlib.sha256()
+
+        for line in canonical_lines:
+            # Create deterministic string representation
+            line_str = json.dumps(line, sort_keys=True, separators=(",", ":"))
+            hasher.update(line_str.encode("utf-8"))
+            hasher.update(b"\n")  # Line separator
+
+        return hasher.hexdigest()
+
+    def verify_canonical_hash(
+        self,
+        expected_hash: str,
+        as_of_date: date | None = None,
+        currency: str | None = None,
+    ) -> bool:
+        """
+        Verify ledger matches an expected canonical hash (R24).
+
+        Useful for:
+        - Post-replay verification
+        - Distributed consistency checks
+        - Audit verification
+
+        Args:
+            expected_hash: The expected hash value.
+            as_of_date: Optional cutoff date.
+            currency: Optional currency filter.
+
+        Returns:
+            True if hashes match, False otherwise.
+        """
+        actual_hash = self.canonical_hash(as_of_date, currency)
+        return actual_hash == expected_hash
+
+    def get_canonical_representation(
+        self,
+        as_of_date: date | None = None,
+        currency: str | None = None,
+    ) -> tuple[str, list[dict]]:
+        """
+        Get both the hash and the canonical representation (R24).
+
+        Useful for debugging and audit purposes.
+
+        Args:
+            as_of_date: Optional cutoff date.
+            currency: Optional currency filter.
+
+        Returns:
+            Tuple of (hash, canonical_lines).
+        """
+        canonical_lines = self._get_canonical_lines(as_of_date, currency)
+        hash_value = self._compute_hash(canonical_lines)
+        return hash_value, canonical_lines

@@ -750,6 +750,93 @@ class RoundingAmountExceededError(RoundingError):
         )
 
 
+# Reference Snapshot related exceptions
+
+
+class ReferenceSnapshotError(FinanceKernelError):
+    """Base exception for reference snapshot related errors."""
+
+    code: str = "REFERENCE_SNAPSHOT_ERROR"
+
+
+class MissingReferenceSnapshotError(ReferenceSnapshotError):
+    """
+    Posted journal entry is missing required reference snapshot version identifiers.
+
+    R21 Compliance: Every posted JournalEntry must record immutable version
+    identifiers for all reference data used during posting. This enables
+    deterministic replay.
+    """
+
+    code: str = "MISSING_REFERENCE_SNAPSHOT"
+
+    def __init__(self, entry_id: str, missing_fields: list[str]):
+        self.entry_id = entry_id
+        self.missing_fields = missing_fields
+        super().__init__(
+            f"Journal entry {entry_id} is missing required reference snapshot fields: "
+            f"{', '.join(missing_fields)}. R21 requires all reference data versions "
+            "to be recorded at post time for deterministic replay."
+        )
+
+
+# Strategy lifecycle related exceptions
+
+
+class StrategyLifecycleError(FinanceKernelError):
+    """Base exception for strategy lifecycle related errors."""
+
+    code: str = "STRATEGY_LIFECYCLE_ERROR"
+
+
+class StrategyVersionError(StrategyLifecycleError):
+    """
+    Strategy version is outside its supported range.
+
+    R23 Compliance: Each strategy declares supported_from_version and
+    supported_to_version (nullable). Replay must enforce compatibility.
+    """
+
+    code: str = "STRATEGY_VERSION_OUT_OF_RANGE"
+
+    def __init__(
+        self,
+        event_type: str,
+        strategy_version: int,
+        supported_from: int,
+        supported_to: int | None,
+    ):
+        self.event_type = event_type
+        self.strategy_version = strategy_version
+        self.supported_from = supported_from
+        self.supported_to = supported_to
+        to_str = str(supported_to) if supported_to else "current"
+        super().__init__(
+            f"Strategy version {strategy_version} for {event_type} is outside "
+            f"supported range [{supported_from}, {to_str}]"
+        )
+
+
+class StrategyRoundingViolationError(StrategyLifecycleError):
+    """
+    Strategy attempted to create rounding lines directly.
+
+    R22 Compliance: Only the Bookkeeper may generate is_rounding=true
+    JournalLines. Strategies are prohibited from targeting rounding
+    accounts directly.
+    """
+
+    code: str = "STRATEGY_ROUNDING_VIOLATION"
+
+    def __init__(self, event_type: str, strategy_version: int):
+        self.event_type = event_type
+        self.strategy_version = strategy_version
+        super().__init__(
+            f"Strategy {event_type} v{strategy_version} attempted to create rounding lines. "
+            "Only the Bookkeeper may generate is_rounding=true JournalLines (R22)."
+        )
+
+
 # Exchange Rate related exceptions
 
 

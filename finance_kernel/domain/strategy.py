@@ -14,6 +14,7 @@ All dependencies are passed in as ReferenceData.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from finance_kernel.domain.dtos import (
@@ -31,6 +32,22 @@ from finance_kernel.domain.values import Money
 
 if TYPE_CHECKING:
     pass
+
+
+# =============================================================================
+# R23: Strategy Lifecycle Governance
+# =============================================================================
+
+
+class ReplayPolicy(str, Enum):
+    """
+    Replay policy for a strategy (R23).
+
+    Determines how the replay system handles version mismatches.
+    """
+
+    STRICT = "strict"  # Replay must use exact same version that was used originally
+    PERMISSIVE = "permissive"  # Replay can use any compatible version
 
 
 @dataclass(frozen=True)
@@ -72,6 +89,8 @@ class PostingStrategy(ABC):
     - Pure: No side effects
     - Deterministic: Same input always produces same output
     - Immutable: No internal state changes
+
+    R23 Compliance: Strategies declare lifecycle metadata for replay governance.
     """
 
     @property
@@ -85,6 +104,62 @@ class PostingStrategy(ABC):
     def version(self) -> int:
         """Version of this strategy (for replay)."""
         ...
+
+    # =========================================================================
+    # R23: Strategy Lifecycle Governance
+    # =========================================================================
+
+    @property
+    def supported_from_version(self) -> int:
+        """
+        Minimum system version this strategy supports (R23).
+
+        For replay: if an event was originally posted when system version < this,
+        the replay system should use an older version of this strategy.
+
+        Default: 1 (supports all versions from the beginning)
+        """
+        return 1
+
+    @property
+    def supported_to_version(self) -> int | None:
+        """
+        Maximum system version this strategy supports, or None for "current" (R23).
+
+        If not None, this strategy is deprecated and should not be used for
+        new postings when system version > this.
+
+        Default: None (still current, no deprecation)
+        """
+        return None
+
+    @property
+    def replay_policy(self) -> ReplayPolicy:
+        """
+        Replay policy for this strategy (R23).
+
+        - STRICT: Replay must use exact same strategy version
+        - PERMISSIVE: Replay can use any compatible version
+
+        Default: STRICT (safest for financial systems)
+        """
+        return ReplayPolicy.STRICT
+
+    def is_compatible_with_system_version(self, system_version: int) -> bool:
+        """
+        Check if this strategy is compatible with a given system version (R23).
+
+        Args:
+            system_version: The system version to check against.
+
+        Returns:
+            True if compatible, False otherwise.
+        """
+        if system_version < self.supported_from_version:
+            return False
+        if self.supported_to_version is not None and system_version > self.supported_to_version:
+            return False
+        return True
 
     @abstractmethod
     def propose(
@@ -177,6 +252,12 @@ class BasePostingStrategy(PostingStrategy):
                 )
             )
 
+        # R22: Validate strategy did not attempt to create rounding lines
+        # Only the Bookkeeper (_balance_and_round) may generate is_rounding=True lines
+        rounding_violation = self._validate_no_rounding_lines(line_specs)
+        if rounding_violation:
+            return StrategyResult.failure(rounding_violation)
+
         # 2. Validate currencies
         currency_errors = self._validate_currencies(line_specs, reference_data)
         if currency_errors:
@@ -208,7 +289,7 @@ class BasePostingStrategy(PostingStrategy):
         if rounding_errors:
             return StrategyResult.failure(*rounding_errors)
 
-        # 7. Create proposed entry
+        # 7. Create proposed entry (R21: Include reference snapshot versions)
         try:
             entry = ProposedJournalEntry(
                 event_envelope=event,
@@ -217,12 +298,52 @@ class BasePostingStrategy(PostingStrategy):
                 metadata=self._get_metadata(event),
                 posting_rule_version=self.version,
                 rounding_rule_version=1,  # Rounding is versioned separately
+                # R21: Reference snapshot version identifiers for deterministic replay
+                coa_version=reference_data.coa_version,
+                dimension_schema_version=reference_data.dimension_schema_version,
+                rounding_policy_version=reference_data.rounding_policy_version,
+                currency_registry_version=reference_data.currency_registry_version,
             )
             return StrategyResult.success(entry)
         except ValueError as e:
             return StrategyResult.failure(
                 ValidationError(code="INVALID_ENTRY", message=str(e))
             )
+
+    def _validate_no_rounding_lines(
+        self,
+        lines: list[LineSpec],
+    ) -> ValidationError | None:
+        """
+        R22: Validate strategy did not create rounding lines.
+
+        Only the Bookkeeper may generate is_rounding=True JournalLines.
+        Strategies are prohibited from targeting rounding accounts directly.
+        This prevents strategies from injecting hidden amounts via fake rounding.
+
+        Args:
+            lines: The line specs computed by the strategy.
+
+        Returns:
+            ValidationError if violation detected, None otherwise.
+        """
+        for i, line in enumerate(lines):
+            if line.is_rounding:
+                return ValidationError(
+                    code="STRATEGY_ROUNDING_VIOLATION",
+                    message=(
+                        f"Strategy attempted to create rounding line at index {i}. "
+                        "Only the Bookkeeper may generate is_rounding=True lines (R22)."
+                    ),
+                    field=f"lines[{i}].is_rounding",
+                    details={
+                        "event_type": self.event_type,
+                        "strategy_version": self.version,
+                        "line_index": i,
+                        "account_code": line.account_code,
+                    },
+                )
+        return None
 
     def _validate_currencies(
         self,

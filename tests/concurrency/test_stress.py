@@ -40,7 +40,7 @@ from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
 from finance_kernel.models.journal import JournalEntry
 
 
-pytestmark = pytest.mark.postgres
+pytestmark = [pytest.mark.postgres, pytest.mark.slow_locks]
 
 
 def cleanup_test_data(session):

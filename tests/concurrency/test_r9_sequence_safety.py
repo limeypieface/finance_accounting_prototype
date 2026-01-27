@@ -13,9 +13,14 @@ This ensures:
 - No duplicate sequence numbers under concurrency
 - No gaps reused (monotonically increasing)
 - Transaction-safe sequence assignment
+
+Run with: pytest tests/concurrency/test_r9_sequence_safety.py -v
+Skip with: pytest -m "not slow_locks"
 """
 
 import pytest
+
+pytestmark = pytest.mark.slow_locks
 import re
 import ast
 import inspect
