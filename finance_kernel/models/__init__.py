@@ -7,6 +7,7 @@ from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntr
 from finance_kernel.models.exchange_rate import ExchangeRate
 from finance_kernel.models.dimensions import Dimension, DimensionValue
 from finance_kernel.models.audit_event import AuditEvent
+from finance_kernel.models.economic_link import EconomicLinkModel
 
 __all__ = [
     "Account",
@@ -23,4 +24,5 @@ __all__ = [
     "Dimension",
     "DimensionValue",
     "AuditEvent",
+    "EconomicLinkModel",
 ]

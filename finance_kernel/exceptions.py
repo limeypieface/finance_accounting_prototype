@@ -290,6 +290,56 @@ class UnsupportedSchemaVersionError(EventError):
         )
 
 
+class SchemaValidationError(EventError):
+    """
+    Event payload does not match registered schema.
+
+    P10 Compliance: All event payloads must validate against their registered
+    schema before processing.
+    """
+
+    code: str = "SCHEMA_VALIDATION_ERROR"
+
+    def __init__(
+        self,
+        event_type: str,
+        schema_version: int,
+        field_errors: list[dict],
+    ):
+        self.event_type = event_type
+        self.schema_version = schema_version
+        self.field_errors = field_errors
+        super().__init__(
+            f"Schema validation failed for {event_type} v{schema_version}: "
+            f"{len(field_errors)} error(s)"
+        )
+
+
+class InvalidFieldReferenceError(EventError):
+    """
+    Field reference does not exist in event schema.
+
+    P10 Compliance: Profile field references must be validated against
+    the event schema during compilation.
+    """
+
+    code: str = "INVALID_FIELD_REFERENCE"
+
+    def __init__(
+        self,
+        event_type: str,
+        schema_version: int,
+        field_path: str,
+    ):
+        self.event_type = event_type
+        self.schema_version = schema_version
+        self.field_path = field_path
+        super().__init__(
+            f"Field '{field_path}' does not exist in schema for "
+            f"{event_type} v{schema_version}"
+        )
+
+
 # Posting-related exceptions
 
 
@@ -932,4 +982,161 @@ class ExchangeRateArbitrageError(ExchangeRateError):
             f"Arbitrage detected: {from_currency}/{to_currency} rate {forward_rate} "
             f"implies inverse {expected_inverse}, but {to_currency}/{from_currency} "
             f"rate is {inverse_rate}. This inconsistency could hide value manipulation."
+        )
+
+
+# Economic Link related exceptions
+
+
+class EconomicLinkError(FinanceKernelError):
+    """Base exception for economic link related errors."""
+
+    code: str = "ECONOMIC_LINK_ERROR"
+
+
+class SelfLinkError(EconomicLinkError):
+    """
+    Attempted to create a link where parent equals child.
+
+    L2 Compliance: Self-links are not allowed. An artifact cannot be
+    its own parent or child.
+    """
+
+    code: str = "SELF_LINK"
+
+    def __init__(self, artifact_ref: str):
+        self.artifact_ref = artifact_ref
+        super().__init__(
+            f"Self-link not allowed: artifact {artifact_ref} cannot link to itself"
+        )
+
+
+class InvalidLinkTypeError(EconomicLinkError):
+    """
+    Link type is not valid for the given artifact types.
+
+    L5 Compliance: Each link type defines valid parent/child artifact
+    type combinations. Attempting to create a link with incompatible
+    types is rejected.
+    """
+
+    code: str = "INVALID_LINK_TYPE"
+
+    def __init__(
+        self,
+        link_type: str,
+        parent_type: str,
+        child_type: str,
+        reason: str,
+    ):
+        self.link_type = link_type
+        self.parent_type = parent_type
+        self.child_type = child_type
+        self.reason = reason
+        super().__init__(
+            f"Invalid link: {link_type} cannot connect {parent_type} to {child_type}. "
+            f"{reason}"
+        )
+
+
+class LinkCycleError(EconomicLinkError):
+    """
+    Creating this link would introduce a cycle in the link graph.
+
+    L3 Compliance: The link graph must be acyclic for certain link types
+    (e.g., FULFILLED_BY, SOURCED_FROM). Cycles would create infinite loops
+    in traversal and represent impossible economic relationships.
+    """
+
+    code: str = "LINK_CYCLE"
+
+    def __init__(self, link_type: str, path: list[str]):
+        self.link_type = link_type
+        self.path = path
+        path_str = " -> ".join(path)
+        super().__init__(
+            f"Cycle detected in {link_type} links: {path_str}"
+        )
+
+
+class DuplicateLinkError(EconomicLinkError):
+    """
+    A link with the same parent, child, and type already exists.
+
+    Links are unique on (link_type, parent_ref, child_ref). Creating
+    a duplicate would double-count the relationship.
+    """
+
+    code: str = "DUPLICATE_LINK"
+
+    def __init__(self, link_type: str, parent_ref: str, child_ref: str):
+        self.link_type = link_type
+        self.parent_ref = parent_ref
+        self.child_ref = child_ref
+        super().__init__(
+            f"Link already exists: {link_type} from {parent_ref} to {child_ref}"
+        )
+
+
+class MaxChildrenExceededError(EconomicLinkError):
+    """
+    Parent artifact has reached maximum allowed children for this link type.
+
+    Some link types are constrained (e.g., REVERSED_BY can only have one
+    child - an entry can only be reversed once).
+    """
+
+    code: str = "MAX_CHILDREN_EXCEEDED"
+
+    def __init__(
+        self,
+        link_type: str,
+        parent_ref: str,
+        max_children: int,
+        current_children: int,
+    ):
+        self.link_type = link_type
+        self.parent_ref = parent_ref
+        self.max_children = max_children
+        self.current_children = current_children
+        super().__init__(
+            f"Cannot add child to {parent_ref} for {link_type}: "
+            f"max {max_children} children allowed, already has {current_children}"
+        )
+
+
+class ArtifactNotFoundError(EconomicLinkError):
+    """
+    Referenced artifact does not exist.
+
+    Links must reference existing artifacts. Creating a link to a
+    non-existent artifact would leave a dangling pointer.
+    """
+
+    code: str = "ARTIFACT_NOT_FOUND"
+
+    def __init__(self, artifact_type: str, artifact_id: str):
+        self.artifact_type = artifact_type
+        self.artifact_id = artifact_id
+        super().__init__(
+            f"Artifact not found: {artifact_type}:{artifact_id}"
+        )
+
+
+class LinkImmutableError(EconomicLinkError):
+    """
+    Attempted to modify or delete an immutable link.
+
+    L1 Compliance: Links are immutable once created. They cannot be
+    updated or deleted. To "undo" a link, create a compensating
+    relationship (e.g., REVERSED_BY).
+    """
+
+    code: str = "LINK_IMMUTABLE"
+
+    def __init__(self, link_id: str, operation: str):
+        self.link_id = link_id
+        self.operation = operation
+        super().__init__(
+            f"Cannot {operation} link {link_id}: links are immutable (L1)"
         )

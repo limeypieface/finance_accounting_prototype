@@ -3,6 +3,11 @@
 from finance_kernel.services.auditor_service import AuditorService
 from finance_kernel.services.ingestor_service import IngestorService, IngestResult, IngestStatus
 from finance_kernel.services.ledger_service import LedgerService, LedgerResult, PersistResult
+from finance_kernel.services.link_graph_service import (
+    LinkGraphService,
+    LinkEstablishResult,
+    UnconsumedValue,
+)
 from finance_kernel.services.period_service import PeriodService
 from finance_kernel.services.posting_orchestrator import (
     PostingOrchestrator,
@@ -19,6 +24,8 @@ __all__ = [
     "IngestStatus",
     "LedgerService",
     "LedgerResult",
+    "LinkGraphService",
+    "LinkEstablishResult",
     "PersistResult",
     "PeriodService",
     "PostingOrchestrator",
@@ -26,4 +33,5 @@ __all__ = [
     "PostingStatus",
     "ReferenceDataLoader",
     "SequenceService",
+    "UnconsumedValue",
 ]
