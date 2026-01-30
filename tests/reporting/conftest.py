@@ -23,6 +23,21 @@ from finance_kernel.models.account import AccountType, NormalBalance
 
 
 @pytest.fixture
+def role_resolver(module_role_resolver):
+    """Override role_resolver for reporting tests.
+
+    The default role_resolver depends on standard_accounts (codes 1000, 1100, …).
+    Reporting integration tests need module_accounts (same codes) via
+    module_role_resolver. Without this override, both fixtures run and
+    the second INSERT hits a UniqueViolation on account code.
+
+    By returning module_role_resolver here, journal_writer (and therefore
+    post_via_coordinator) uses the full module account + role set.
+    """
+    return module_role_resolver
+
+
+@pytest.fixture
 def reporting_config() -> ReportingConfig:
     """Standard reporting configuration for tests."""
     return ReportingConfig.with_defaults()

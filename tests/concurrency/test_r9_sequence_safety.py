@@ -18,20 +18,21 @@ Run with: pytest tests/concurrency/test_r9_sequence_safety.py -v
 Skip with: pytest -m "not slow_locks"
 """
 
-import pytest
 
-pytestmark = pytest.mark.slow_locks
+import pytest
 import re
 import ast
 import inspect
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import text
 
 from finance_kernel.services.sequence_service import SequenceService, SequenceCounter
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator, PostingStatus
 from finance_kernel.models.journal import JournalEntry
+
+pytestmark = pytest.mark.slow_locks
 
 
 class TestR9SequenceImplementation:
@@ -251,11 +252,9 @@ class TestR9JournalEntrySequences:
     def test_journal_entries_have_unique_sequences(
         self,
         session,
-        posting_orchestrator,
+        post_via_coordinator,
         standard_accounts,
         current_period,
-        test_actor_id,
-        deterministic_clock,
     ):
         """
         Posted journal entries must have unique sequence numbers.
@@ -264,24 +263,13 @@ class TestR9JournalEntrySequences:
         """
         entry_ids = []
 
-        # Create multiple entries
+        # Create multiple entries via Pipeline B
         for i in range(10):
-            result = posting_orchestrator.post_event(
-                event_id=uuid4(),
-                event_type="generic.posting",
-                occurred_at=deterministic_clock.now(),
-                effective_date=current_period.start_date,
-                actor_id=test_actor_id,
-                producer="test",
-                payload={
-                    "lines": [
-                        {"account_code": "1000", "side": "debit", "amount": str(100 * (i + 1)), "currency": "USD"},
-                        {"account_code": "4000", "side": "credit", "amount": str(100 * (i + 1)), "currency": "USD"},
-                    ]
-                },
+            result = post_via_coordinator(
+                amount=Decimal(str(100 * (i + 1))),
             )
-            assert result.status == PostingStatus.POSTED
-            entry_ids.append(result.journal_entry_id)
+            assert result.success
+            entry_ids.append(result.journal_result.entries[0].entry_id)
 
         # Verify all have unique sequences
         entries = [session.get(JournalEntry, eid) for eid in entry_ids]
@@ -292,11 +280,9 @@ class TestR9JournalEntrySequences:
     def test_journal_sequences_monotonically_increasing(
         self,
         session,
-        posting_orchestrator,
+        post_via_coordinator,
         standard_accounts,
         current_period,
-        test_actor_id,
-        deterministic_clock,
     ):
         """
         Journal entry sequences must be monotonically increasing.
@@ -305,24 +291,13 @@ class TestR9JournalEntrySequences:
         """
         entry_ids = []
 
-        # Create entries sequentially
+        # Create entries sequentially via Pipeline B
         for i in range(10):
-            result = posting_orchestrator.post_event(
-                event_id=uuid4(),
-                event_type="generic.posting",
-                occurred_at=deterministic_clock.now(),
-                effective_date=current_period.start_date,
-                actor_id=test_actor_id,
-                producer="test",
-                payload={
-                    "lines": [
-                        {"account_code": "1000", "side": "debit", "amount": "100.00", "currency": "USD"},
-                        {"account_code": "4000", "side": "credit", "amount": "100.00", "currency": "USD"},
-                    ]
-                },
+            result = post_via_coordinator(
+                amount=Decimal("100.00"),
             )
-            assert result.status == PostingStatus.POSTED
-            entry_ids.append(result.journal_entry_id)
+            assert result.success
+            entry_ids.append(result.journal_result.entries[0].entry_id)
 
         # Get sequences in creation order
         entries = [session.get(JournalEntry, eid) for eid in entry_ids]

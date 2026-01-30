@@ -106,8 +106,8 @@ class ReportingService:
                 account_id=acct.id,
                 code=acct.code,
                 name=acct.name,
-                account_type=acct.account_type,
-                normal_balance=acct.normal_balance,
+                account_type=AccountType(acct.account_type),
+                normal_balance=NormalBalance(acct.normal_balance),
                 tags=tags,
                 parent_id=acct.parent_id,
             )

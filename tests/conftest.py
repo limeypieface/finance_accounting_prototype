@@ -48,8 +48,6 @@ from finance_kernel.services.ingestor_service import IngestorService
 from finance_kernel.services.auditor_service import AuditorService
 from finance_kernel.services.ledger_service import LedgerService
 from finance_kernel.services.period_service import PeriodService
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator
-from finance_kernel.services.reference_data_loader import ReferenceDataLoader
 from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
 from finance_kernel.services.outcome_recorder import OutcomeRecorder
 from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
@@ -116,9 +114,8 @@ def captured_logs():
 
     Usage::
 
-        def test_something(captured_logs, session):
-            orchestrator = PostingOrchestrator(session, auto_commit=False)
-            orchestrator.post_event(...)
+        def test_something(captured_logs, post_via_coordinator):
+            result = post_via_coordinator(...)
             logs = captured_logs()
             assert any(r["message"] == "posting_completed" for r in logs)
     """
@@ -558,18 +555,6 @@ def ledger_service(session: Session, deterministic_clock, auditor_service):
 def period_service(session: Session, deterministic_clock) -> PeriodService:
     """Provide a PeriodService instance."""
     return PeriodService(session, deterministic_clock)
-
-
-@pytest.fixture
-def posting_orchestrator(session: Session, deterministic_clock):
-    """Provide a PostingOrchestrator instance (with auto_commit=False for testing)."""
-    return PostingOrchestrator(session, deterministic_clock, auto_commit=False)
-
-
-@pytest.fixture
-def reference_data_loader(session: Session):
-    """Provide a ReferenceDataLoader instance."""
-    return ReferenceDataLoader(session)
 
 
 # =============================================================================

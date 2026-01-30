@@ -30,6 +30,7 @@ Usage:
         session.rollback()
 """
 
+import hashlib
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -60,7 +61,9 @@ from finance_kernel.services.journal_writer import (
     JournalWriter,
     WriteStatus,
 )
+from finance_kernel.services.log_capture import LogCapture
 from finance_kernel.services.outcome_recorder import OutcomeRecorder
+from finance_kernel.utils.hashing import canonicalize_json
 
 logger = get_logger("services.interpretation_coordinator")
 
@@ -195,37 +198,48 @@ class InterpretationCoordinator:
             InterpretationResult with outcome and artifacts.
         """
         correlation_id = str(_uuid4())
-        with LogContext.bind(
-            correlation_id=correlation_id,
-            event_id=str(accounting_intent.source_event_id),
-            trace_id=str(trace_id) if trace_id else None,
-        ):
-            t0 = time.monotonic()
-            try:
-                result = self._do_interpret_and_post(
-                    meaning_result=meaning_result,
-                    accounting_intent=accounting_intent,
-                    actor_id=actor_id,
-                    trace_id=trace_id,
-                )
-                duration_ms = round((time.monotonic() - t0) * 1000, 2)
-                logger.info(
-                    "interpretation_completed",
-                    extra={
-                        "success": result.success,
-                        "duration_ms": duration_ms,
-                        "error_code": result.error_code,
-                    },
-                )
-                return result
-            except Exception:
-                duration_ms = round((time.monotonic() - t0) * 1000, 2)
-                logger.error(
-                    "interpretation_failed",
-                    extra={"duration_ms": duration_ms},
-                    exc_info=True,
-                )
-                raise
+        capture = LogCapture()
+        capture.install()
+        try:
+            with LogContext.bind(
+                correlation_id=correlation_id,
+                event_id=str(accounting_intent.source_event_id),
+                trace_id=str(trace_id) if trace_id else None,
+            ):
+                t0 = time.monotonic()
+                try:
+                    result = self._do_interpret_and_post(
+                        meaning_result=meaning_result,
+                        accounting_intent=accounting_intent,
+                        actor_id=actor_id,
+                        trace_id=trace_id,
+                    )
+                    duration_ms = round((time.monotonic() - t0) * 1000, 2)
+                    logger.info(
+                        "interpretation_completed",
+                        extra={
+                            "success": result.success,
+                            "duration_ms": duration_ms,
+                            "error_code": result.error_code,
+                        },
+                    )
+
+                    # Persist decision journal on the outcome
+                    if result.outcome is not None:
+                        result.outcome.decision_log = capture.records
+                        self._session.flush()
+
+                    return result
+                except Exception:
+                    duration_ms = round((time.monotonic() - t0) * 1000, 2)
+                    logger.error(
+                        "interpretation_failed",
+                        extra={"duration_ms": duration_ms},
+                        exc_info=True,
+                    )
+                    raise
+        finally:
+            capture.uninstall()
 
     def _do_interpret_and_post(
         self,
@@ -240,6 +254,25 @@ class InterpretationCoordinator:
             extra={
                 "source_event_id": str(accounting_intent.source_event_id),
                 "profile_id": accounting_intent.profile_id,
+                "profile_version": accounting_intent.profile_version,
+                "econ_event_id": str(accounting_intent.econ_event_id),
+                "effective_date": str(accounting_intent.effective_date),
+                "ledger_count": len(accounting_intent.ledger_intents),
+            },
+        )
+
+        # Log the configuration snapshot in force at interpretation time
+        snapshot = accounting_intent.snapshot
+        logger.info(
+            "config_in_force",
+            extra={
+                "source_event_id": str(accounting_intent.source_event_id),
+                "profile_id": accounting_intent.profile_id,
+                "profile_version": accounting_intent.profile_version,
+                "coa_version": snapshot.coa_version if snapshot else None,
+                "dimension_schema_version": snapshot.dimension_schema_version if snapshot else None,
+                "rounding_policy_version": snapshot.rounding_policy_version if snapshot else None,
+                "currency_registry_version": snapshot.currency_registry_version if snapshot else None,
             },
         )
 
@@ -311,6 +344,42 @@ class InterpretationCoordinator:
             extra={
                 "outcome_id": str(outcome.id) if hasattr(outcome, "id") else None,
                 "entry_ids": entry_ids,
+                "entry_count": len(entry_ids),
+            },
+        )
+
+        # Compute reproducibility proof: hash of input intent → hash of output entries
+        input_hash = hashlib.sha256(
+            canonicalize_json({
+                "source_event_id": str(accounting_intent.source_event_id),
+                "profile_id": accounting_intent.profile_id,
+                "profile_version": accounting_intent.profile_version,
+                "effective_date": str(accounting_intent.effective_date),
+                "ledger_intents": [
+                    {
+                        "ledger_id": li.ledger_id,
+                        "line_count": len(li.lines),
+                    }
+                    for li in accounting_intent.ledger_intents
+                ],
+            }).encode()
+        ).hexdigest()
+
+        output_hash = hashlib.sha256(
+            canonicalize_json({
+                "entry_ids": entry_ids,
+                "outcome_status": "POSTED",
+            }).encode()
+        ).hexdigest()
+
+        logger.info(
+            "reproducibility_proof",
+            extra={
+                "source_event_id": str(accounting_intent.source_event_id),
+                "input_hash": input_hash,
+                "output_hash": output_hash,
+                "profile_id": accounting_intent.profile_id,
+                "profile_version": accounting_intent.profile_version,
             },
         )
 
@@ -324,6 +393,8 @@ class InterpretationCoordinator:
                 "policy_version": accounting_intent.profile_version,
                 "journal_entry_ids": entry_ids,
                 "outcome_status": "POSTED",
+                "input_hash": input_hash,
+                "output_hash": output_hash,
             },
         )
 

@@ -114,6 +114,7 @@ class OutcomeRecorder:
         journal_entry_ids: list[UUID],
         profile_hash: str | None = None,
         trace_id: UUID | None = None,
+        decision_log: list[dict] | None = None,
     ) -> InterpretationOutcome:
         """
         Record a POSTED outcome.
@@ -146,6 +147,7 @@ class OutcomeRecorder:
             profile_version=profile_version,
             profile_hash=profile_hash,
             trace_id=trace_id,
+            decision_log=decision_log,
             created_at=self._clock.now(),
         )
 
@@ -153,7 +155,14 @@ class OutcomeRecorder:
         self._session.flush()
         logger.info(
             "outcome_recorded",
-            extra={"status": "posted", "source_event_id": str(source_event_id)},
+            extra={
+                "status": "posted",
+                "source_event_id": str(source_event_id),
+                "econ_event_id": str(econ_event_id),
+                "journal_entry_ids": [str(eid) for eid in journal_entry_ids],
+                "profile_id": profile_id,
+                "profile_version": profile_version,
+            },
         )
         return outcome
 
@@ -166,6 +175,7 @@ class OutcomeRecorder:
         reason_detail: dict[str, Any] | None = None,
         profile_hash: str | None = None,
         trace_id: UUID | None = None,
+        decision_log: list[dict] | None = None,
     ) -> InterpretationOutcome:
         """
         Record a REJECTED outcome.
@@ -195,6 +205,7 @@ class OutcomeRecorder:
             profile_version=profile_version,
             profile_hash=profile_hash,
             trace_id=trace_id,
+            decision_log=decision_log,
             created_at=self._clock.now(),
         )
 
@@ -219,6 +230,7 @@ class OutcomeRecorder:
         reason_detail: dict[str, Any] | None = None,
         profile_hash: str | None = None,
         trace_id: UUID | None = None,
+        decision_log: list[dict] | None = None,
     ) -> InterpretationOutcome:
         """
         Record a BLOCKED outcome.
@@ -248,6 +260,7 @@ class OutcomeRecorder:
             profile_version=profile_version,
             profile_hash=profile_hash,
             trace_id=trace_id,
+            decision_log=decision_log,
             created_at=self._clock.now(),
         )
 
@@ -273,6 +286,7 @@ class OutcomeRecorder:
         reason_detail: dict[str, Any] | None = None,
         profile_hash: str | None = None,
         trace_id: UUID | None = None,
+        decision_log: list[dict] | None = None,
     ) -> InterpretationOutcome:
         """
         Record a PROVISIONAL outcome.
@@ -304,6 +318,7 @@ class OutcomeRecorder:
             profile_version=profile_version,
             profile_hash=profile_hash,
             trace_id=trace_id,
+            decision_log=decision_log,
             created_at=self._clock.now(),
         )
 
@@ -327,6 +342,7 @@ class OutcomeRecorder:
         reason_detail: dict[str, Any] | None = None,
         profile_hash: str | None = None,
         trace_id: UUID | None = None,
+        decision_log: list[dict] | None = None,
     ) -> InterpretationOutcome:
         """
         Record a NON_POSTING outcome.
@@ -356,6 +372,7 @@ class OutcomeRecorder:
             profile_version=profile_version,
             profile_hash=profile_hash,
             trace_id=trace_id,
+            decision_log=decision_log,
             created_at=self._clock.now(),
         )
 

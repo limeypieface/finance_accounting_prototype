@@ -167,6 +167,7 @@ class AuditorService:
             "audit_event_created",
             extra={
                 "entity_type": entity_type,
+                "entity_id": str(entity_id),
                 "action": action.value,
                 "seq": seq,
             },

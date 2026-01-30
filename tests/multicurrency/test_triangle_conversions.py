@@ -21,7 +21,6 @@ from sqlalchemy import select
 from finance_kernel.domain.values import Money
 from finance_kernel.domain.currency import CurrencyRegistry
 from finance_kernel.models.exchange_rate import ExchangeRate
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator, PostingStatus
 from finance_kernel.domain.clock import DeterministicClock
 
 
@@ -285,39 +284,25 @@ class TestRoundingDocumentation:
     def test_rounding_creates_audit_trail(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        post_via_coordinator,
         standard_accounts,
         current_period,
-        test_actor_id,
-        deterministic_clock: DeterministicClock,
     ):
         """
         Verify that rounding differences are recorded in the journal.
         """
-        # Post an entry that may require rounding
-        # (amounts that don't divide evenly)
-        result = posting_orchestrator.post_event(
-            event_id=uuid4(),
-            event_type="generic.posting",
-            occurred_at=deterministic_clock.now(),
-            effective_date=deterministic_clock.now().date(),
-            actor_id=test_actor_id,
-            producer="test",
-            payload={
-                "lines": [
-                    # Amount that might cause rounding issues
-                    {"account_code": "1000", "side": "debit", "amount": "100.00", "currency": "USD"},
-                    {"account_code": "4000", "side": "credit", "amount": "100.00", "currency": "USD"},
-                ]
-            },
+        # Post an entry that may require rounding via Pipeline B
+        result = post_via_coordinator(
+            amount=Decimal("100.00"),
         )
 
-        assert result.status == PostingStatus.POSTED
+        assert result.success
 
         # Verify entry has proper documentation
         from finance_kernel.models.journal import JournalEntry, JournalLine
 
-        entry = session.get(JournalEntry, result.journal_entry_id)
+        entry_id = result.journal_result.entries[0].entry_id
+        entry = session.get(JournalEntry, entry_id)
         assert entry is not None
 
         # Check for rounding lines (if any)

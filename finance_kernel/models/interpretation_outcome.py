@@ -123,6 +123,14 @@ class InterpretationOutcome(Base):
         nullable=True,
     )
 
+    # Decision journal — structured log records captured during interpretation.
+    # Stored as a JSON array of dicts, each with ts, message, and structured fields.
+    # Populated automatically by InterpretationCoordinator via LogCapture.
+    decision_log: Mapped[list | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -303,14 +303,31 @@ class JournalWriter:
         # Validate all ledger intents are balanced
         for ledger_intent in intent.ledger_intents:
             for currency in ledger_intent.currencies:
-                if not ledger_intent.is_balanced(currency):
-                    imbalance = (
-                        ledger_intent.total_debits(currency)
-                        - ledger_intent.total_credits(currency)
-                    )
+                sum_debit = ledger_intent.total_debits(currency)
+                sum_credit = ledger_intent.total_credits(currency)
+                balanced = ledger_intent.is_balanced(currency)
+
+                logger.info(
+                    "balance_validated",
+                    extra={
+                        "ledger_id": ledger_intent.ledger_id,
+                        "currency": currency,
+                        "sum_debit": str(sum_debit),
+                        "sum_credit": str(sum_credit),
+                        "balanced": balanced,
+                        "source_event_id": str(intent.source_event_id),
+                    },
+                )
+
+                if not balanced:
+                    imbalance = sum_debit - sum_credit
                     logger.warning(
                         "unbalanced_intent",
-                        extra={"ledger_id": ledger_intent.ledger_id, "currency": currency},
+                        extra={
+                            "ledger_id": ledger_intent.ledger_id,
+                            "currency": currency,
+                            "imbalance": str(imbalance),
+                        },
                     )
                     return JournalWriteResult.validation_failed(
                         "UNBALANCED_INTENT",
@@ -431,6 +448,22 @@ class JournalWriter:
                     intent.snapshot.coa_version,
                 )
 
+                logger.info(
+                    "role_resolved",
+                    extra={
+                        "role": line.account_role,
+                        "account_code": account_code,
+                        "account_id": str(account_id),
+                        "ledger_id": ledger_intent.ledger_id,
+                        "coa_version": intent.snapshot.coa_version,
+                        "line_seq": i,
+                        "side": line.side,
+                        "amount": str(line.money.amount),
+                        "currency": line.money.currency,
+                        "source_event_id": str(intent.source_event_id),
+                    },
+                )
+
                 resolved_lines.append(
                     ResolvedIntentLine(
                         account_id=account_id,
@@ -530,6 +563,21 @@ class JournalWriter:
             )
             self._session.add(journal_line)
 
+            logger.info(
+                "line_written",
+                extra={
+                    "entry_id": str(entry.id),
+                    "line_seq": line.line_seq,
+                    "role": line.account_role,
+                    "account_code": line.account_code,
+                    "account_id": str(line.account_id),
+                    "side": line.side,
+                    "amount": str(line.amount),
+                    "currency": line.currency,
+                    "is_rounding": line.is_rounding,
+                },
+            )
+
         self._session.flush()
 
     def _validate_rounding_invariants(
@@ -568,6 +616,19 @@ class JournalWriter:
         # Validate reference snapshots
         self._validate_reference_snapshots(entry)
 
+        logger.info(
+            "invariant_checked",
+            extra={
+                "invariant": "R21_REFERENCE_SNAPSHOT",
+                "entry_id": str(entry.id),
+                "passed": True,
+                "coa_version": entry.coa_version,
+                "dimension_schema_version": entry.dimension_schema_version,
+                "rounding_policy_version": entry.rounding_policy_version,
+                "currency_registry_version": entry.currency_registry_version,
+            },
+        )
+
         # Assign sequence number
         seq = self._sequence_service.next_value(SequenceService.JOURNAL_ENTRY)
         entry.seq = seq
@@ -575,6 +636,21 @@ class JournalWriter:
         entry.status = JournalEntryStatus.POSTED
 
         self._session.flush()
+
+        logger.info(
+            "journal_entry_created",
+            extra={
+                "entry_id": str(entry.id),
+                "source_event_id": str(entry.source_event_id),
+                "status": entry.status.value,
+                "seq": entry.seq,
+                "idempotency_key": entry.idempotency_key,
+                "effective_date": str(entry.effective_date),
+                "posted_at": str(entry.posted_at),
+                "profile_id": entry.entry_metadata.get("profile_id") if entry.entry_metadata else None,
+                "ledger_id": entry.entry_metadata.get("ledger_id") if entry.entry_metadata else None,
+            },
+        )
 
     def _validate_reference_snapshots(self, entry: JournalEntry) -> None:
         """Validate reference snapshot versions are present."""

@@ -155,3 +155,26 @@ def hash_trial_balance(rows: list[dict]) -> str:
     sorted_rows = sorted(rows, key=lambda x: (x.get("account_id", ""), x.get("currency", "")))
 
     return hash_payload({"trial_balance": sorted_rows})
+
+
+def hash_trace_bundle(bundle_dict: dict) -> str:
+    """
+    Compute deterministic hash of a trace bundle.
+
+    Excludes volatile fields that vary between generations:
+    - generated_at (timestamp varies per generation)
+    - trace_id (random UUID per generation)
+    - integrity.bundle_hash (would be circular)
+
+    Args:
+        bundle_dict: Bundle as a dictionary.
+
+    Returns:
+        Hex-encoded SHA-256 hash.
+    """
+    cleaned = {k: v for k, v in bundle_dict.items()
+               if k not in ("generated_at", "trace_id")}
+    if isinstance(cleaned.get("integrity"), dict):
+        cleaned["integrity"] = {k: v for k, v in cleaned["integrity"].items()
+                                if k != "bundle_hash"}
+    return hash_payload(cleaned)

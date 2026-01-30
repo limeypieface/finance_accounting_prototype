@@ -195,6 +195,7 @@ class LinkGraphService:
             logger.info(
                 "economic_link_created",
                 extra={
+                    "link_id": str(link.link_id),
                     "link_type": link.link_type.value,
                     "source_ref": str(link.parent_ref),
                     "target_ref": str(link.child_ref),

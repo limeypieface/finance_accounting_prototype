@@ -17,50 +17,8 @@ from uuid import uuid4
 
 from finance_kernel.models.account import Account, AccountType, NormalBalance, AccountTag
 from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator, PostingStatus
-from finance_kernel.domain.strategy import BasePostingStrategy
-from finance_kernel.domain.strategy_registry import StrategyRegistry
-from finance_kernel.domain.dtos import EventEnvelope, LineSpec, LineSide as DomainLineSide, ReferenceData
-from finance_kernel.domain.values import Money
 from finance_kernel.exceptions import ImmutabilityViolationError, AccountReferencedError
 from sqlalchemy.exc import IntegrityError
-
-
-def _register_rounding_strategy(event_type: str, rounding_account_code: str) -> None:
-    """Register a strategy that produces an unbalanced entry requiring rounding."""
-
-    class RoundingStrategy(BasePostingStrategy):
-        def __init__(self, evt_type: str, rounding_code: str):
-            self._event_type = evt_type
-            self._rounding_code = rounding_code
-            self._version = 1
-
-        @property
-        def event_type(self) -> str:
-            return self._event_type
-
-        @property
-        def version(self) -> int:
-            return self._version
-
-        def _compute_line_specs(
-            self, event: EventEnvelope, ref: ReferenceData
-        ) -> tuple[LineSpec, ...]:
-            # Create a balanced entry that uses the rounding account
-            return (
-                LineSpec(
-                    account_code="1000",
-                    side=DomainLineSide.DEBIT,
-                    money=Money.of(Decimal("100.00"), "USD"),
-                ),
-                LineSpec(
-                    account_code=self._rounding_code,
-                    side=DomainLineSide.CREDIT,
-                    money=Money.of(Decimal("100.00"), "USD"),
-                ),
-            )
-
-    StrategyRegistry.register(RoundingStrategy(event_type, rounding_account_code))
 
 
 class TestDeleteAllRoundingAccounts:
@@ -74,57 +32,46 @@ class TestDeleteAllRoundingAccounts:
     def test_cannot_delete_rounding_account_with_posted_references(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        post_via_coordinator,
         standard_accounts,
         current_period,
-        test_actor_id,
-        deterministic_clock,
     ):
         """
         Test that rounding accounts with posted journal lines cannot be deleted.
 
         This should be blocked by the existing Account immutability enforcement.
+        Posts via Pipeline B using the RoundingExpense role which maps to the
+        rounding account (code 9999).
         """
         rounding_account = standard_accounts["rounding"]
 
-        # Post a journal entry that references the rounding account
-        event_type = "test.rounding.reference"
-        _register_rounding_strategy(event_type, rounding_account.code)
+        # Post a journal entry that uses the rounding account via Pipeline B
+        result = post_via_coordinator(
+            debit_role="CashAsset",
+            credit_role="RoundingExpense",
+            amount=Decimal("100.00"),
+        )
+        assert result.success
+        session.flush()
 
-        try:
-            result = posting_orchestrator.post_event(
-                event_id=uuid4(),
-                event_type=event_type,
-                occurred_at=deterministic_clock.now(),
-                effective_date=deterministic_clock.now().date(),
-                actor_id=test_actor_id,
-                producer="test",
-                payload={},
-            )
-            assert result.status == PostingStatus.POSTED
-            session.flush()
+        # Now try to delete the rounding account - should fail
+        # Use nested transaction so failure doesn't break the session
+        with pytest.raises((IntegrityError, ImmutabilityViolationError, AccountReferencedError)) as exc_info:
+            with session.begin_nested():
+                session.delete(rounding_account)
+                session.flush()
 
-            # Now try to delete the rounding account - should fail
-            # Use nested transaction so failure doesn't break the session
-            with pytest.raises((IntegrityError, ImmutabilityViolationError, AccountReferencedError)) as exc_info:
-                with session.begin_nested():
-                    session.delete(rounding_account)
-                    session.flush()
-
-            # Should be blocked by FK constraint, immutability, or referenced check
-            error_msg = str(exc_info.value).lower()
-            assert (
-                "foreign key" in error_msg
-                or "constraint" in error_msg
-                or "violates" in error_msg
-                or "immutability" in error_msg
-                or "referenced" in error_msg
-                or "cannot be deleted" in error_msg
-                or "rounding" in error_msg
-            ), f"Expected deletion protection error, got: {exc_info.value}"
-
-        finally:
-            StrategyRegistry._strategies.pop(event_type, None)
+        # Should be blocked by FK constraint, immutability, or referenced check
+        error_msg = str(exc_info.value).lower()
+        assert (
+            "foreign key" in error_msg
+            or "constraint" in error_msg
+            or "violates" in error_msg
+            or "immutability" in error_msg
+            or "referenced" in error_msg
+            or "cannot be deleted" in error_msg
+            or "rounding" in error_msg
+        ), f"Expected deletion protection error, got: {exc_info.value}"
 
     def test_attempt_delete_all_rounding_accounts_bulk(
         self,
@@ -191,7 +138,6 @@ class TestDeleteAllRoundingAccounts:
 
         # Attempt to delete the second (now last) USD rounding account - should FAIL
         # Use a savepoint so we can continue testing
-        # The error can be ImmutabilityViolationError (ORM) or IntegrityError (PostgreSQL trigger)
         with pytest.raises((ImmutabilityViolationError, IntegrityError)) as exc_info:
             with session.begin_nested():
                 session.delete(rounding2)
@@ -231,7 +177,6 @@ class TestDeleteAllRoundingAccounts:
 
         This tests the specific invariant that at least one must exist.
         """
-        # Create exactly ONE rounding account for a specific currency
         from finance_kernel.models.account import Account, AccountType, NormalBalance, AccountTag
         from sqlalchemy import text
 
@@ -254,8 +199,6 @@ class TestDeleteAllRoundingAccounts:
         assert jpy_rounding_count == 1, "Should have exactly 1 JPY rounding account"
 
         # Attempt to delete the last rounding account for JPY
-        # This SHOULD raise an error if the invariant is enforced
-        # The error can be ImmutabilityViolationError (ORM) or IntegrityError (PostgreSQL trigger)
         with pytest.raises((ImmutabilityViolationError, IntegrityError)) as exc_info:
             with session.begin_nested():
                 session.delete(single_rounding)

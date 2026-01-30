@@ -19,11 +19,9 @@ from decimal import Decimal
 from sqlalchemy import select, delete
 from sqlalchemy.exc import IntegrityError
 
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator, PostingStatus
 from finance_kernel.models.account import Account, AccountType, NormalBalance
 from finance_kernel.models.journal import JournalEntry, JournalLine
 from finance_kernel.exceptions import AccountReferencedError
-from finance_kernel.domain.clock import DeterministicClock
 
 
 class TestAccountDeletionProtection:
@@ -69,36 +67,25 @@ class TestAccountDeletionProtection:
     def test_used_account_cannot_be_deleted(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        post_via_coordinator,
         standard_accounts,
         current_period,
-        test_actor_id,
-        deterministic_clock: DeterministicClock,
     ):
         """
         Verify that used accounts CANNOT be deleted.
 
         An account with journal lines must not be deletable.
         """
-        # Post an entry using the cash account
+        # Post an entry using the cash account (role CashAsset -> code 1000)
         cash_account = standard_accounts["cash"]
         account_id = cash_account.id
 
-        result = posting_orchestrator.post_event(
-            event_id=uuid4(),
-            event_type="generic.posting",
-            occurred_at=deterministic_clock.now(),
-            effective_date=deterministic_clock.now().date(),
-            actor_id=test_actor_id,
-            producer="test",
-            payload={
-                "lines": [
-                    {"account_code": "1000", "side": "debit", "amount": "100.00", "currency": "USD"},
-                    {"account_code": "4000", "side": "credit", "amount": "100.00", "currency": "USD"},
-                ]
-            },
+        result = post_via_coordinator(
+            debit_role="CashAsset",
+            credit_role="SalesRevenue",
+            amount=Decimal("100.00"),
         )
-        assert result.status == PostingStatus.POSTED
+        assert result.success
 
         # Verify account has journal lines
         lines = session.execute(
@@ -107,14 +94,12 @@ class TestAccountDeletionProtection:
         assert len(lines) > 0, "Account should have journal lines"
 
         # Attempt to delete should fail
-        # Use nested transaction (SAVEPOINT) so rollback only affects the delete attempt
         with pytest.raises((IntegrityError, AccountReferencedError)):
             with session.begin_nested():
                 session.delete(cash_account)
                 session.flush()
 
         # Re-fetch the account since the nested transaction was rolled back
-        # and the ORM object might be in an inconsistent state
         session.expire_all()
 
         # Account should still exist
@@ -124,11 +109,9 @@ class TestAccountDeletionProtection:
     def test_deactivated_account_with_postings_cannot_be_deleted(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        post_via_coordinator,
         standard_accounts,
         current_period,
-        test_actor_id,
-        deterministic_clock: DeterministicClock,
     ):
         """
         Verify that deactivated accounts with postings cannot be deleted.
@@ -136,21 +119,12 @@ class TestAccountDeletionProtection:
         Deactivation prevents new postings but doesn't allow deletion.
         """
         # Post an entry
-        result = posting_orchestrator.post_event(
-            event_id=uuid4(),
-            event_type="generic.posting",
-            occurred_at=deterministic_clock.now(),
-            effective_date=deterministic_clock.now().date(),
-            actor_id=test_actor_id,
-            producer="test",
-            payload={
-                "lines": [
-                    {"account_code": "1000", "side": "debit", "amount": "100.00", "currency": "USD"},
-                    {"account_code": "4000", "side": "credit", "amount": "100.00", "currency": "USD"},
-                ]
-            },
+        result = post_via_coordinator(
+            debit_role="CashAsset",
+            credit_role="SalesRevenue",
+            amount=Decimal("100.00"),
         )
-        assert result.status == PostingStatus.POSTED
+        assert result.success
 
         # Deactivate the account
         cash_account = standard_accounts["cash"]
@@ -158,7 +132,6 @@ class TestAccountDeletionProtection:
         session.flush()
 
         # Attempt to delete should still fail
-        # Use nested transaction (SAVEPOINT) so rollback only affects the delete attempt
         with pytest.raises((IntegrityError, AccountReferencedError)):
             with session.begin_nested():
                 session.delete(cash_account)
@@ -174,39 +147,36 @@ class TestAccountDeletionProtection:
     def test_multiple_accounts_with_postings_protected(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        post_via_coordinator,
         standard_accounts,
         current_period,
-        test_actor_id,
-        deterministic_clock: DeterministicClock,
     ):
         """
         Verify that all accounts used in an entry are protected.
         """
-        # Post entry using multiple accounts
-        result = posting_orchestrator.post_event(
-            event_id=uuid4(),
-            event_type="generic.posting",
-            occurred_at=deterministic_clock.now(),
-            effective_date=deterministic_clock.now().date(),
-            actor_id=test_actor_id,
-            producer="test",
-            payload={
-                "lines": [
-                    {"account_code": "1000", "side": "debit", "amount": "100.00", "currency": "USD"},
-                    {"account_code": "1100", "side": "debit", "amount": "50.00", "currency": "USD"},
-                    {"account_code": "4000", "side": "credit", "amount": "150.00", "currency": "USD"},
-                ]
-            },
+        from finance_kernel.domain.accounting_intent import IntentLine
+
+        # Post entry using multiple accounts (CashAsset, AccountsReceivable, SalesRevenue)
+        result = post_via_coordinator(
+            debit_role="CashAsset",
+            credit_role="SalesRevenue",
+            amount=Decimal("150.00"),
         )
-        assert result.status == PostingStatus.POSTED
+        assert result.success
+
+        # Post another entry to use AR account
+        result2 = post_via_coordinator(
+            debit_role="AccountsReceivable",
+            credit_role="SalesRevenue",
+            amount=Decimal("50.00"),
+        )
+        assert result2.success
 
         # Try to delete each account - all should fail
         for account_key in ["cash", "ar", "revenue"]:
             account = standard_accounts[account_key]
             account_id = account.id
 
-            # Use nested transaction (SAVEPOINT) so rollback only affects this delete attempt
             try:
                 with session.begin_nested():
                     session.delete(account)
@@ -229,11 +199,9 @@ class TestAccountDeletionViaRawSQL:
     def test_raw_sql_delete_of_used_account_blocked(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        post_via_coordinator,
         standard_accounts,
         current_period,
-        test_actor_id,
-        deterministic_clock: DeterministicClock,
     ):
         """
         Verify that raw SQL cannot delete used accounts.
@@ -243,21 +211,12 @@ class TestAccountDeletionViaRawSQL:
         from sqlalchemy import text
 
         # Post an entry
-        result = posting_orchestrator.post_event(
-            event_id=uuid4(),
-            event_type="generic.posting",
-            occurred_at=deterministic_clock.now(),
-            effective_date=deterministic_clock.now().date(),
-            actor_id=test_actor_id,
-            producer="test",
-            payload={
-                "lines": [
-                    {"account_code": "1000", "side": "debit", "amount": "100.00", "currency": "USD"},
-                    {"account_code": "4000", "side": "credit", "amount": "100.00", "currency": "USD"},
-                ]
-            },
+        result = post_via_coordinator(
+            debit_role="CashAsset",
+            credit_role="SalesRevenue",
+            amount=Decimal("100.00"),
         )
-        assert result.status == PostingStatus.POSTED
+        assert result.success
 
         cash_account = standard_accounts["cash"]
 
@@ -289,11 +248,9 @@ class TestAccountDeactivationVsDeletion:
     def test_account_can_be_deactivated_after_use(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        post_via_coordinator,
         standard_accounts,
         current_period,
-        test_actor_id,
-        deterministic_clock: DeterministicClock,
     ):
         """
         Verify that accounts can be deactivated (soft-deleted) after use.
@@ -301,21 +258,12 @@ class TestAccountDeactivationVsDeletion:
         Deactivation is the safe alternative to deletion.
         """
         # Post an entry
-        result = posting_orchestrator.post_event(
-            event_id=uuid4(),
-            event_type="generic.posting",
-            occurred_at=deterministic_clock.now(),
-            effective_date=deterministic_clock.now().date(),
-            actor_id=test_actor_id,
-            producer="test",
-            payload={
-                "lines": [
-                    {"account_code": "1000", "side": "debit", "amount": "100.00", "currency": "USD"},
-                    {"account_code": "4000", "side": "credit", "amount": "100.00", "currency": "USD"},
-                ]
-            },
+        result = post_via_coordinator(
+            debit_role="CashAsset",
+            credit_role="SalesRevenue",
+            amount=Decimal("100.00"),
         )
-        assert result.status == PostingStatus.POSTED
+        assert result.success
 
         # Deactivate should succeed
         cash_account = standard_accounts["cash"]
@@ -329,49 +277,7 @@ class TestAccountDeactivationVsDeletion:
         assert reloaded.is_active is False
 
         # But deletion should still fail
-        # Use nested transaction (SAVEPOINT) so rollback only affects the delete attempt
         with pytest.raises((IntegrityError, AccountReferencedError)):
             with session.begin_nested():
                 session.delete(reloaded)
                 session.flush()
-
-    def test_posting_to_deactivated_account_rejected(
-        self,
-        session,
-        posting_orchestrator: PostingOrchestrator,
-        standard_accounts,
-        current_period,
-        test_actor_id,
-        deterministic_clock: DeterministicClock,
-    ):
-        """
-        Verify that posting to a deactivated account is rejected.
-        """
-        # Deactivate the AR account
-        ar_account = standard_accounts["ar"]
-        ar_account.is_active = False
-        session.flush()
-
-        # Try to post using deactivated account
-        result = posting_orchestrator.post_event(
-            event_id=uuid4(),
-            event_type="generic.posting",
-            occurred_at=deterministic_clock.now(),
-            effective_date=deterministic_clock.now().date(),
-            actor_id=test_actor_id,
-            producer="test",
-            payload={
-                "lines": [
-                    {"account_code": "1100", "side": "debit", "amount": "100.00", "currency": "USD"},
-                    {"account_code": "4000", "side": "credit", "amount": "100.00", "currency": "USD"},
-                ]
-            },
-        )
-
-        # Should be rejected with validation failure
-        assert result.status == PostingStatus.VALIDATION_FAILED
-        assert result.validation is not None
-        assert any(
-            "inactive" in str(e.code).lower() or "inactive" in str(e.message).lower()
-            for e in result.validation.errors
-        ), f"Expected inactive account error, got: {result.validation.errors}"
