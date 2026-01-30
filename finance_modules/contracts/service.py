@@ -204,11 +204,15 @@ class GovernmentContractsService:
                 billing_result.contract_type.value,
             )
 
+            # cost_billing = net billing minus fee (for from_context split)
+            cost_billing = billing_result.net_billing.amount - billing_result.fee_amount.amount
+
             payload: dict[str, Any] = {
                 "contract_number": contract_id,
                 "billing_period": billing_period,
                 "billing_type": billing_type,
                 "total_billing": str(billing_result.net_billing.amount),
+                "cost_billing": str(cost_billing),
                 "gross_billing": str(billing_result.gross_billing.amount),
                 "fee_amount": str(billing_result.fee_amount.amount),
                 "withholding_amount": str(billing_result.withholding_amount.amount),
@@ -409,6 +413,68 @@ class GovernmentContractsService:
                 effective_date=effective_date,
                 actor_id=actor_id,
                 amount=abs(adjustment_amount),
+                currency=currency,
+                description=description,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Fee Accrual
+    # =========================================================================
+
+    def record_fee_accrual(
+        self,
+        contract_id: str,
+        fee_type: str,
+        amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+        cumulative_fee: Decimal | None = None,
+        ceiling_fee: Decimal | None = None,
+        org_unit: str | None = None,
+        description: str | None = None,
+    ) -> ModulePostingResult:
+        """
+        Record fee accrual on a government contract.
+
+        Profile dispatch: contract.fee_accrual with where-clause on fee_type.
+        Supported fee_types: FIXED_FEE, INCENTIVE_FEE, AWARD_FEE.
+        """
+        payload: dict[str, Any] = {
+            "contract_number": contract_id,
+            "fee_type": fee_type,
+            "amount": str(amount),
+        }
+        if cumulative_fee is not None:
+            payload["cumulative_fee"] = str(cumulative_fee)
+        if ceiling_fee is not None:
+            payload["ceiling_fee"] = str(ceiling_fee)
+        if org_unit:
+            payload["org_unit"] = org_unit
+
+        logger.info("contract_fee_accrual", extra={
+            "contract_id": contract_id,
+            "fee_type": fee_type,
+            "amount": str(amount),
+        })
+
+        try:
+            result = self._poster.post_event(
+                event_type="contract.fee_accrual",
+                payload=payload,
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=amount,
                 currency=currency,
                 description=description,
             )

@@ -129,6 +129,10 @@ class AccountRole(Enum):
     OVERHEAD_POOL_ALLOWABLE = "overhead_pool_allowable"
     OVERHEAD_UNALLOWABLE = "overhead_unallowable"
 
+    # --- Funding / obligation ---
+    OBLIGATION_CONTROL = "obligation_control"
+    RESERVE_FOR_ENCUMBRANCE = "reserve_for_encumbrance"
+
     # --- DCAA bank ---
     BANK = "bank"
     WITHDRAWAL = "withdrawal"
@@ -485,11 +489,6 @@ CONTRACT_BILLING_COST_REIMB = AccountingPolicy(
             credit_role="WIP_BILLED",
         ),
         LedgerEffect(
-            ledger="GL",
-            debit_role="UNBILLED_AR",
-            credit_role="DEFERRED_FEE_REVENUE",
-        ),
-        LedgerEffect(
             ledger="CONTRACT",
             debit_role="BILLED",
             credit_role="COST_BILLED",
@@ -509,9 +508,8 @@ CONTRACT_BILLING_COST_REIMB = AccountingPolicy(
 
 CONTRACT_BILLING_COST_REIMB_MAPPINGS = (
     ModuleLineMapping(role="UNBILLED_AR", side="debit", ledger="GL"),
-    ModuleLineMapping(role="WIP_BILLED", side="credit", ledger="GL"),
-    ModuleLineMapping(role="UNBILLED_AR", side="debit", ledger="GL"),
-    ModuleLineMapping(role="DEFERRED_FEE_REVENUE", side="credit", ledger="GL"),
+    ModuleLineMapping(role="WIP_BILLED", side="credit", ledger="GL", from_context="cost_billing"),
+    ModuleLineMapping(role="DEFERRED_FEE_REVENUE", side="credit", ledger="GL", from_context="fee_amount"),
     ModuleLineMapping(role="BILLED", side="debit", ledger="CONTRACT"),
     ModuleLineMapping(role="COST_BILLED", side="credit", ledger="CONTRACT"),
 )
@@ -835,6 +833,47 @@ CONTRACT_RATE_ADJUSTMENT = AccountingPolicy(
 CONTRACT_RATE_ADJUSTMENT_MAPPINGS = (
     ModuleLineMapping(role="WIP_RATE_ADJUSTMENT", side="debit", ledger="GL"),
     ModuleLineMapping(role="INDIRECT_RATE_VARIANCE", side="credit", ledger="GL"),
+)
+
+
+# =============================================================================
+# Contract Funding Action
+# =============================================================================
+
+
+CONTRACT_FUNDING_OBLIGATION = AccountingPolicy(
+    name="ContractFundingObligation",
+    version=1,
+    trigger=PolicyTrigger(
+        event_type="contract.funding_action",
+        schema_version=1,
+    ),
+    meaning=PolicyMeaning(
+        economic_type="CONTRACT_OBLIGATION",
+        dimensions=("org_unit", "contract_number"),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="OBLIGATION_CONTROL",
+            credit_role="RESERVE_FOR_ENCUMBRANCE",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Funding amount must be positive",
+        ),
+    ),
+    description="Records contract funding obligation/deobligation",
+)
+
+CONTRACT_FUNDING_OBLIGATION_MAPPINGS = (
+    ModuleLineMapping(role="OBLIGATION_CONTROL", side="debit", ledger="GL"),
+    ModuleLineMapping(role="RESERVE_FOR_ENCUMBRANCE", side="credit", ledger="GL"),
 )
 
 
@@ -1441,6 +1480,8 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     (CONTRACT_ALLOCATION_GA, CONTRACT_ALLOCATION_GA_MAPPINGS),
     # Rate adjustment (1)
     (CONTRACT_RATE_ADJUSTMENT, CONTRACT_RATE_ADJUSTMENT_MAPPINGS),
+    # Funding action (1)
+    (CONTRACT_FUNDING_OBLIGATION, CONTRACT_FUNDING_OBLIGATION_MAPPINGS),
     # DCAA AP invoice (3)
     (AP_INVOICE_ALLOWABLE, AP_INVOICE_ALLOWABLE_MAPPINGS),
     (AP_INVOICE_UNALLOWABLE, AP_INVOICE_UNALLOWABLE_MAPPINGS),

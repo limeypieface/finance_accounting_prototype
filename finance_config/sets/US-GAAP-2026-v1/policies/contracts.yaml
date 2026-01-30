@@ -295,9 +295,6 @@ policies:
   - ledger: GL
     debit_role: UNBILLED_AR
     credit_role: WIP_BILLED
-  - ledger: GL
-    debit_role: UNBILLED_AR
-    credit_role: DEFERRED_FEE_REVENUE
   - ledger: CONTRACT
     debit_role: BILLED
     credit_role: COST_BILLED
@@ -311,10 +308,10 @@ policies:
     side: debit
   - role: WIP_BILLED
     side: credit
-  - role: UNBILLED_AR
-    side: debit
+    from_context: cost_billing
   - role: DEFERRED_FEE_REVENUE
     side: credit
+    from_context: fee_amount
   - role: BILLED
     side: debit
     ledger: CONTRACT
@@ -557,6 +554,32 @@ policies:
   - role: WIP_RATE_ADJUSTMENT
     side: debit
   - role: INDIRECT_RATE_VARIANCE
+    side: credit
+- name: ContractFundingObligation
+  version: 1
+  module: contracts
+  description: Records contract funding obligation/deobligation
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.funding_action
+  meaning:
+    economic_type: CONTRACT_OBLIGATION
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: OBLIGATION_CONTROL
+    credit_role: RESERVE_FOR_ENCUMBRANCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Funding amount must be positive
+  line_mappings:
+  - role: OBLIGATION_CONTROL
+    side: debit
+  - role: RESERVE_FOR_ENCUMBRANCE
     side: credit
 - name: APInvoiceAllowable
   version: 1

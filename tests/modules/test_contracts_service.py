@@ -57,8 +57,8 @@ class TestGovernmentContractsServiceStructure:
         expected = [
             "record_cost_incurrence", "generate_billing",
             "record_funding_action", "record_indirect_allocation",
-            "record_rate_adjustment", "run_allocation_cascade",
-            "compile_ice",
+            "record_rate_adjustment", "record_fee_accrual",
+            "run_allocation_cascade", "compile_ice",
         ]
         for method_name in expected:
             assert hasattr(GovernmentContractsService, method_name)
@@ -132,21 +132,14 @@ class TestContractsServiceIntegration:
         # Billing engine always produces correct results
         assert billing_result.net_billing.amount > 0
 
-        # NOTE: posting may fail with CONCURRENT_INSERT when journal sequence
-        # collides with a prior test's allocation in the same session.
-        assert posting_result.status in (
-            ModulePostingStatus.POSTED,
-            ModulePostingStatus.POSTING_FAILED,
-        )
+        assert posting_result.status == ModulePostingStatus.POSTED
+        assert posting_result.is_success
+        assert len(posting_result.journal_entry_ids) > 0
 
-    def test_record_funding_action_reaches_pipeline(
+    def test_record_funding_action_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
     ):
-        """record_funding_action reaches the real pipeline.
-
-        NOTE: contract.funding_action profile is not yet registered.
-        This test verifies the method exercises the real posting pipeline.
-        """
+        """Record contract funding obligation through the real pipeline."""
         result = contracts_service.record_funding_action(
             contract_id="FA8750-21-C-0001",
             action_type="OBLIGATION",
@@ -155,7 +148,9 @@ class TestContractsServiceIntegration:
             actor_id=test_actor_id,
         )
 
-        assert result.status == ModulePostingStatus.PROFILE_NOT_FOUND
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
 
     def test_record_indirect_allocation_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
@@ -244,3 +239,21 @@ class TestContractsServiceIntegration:
 
         assert submission is not None
         assert submission.fiscal_year == 2024
+
+    def test_record_fee_accrual_posts(
+        self, contracts_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Record fixed fee accrual through the real pipeline."""
+        result = contracts_service.record_fee_accrual(
+            contract_id="FA8750-21-C-0001",
+            fee_type="FIXED_FEE",
+            amount=Decimal("8200.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+            cumulative_fee=Decimal("8200.00"),
+            ceiling_fee=Decimal("50000.00"),
+        )
+
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0

@@ -140,76 +140,59 @@ Each module is audited against these 7 checks:
 - **Log verified:** Yes — all 4 new tests show `status: "posted"`, `entry_count: 1`
 
 ### 2. Contracts (Government Contracts + DCAA Compliance)
-- **Status:** IN PROGRESS — analysis complete, fixes not yet applied
-- **Scope:** 29 profiles (18 contract + 11 DCAA override), 7 service methods, 10 tests (3 structural + 7 integration)
-- **Files:**
-  - `finance_modules/contracts/profiles.py` — READ, analyzed
-  - `finance_modules/contracts/service.py` — READ, analyzed
-  - `finance_config/sets/US-GAAP-2026-v1/policies/contracts.yaml` — READ, analyzed
-  - `tests/modules/test_contracts_service.py` — READ, analyzed
-  - `finance_config/sets/US-GAAP-2026-v1/chart_of_accounts.yaml` — checked
-  - `tests/conftest.py` — checked (all 36 contract roles ARE bound, lines 1596-1628)
+- **Status:** DONE
+- **Scope:** 29 profiles (18 contract + 11 DCAA override), 8 service methods (7 original + 1 new), 11 tests (3 structural + 8 integration)
+- **Files modified:**
+  - `finance_modules/contracts/profiles.py` — Fixed BillingCostReimb, added FundingObligation profile + AccountRole entries
+  - `finance_modules/contracts/service.py` — Added cost_billing to billing payload, added record_fee_accrual()
+  - `finance_config/sets/US-GAAP-2026-v1/policies/contracts.yaml` — Fixed billing policy, added funding policy
+  - `finance_config/sets/US-GAAP-2026-v1/chart_of_accounts.yaml` — Added 33 contract-specific roles
+  - `tests/modules/test_contracts_service.py` — Tightened assertions, added fee accrual test, updated structural test
+  - `tests/conftest.py` — Already correct (all 36 roles bound, lines 1596-1628)
 
-#### Issues Found (6)
+#### Issues Found and Fixed (6)
 
-**Issue 1: 33 missing chart_of_accounts.yaml roles**
-- Nearly all contract-specific roles are missing from chart (but ARE bound in conftest)
-- GL roles needed (29): WIP_DIRECT_LABOR (1411), WIP_DIRECT_MATERIAL (1412), WIP_SUBCONTRACT (1413), WIP_TRAVEL (1414), WIP_ODC (1415), WIP_FRINGE (1416), WIP_OVERHEAD (1417), WIP_GA (1418), WIP_RATE_ADJUSTMENT (1419), WIP_BILLED (1420), UNBILLED_AR (1150), MATERIAL_CLEARING (2820), AP_CLEARING (2860), EXPENSE_CLEARING (2830), FRINGE_POOL_APPLIED (2872), OVERHEAD_POOL_APPLIED (2871), GA_POOL_APPLIED (2873), DEFERRED_FEE_REVENUE (2810), FEE_REVENUE_EARNED (4800), INDIRECT_RATE_VARIANCE (6880), EXPENSE_ALLOWABLE (6110), EXPENSE_UNALLOWABLE (6120), EXPENSE_CONDITIONAL (6130), LABOR_ALLOWABLE (6140), LABOR_UNALLOWABLE (6150), OVERHEAD_POOL_ALLOWABLE (6890), OVERHEAD_UNALLOWABLE (6160), OBLIGATION_CONTROL (1620)
-- CONTRACT subledger roles needed (4): CONTRACT_COST_INCURRED (SL-4001), COST_CLEARING (SL-4002), BILLED (SL-4003), COST_BILLED (SL-4004)
-- **Status: DONE** — all 33 roles added to `chart_of_accounts.yaml` (lines 372-469). Verified the edit landed correctly.
+**Issue 1: 33 missing chart_of_accounts.yaml roles — FIXED**
+- Added 29 GL roles + 4 CONTRACT subledger roles to chart_of_accounts.yaml
 
-**Issue 2: ContractBillingCostReimbursement — duplicate GL LedgerEffect + missing from_context**
-- Profile has 2 GL LedgerEffects (both debit UNBILLED_AR): one for cost portion (Cr WIP_BILLED), one for fee portion (Cr DEFERRED_FEE_REVENUE)
-- Duplicate same-ledger LedgerEffects cause `concurrent_insert_conflict` (known bug pattern)
-- No `from_context` on any mapping lines — ALL 6 lines get posting amount (net_billing), so both GL entries book the full amount. Total UNBILLED_AR = 2x net_billing, total credits = WIP_BILLED(net) + DEFERRED_FEE_REVENUE(net) = 2x net_billing. Entry appears balanced per-journal but semantically wrong (fee portion should be fee_amount, cost portion should be cost_billing)
-- **Fix:** Merge 2 GL LedgerEffects into 1. Add `from_context="cost_billing"` to WIP_BILLED credit, `from_context="fee_amount"` to DEFERRED_FEE_REVENUE credit. Add `cost_billing = net_billing - fee_amount` to service payload. UNBILLED_AR debit (no from_context) = net_billing. Credits = cost_billing + fee_amount = net_billing. Balanced.
-- Files to edit: `profiles.py` (lines 469-517), `contracts.yaml` (lines 279-323), `service.py` (generate_billing payload ~line 213)
-- **Status: NOT DONE**
+**Issue 2: ContractBillingCostReimbursement — duplicate GL LedgerEffect + missing from_context — FIXED**
+- Merged 2 GL LedgerEffects into 1, added `from_context="cost_billing"` to WIP_BILLED credit, `from_context="fee_amount"` to DEFERRED_FEE_REVENUE credit
+- Service computes `cost_billing = net_billing - fee_amount` in payload
+- Balance: Dr UNBILLED_AR(net_billing) = Cr WIP_BILLED(cost_billing) + Cr DEFERRED_FEE_REVENUE(fee_amount) ✓
 
-**Issue 3: test_generate_billing_posts allows POSTING_FAILED**
-- Comment says "CONCURRENT_INSERT" but real cause is Issue 2 (duplicate GL LedgerEffects)
-- After fixing Issue 2, tighten to assert strict `POSTED`
-- File: `test_contracts_service.py` line 137
-- **Status: NOT DONE**
+**Issue 3: test_generate_billing_posts allowed POSTING_FAILED — FIXED**
+- Tightened to assert strict `POSTED` + `is_success` + `journal_entry_ids > 0`
 
-**Issue 4: No FundingAction profile — record_funding_action() returns PROFILE_NOT_FOUND**
-- Service emits `contract.funding_action` but no profile exists in profiles.py or contracts.yaml
-- Test at line 158 explicitly expects `PROFILE_NOT_FOUND`
-- **Fix:** Add `ContractFundingObligation` profile: Dr OBLIGATION_CONTROL / Cr RESERVE_FOR_ENCUMBRANCE. Add `OBLIGATION_CONTROL` to AccountRole enum. Add matching YAML policy. Update test to assert POSTED.
-- Conftest already has `OBLIGATION_CONTROL` bound (line 1629 → `module_accounts["encumbrance"]`)
-- Chart needs `OBLIGATION_CONTROL` at 1620 (included in Issue 1 chart additions)
-- **Status: NOT DONE**
+**Issue 4: No FundingAction profile — FIXED**
+- Added ContractFundingObligation profile: Dr OBLIGATION_CONTROL / Cr RESERVE_FOR_ENCUMBRANCE
+- Added to profiles.py, contracts.yaml, and _ALL_PROFILES
+- Updated test from expecting PROFILE_NOT_FOUND to strict POSTED
 
-**Issue 5: No record_fee_accrual() service method — 3 fee profiles orphaned**
-- Profiles ContractFeeFixedAccrual, ContractFeeIncentiveAccrual, ContractFeeAwardAccrual dispatch on `contract.fee_accrual` with where-clause on `payload.fee_type` (FIXED_FEE, INCENTIVE_FEE, AWARD_FEE)
-- No service method emits `contract.fee_accrual` — these profiles are unreachable
-- **Fix:** Add `record_fee_accrual()` to service.py with params: `contract_id, fee_type, amount, effective_date, actor_id, cumulative_fee, ceiling_fee`. Payload: `contract_number, fee_type, amount, cumulative_fee, ceiling_fee`. Event type: `contract.fee_accrual`.
-- Add integration test for fixed fee accrual.
-- Update structural test expected methods list.
-- **Status: NOT DONE**
+**Issue 5: No record_fee_accrual() service method — FIXED**
+- Added `record_fee_accrual()` method emitting `contract.fee_accrual`
+- Added integration test for FIXED_FEE accrual
+- Updated structural test expected methods list
 
-**Issue 6: 11 DCAA override profiles — no dedicated service methods needed**
-- These profiles use `PrecedenceMode.OVERRIDE` with `schema_version=2` to intercept events from AP/payroll/bank modules when `payload.allowability` field is present
-- They don't need their own service methods — they fire when the AP/payroll/bank services emit events with allowability context
-- No integration tests exist for DCAA profiles in the contracts test file
-- **Status: ACCEPTABLE** — override profiles are tested via `tests/domain/test_dcaa_compliance.py`
+**Issue 6: 11 DCAA override profiles — ACCEPTABLE (no fix needed)**
+- Override profiles intercept events from AP/payroll/bank modules when allowability context is present
+- Tested via `tests/domain/test_dcaa_compliance.py`
 
-#### Audit Checklist Progress
+#### Audit Checklist
 - [x] Read profiles.py (29 profiles analyzed)
 - [x] Read YAML (29 policies, matches profiles)
-- [x] Read service.py (7 methods analyzed)
-- [x] Read test file (10 tests analyzed)
-- [x] Check chart roles (33 missing identified)
+- [x] Read service.py (8 methods — 7 original + 1 new)
+- [x] Read test file (11 tests — 10 original + 1 new)
+- [x] Check chart roles (33 added)
 - [x] Check conftest roles (all 36 roles bound)
-- [x] Fix Issue 1: Chart roles (DONE — 33 roles added, lines 372-469)
-- [ ] Fix Issue 2: BillingCostReimb (profiles.py + YAML + service.py)
-- [ ] Fix Issue 3: Tighten billing test assertion
-- [ ] Fix Issue 4: Add FundingAction profile (profiles.py + YAML + test)
-- [ ] Fix Issue 5: Add record_fee_accrual() (service.py + test + structural)
-- [ ] Run tests (`pytest tests/modules/test_contracts_service.py -v`)
-- [ ] Log verify (new/fixed tests show `status: "posted"`)
-- [ ] Regression run (`pytest tests/modules/ -v`)
-- [ ] Update this tracker with final results
+- [x] Fix Issue 1: Chart roles — DONE
+- [x] Fix Issue 2: BillingCostReimb — DONE (profiles.py + YAML + service.py)
+- [x] Fix Issue 3: Tighten billing test — DONE
+- [x] Fix Issue 4: FundingAction profile — DONE (profiles.py + YAML + test)
+- [x] Fix Issue 5: record_fee_accrual() — DONE (service.py + test + structural)
+- [x] Run tests: 11/11 passed
+- [x] Log verify: 3 fixed/new tests show `status: "posted"`
+- [x] Regression run: 1137 passed, 0 failures
+- [x] Update this tracker
 
 ### 3. GL (General Ledger)
 - **Status:** NOT STARTED
@@ -252,5 +235,5 @@ pytest tests/modules/ -v
 | After Payroll audit | 1129 | 0 | 2026-01-29 |
 | After Expense audit | 1132 | 0 | 2026-01-29 |
 | After Tax audit | 1136 | 0 | 2026-01-29 |
-| After Contracts audit | — | — | — |
+| After Contracts audit | 1137 | 0 | 2026-01-29 |
 | After GL audit | — | — | — |
