@@ -288,6 +288,7 @@ def print_menu():
     print("  View:")
     print("    R   View all reports")
     print("    J   View journal entries")
+    print("    T   Trace a journal entry (full auditor decision trail)")
     print()
     print("  Other:")
     print("    X   Reset database (drop all data, start fresh)")
@@ -345,6 +346,217 @@ def show_journal(session):
         print()
 
     print(f"  Total: {len(entries)} journal entries")
+    print()
+
+
+def show_trace(session):
+    """Let the user pick a journal entry by sequence number and trace it."""
+    from finance_kernel.models.journal import JournalEntry, JournalLine
+    from finance_kernel.models.account import Account
+    from finance_kernel.models.event import Event
+    from finance_kernel.models.interpretation_outcome import InterpretationOutcome
+    from finance_kernel.selectors.trace_selector import TraceSelector
+
+    entries = session.query(JournalEntry).order_by(JournalEntry.seq).all()
+    if not entries:
+        print("\n  No journal entries to trace.\n")
+        return
+
+    # Build memo lookup
+    event_map = {}
+    for evt in session.query(Event).all():
+        memo = ""
+        if evt.payload and isinstance(evt.payload, dict):
+            memo = evt.payload.get("memo", "")
+        event_map[evt.event_id] = memo
+
+    # Check which have decision journals
+    outcomes = (
+        session.query(InterpretationOutcome)
+        .filter(InterpretationOutcome.decision_log.isnot(None))
+        .all()
+    )
+    events_with_journal = {o.source_event_id for o in outcomes}
+
+    print()
+    print("=" * 72)
+    print("  TRACE A JOURNAL ENTRY".center(72))
+    print("=" * 72)
+    print()
+    print(f"  {'#':>3}  {'status':<8}  {'journal':<8}  {'memo'}")
+    print(f"  {'---':>3}  {'------':<8}  {'-------':<8}  {'----'}")
+
+    for entry in entries:
+        status_val = entry.status.value if hasattr(entry.status, 'value') else str(entry.status)
+        memo = event_map.get(entry.source_event_id, "")
+        has_log = "YES" if entry.source_event_id in events_with_journal else "no"
+        print(f"  {entry.seq:>3}  {status_val:<8}  {has_log:<8}  {memo}")
+
+    print()
+    try:
+        pick = input("  Enter entry # to trace (or blank to cancel): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    if not pick:
+        return
+
+    try:
+        seq_num = int(pick)
+    except ValueError:
+        print(f"\n  Invalid number '{pick}'.\n")
+        return
+
+    target = None
+    for entry in entries:
+        if entry.seq == seq_num:
+            target = entry
+            break
+
+    if target is None:
+        print(f"\n  No entry with seq #{seq_num}.\n")
+        return
+
+    # Run the trace
+    memo = event_map.get(target.source_event_id, f"entry #{target.seq}")
+    print()
+    print("=" * 72)
+    print(f"  AUDIT TRACE: Entry #{target.seq} — {memo}")
+    print("=" * 72)
+
+    selector = TraceSelector(session)
+    bundle = selector.trace_by_event_id(target.source_event_id)
+
+    # Origin
+    print()
+    print("--- ORIGIN EVENT ---")
+    print()
+    if bundle.origin:
+        o = bundle.origin
+        print(f"    event_id: {o.event_id}")
+        print(f"    event_type: {o.event_type}")
+        print(f"    occurred_at: {o.occurred_at}")
+        print(f"    effective_date: {o.effective_date}")
+        print(f"    producer: {o.producer}")
+        print(f"    payload_hash: {o.payload_hash}")
+
+    # Journal entry
+    print()
+    print(f"--- JOURNAL ENTRIES ({len(bundle.journal_entries)}) ---")
+    print()
+    for je in bundle.journal_entries:
+        print(f"    entry_id: {je.entry_id}")
+        print(f"    status: {je.status}  seq: {je.seq}")
+        print(f"    effective_date: {je.effective_date}  posted_at: {je.posted_at}")
+        print()
+        print(f"      {'seq':>4}  {'side':<7} {'amount':>14}  {'curr':<4}  {'account':<12}  {'rounding'}")
+        print(f"      {'---':>4}  {'----':<7} {'------':>14}  {'----':<4}  {'-------':<12}  {'--------'}")
+        for line in je.lines:
+            print(f"      {line.line_seq:>4}  {line.side:<7} "
+                  f"{line.amount:>14}  {line.currency:<4}  "
+                  f"{line.account_code:<12}  {line.is_rounding}")
+        print()
+
+    # Interpretation
+    if bundle.interpretation:
+        interp = bundle.interpretation
+        print("--- INTERPRETATION OUTCOME ---")
+        print()
+        print(f"    status: {interp.status}")
+        print(f"    profile: {interp.profile_id} v{interp.profile_version}")
+        if interp.decision_log:
+            print(f"    decision_log_records: {len(interp.decision_log)}")
+        print()
+
+    # Decision journal
+    log_entries = [t for t in bundle.timeline if t.source == "structured_log"]
+    audit_entries = [t for t in bundle.timeline if t.source == "audit_event"]
+
+    print(f"--- DECISION JOURNAL ({len(bundle.timeline)} entries) ---")
+    print()
+
+    if log_entries:
+        for i, te in enumerate(log_entries):
+            action = te.action
+            d = te.detail or {}
+
+            if action == "interpretation_started":
+                print(f"  [{i:>2}] INTERPRETATION STARTED")
+                print(f"       Profile: {d.get('profile_id')} v{d.get('profile_version')}")
+                print(f"       Event: {str(d.get('source_event_id', ''))[:8]}...")
+            elif action == "config_in_force":
+                print(f"  [{i:>2}] CONFIG SNAPSHOT (R21)")
+                print(f"       COA: {d.get('coa_version')}  Dim: {d.get('dimension_schema_version')}  "
+                      f"Rounding: {d.get('rounding_policy_version')}  Currency: {d.get('currency_registry_version')}")
+            elif action == "journal_write_started":
+                print(f"  [{i:>2}] JOURNAL WRITE STARTED — {d.get('ledger_count')} ledger(s)")
+            elif action == "balance_validated":
+                balanced = d.get('balanced')
+                print(f"  [{i:>2}] BALANCE VALIDATED — {d.get('ledger_id')} {d.get('currency')}  "
+                      f"Dr {d.get('sum_debit')} = Cr {d.get('sum_credit')}  "
+                      f"{'PASS' if balanced else 'FAIL'}")
+            elif action == "role_resolved":
+                print(f"  [{i:>2}] ROLE RESOLVED — {d.get('role')} -> {d.get('account_code')}  "
+                      f"{d.get('side')} {d.get('amount')} {d.get('currency')}")
+            elif action == "line_written":
+                print(f"  [{i:>2}] LINE WRITTEN — seq {d.get('line_seq')}: "
+                      f"{d.get('role')} -> {d.get('account_code')}  "
+                      f"{d.get('side')} {d.get('amount')} {d.get('currency')}")
+            elif action == "invariant_checked":
+                passed = d.get('passed')
+                print(f"  [{i:>2}] INVARIANT — {d.get('invariant')}: {'PASS' if passed else 'FAIL'}")
+            elif action == "journal_entry_created":
+                print(f"  [{i:>2}] ENTRY CREATED — {str(d.get('entry_id', ''))[:8]}...  "
+                      f"status: {d.get('status')}  seq: {d.get('seq')}")
+            elif action == "journal_write_completed":
+                print(f"  [{i:>2}] WRITE COMPLETED — {d.get('entry_count')} entries  {d.get('duration_ms')}ms")
+            elif action == "outcome_recorded":
+                print(f"  [{i:>2}] OUTCOME RECORDED — {d.get('status')}")
+            elif action == "interpretation_posted":
+                print(f"  [{i:>2}] INTERPRETATION POSTED — {d.get('entry_count')} entries")
+            elif action == "reproducibility_proof":
+                print(f"  [{i:>2}] REPRODUCIBILITY PROOF")
+                print(f"       input:  {str(d.get('input_hash', ''))[:16]}...")
+                print(f"       output: {str(d.get('output_hash', ''))[:16]}...")
+            elif action == "FINANCE_KERNEL_TRACE":
+                print(f"  [{i:>2}] KERNEL TRACE — {d.get('policy_name')} v{d.get('policy_version')}  "
+                      f"outcome: {d.get('outcome_status')}")
+            elif action == "interpretation_completed":
+                print(f"  [{i:>2}] COMPLETED — success: {d.get('success')}  {d.get('duration_ms')}ms")
+            else:
+                print(f"  [{i:>2}] {action}")
+                for k, v in d.items():
+                    if k not in ("ts", "timestamp", "level", "logger"):
+                        print(f"       {k}: {v}")
+            print()
+
+    if audit_entries:
+        print(f"  Audit trail ({len(audit_entries)}):")
+        for i, te in enumerate(audit_entries):
+            print(f"    {i:>3}  {te.action:<30} {te.entity_type or '':<15}")
+        print()
+
+    # Integrity
+    print("--- INTEGRITY ---")
+    print()
+    integrity = bundle.integrity
+    print(f"    payload_hash_verified: {integrity.payload_hash_verified}")
+    print(f"    balance_verified: {integrity.balance_verified}")
+    print(f"    audit_chain_valid: {integrity.audit_chain_segment_valid}")
+    all_ok = integrity.payload_hash_verified and integrity.balance_verified
+    print(f"    result: {'ALL CHECKS PASSED' if all_ok else 'ISSUES DETECTED'}")
+
+    # Missing facts
+    if bundle.missing_facts:
+        print()
+        print(f"--- MISSING FACTS ({len(bundle.missing_facts)}) ---")
+        for mf in bundle.missing_facts:
+            print(f"    [{mf.fact}] {mf.expected_source}")
+    else:
+        print()
+        print("  Trace is complete — 0 missing facts.")
+
     print()
 
 
@@ -462,6 +674,9 @@ def main() -> int:
 
         elif choice == "J":
             show_journal(session)
+
+        elif choice == "T":
+            show_trace(session)
 
         elif choice == "X":
             print("\n  Resetting database...")
