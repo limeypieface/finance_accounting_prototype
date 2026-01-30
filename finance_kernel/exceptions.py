@@ -91,10 +91,37 @@ All exceptions inherit from FinanceKernelError:
     |   +-- RoundingAmountExceededError
     |
     +-- ExchangeRateError
-        +-- ExchangeRateImmutableError
-        +-- ExchangeRateReferencedError
-        +-- InvalidExchangeRateError
-        +-- ExchangeRateArbitrageError
+    |   +-- ExchangeRateImmutableError
+    |   +-- ExchangeRateReferencedError
+    |   +-- InvalidExchangeRateError
+    |   +-- ExchangeRateArbitrageError
+    |
+    +-- EconomicLinkError
+    |   +-- SelfLinkError
+    |   +-- InvalidLinkTypeError
+    |   +-- LinkCycleError
+    |   +-- DuplicateLinkError
+    |   +-- MaxChildrenExceededError
+    |   +-- ArtifactNotFoundError
+    |   +-- LinkImmutableError
+    |
+    +-- ReconciliationError
+    |   +-- OverapplicationError
+    |   +-- DocumentAlreadyMatchedError
+    |   +-- MatchVarianceExceededError
+    |   +-- BankReconciliationError
+    |
+    +-- ValuationError
+    |   +-- InsufficientInventoryError
+    |   +-- LotNotFoundError
+    |   +-- LotDepletedError
+    |   +-- StandardCostNotFoundError
+    |
+    +-- CorrectionError
+        +-- AlreadyCorrectedError
+        +-- CorrectionCascadeBlockedError
+        +-- UnwindDepthExceededError
+        +-- NoGLImpactError
 
 ===============================================================================
 ERROR CODES - QUICK REFERENCE
@@ -149,6 +176,29 @@ Exchange Rate   | EXCHANGE_RATE_IMMUTABLE     | Rate used, can't modify
                 | EXCHANGE_RATE_REFERENCED    | Rate used, can't delete
                 | INVALID_EXCHANGE_RATE       | Rate is zero/negative/invalid
                 | EXCHANGE_RATE_ARBITRAGE     | Rate creates arbitrage opportunity
+----------------|-----------------------------|-----------------------------------------
+Economic Link   | SELF_LINK                   | Artifact linking to itself
+                | INVALID_LINK_TYPE           | Link type invalid for artifact types
+                | LINK_CYCLE                  | Creates cycle in link graph
+                | DUPLICATE_LINK              | Link already exists
+                | MAX_CHILDREN_EXCEEDED       | Too many children for link type
+                | ARTIFACT_NOT_FOUND          | Referenced artifact doesn't exist
+                | LINK_IMMUTABLE              | Modifying immutable link
+----------------|-----------------------------|-----------------------------------------
+Reconciliation  | OVERAPPLICATION             | Applied more than remaining balance
+                | DOCUMENT_ALREADY_MATCHED    | Document fully matched, can't apply
+                | MATCH_VARIANCE_EXCEEDED     | 3-way match variance too large
+                | BANK_RECONCILIATION_ERROR   | Bank statement matching error
+----------------|-----------------------------|-----------------------------------------
+Valuation       | INSUFFICIENT_INVENTORY      | Not enough inventory to consume
+                | LOT_NOT_FOUND               | Cost lot doesn't exist
+                | LOT_DEPLETED                | Cost lot has no remaining quantity
+                | STANDARD_COST_NOT_FOUND     | No standard cost for item
+----------------|-----------------------------|-----------------------------------------
+Correction      | ALREADY_CORRECTED           | Document already corrected
+                | CORRECTION_CASCADE_BLOCKED  | Downstream artifact blocks cascade
+                | UNWIND_DEPTH_EXCEEDED       | Cascade too deep
+                | NO_GL_IMPACT                | Document has no GL entries
 
 ===============================================================================
 HANDLING PATTERNS
@@ -1139,4 +1189,583 @@ class LinkImmutableError(EconomicLinkError):
         self.operation = operation
         super().__init__(
             f"Cannot {operation} link {link_id}: links are immutable (L1)"
+        )
+
+
+# Reconciliation related exceptions
+
+
+class ReconciliationError(FinanceKernelError):
+    """Base exception for reconciliation related errors."""
+
+    code: str = "RECONCILIATION_ERROR"
+
+
+class OverapplicationError(ReconciliationError):
+    """
+    Attempted to apply more than the remaining balance.
+
+    When applying payments to invoices (or credits to documents),
+    the applied amount cannot exceed the remaining unapplied balance.
+    """
+
+    code: str = "OVERAPPLICATION"
+
+    def __init__(
+        self,
+        document_ref: str,
+        remaining_amount: str,
+        attempted_amount: str,
+        currency: str,
+    ):
+        self.document_ref = document_ref
+        self.remaining_amount = remaining_amount
+        self.attempted_amount = attempted_amount
+        self.currency = currency
+        super().__init__(
+            f"Cannot apply {attempted_amount} {currency} to {document_ref}: "
+            f"only {remaining_amount} {currency} remaining"
+        )
+
+
+class DocumentAlreadyMatchedError(ReconciliationError):
+    """
+    Document is already fully matched and cannot accept more applications.
+
+    Once a document's remaining balance reaches zero, no further
+    payments or credits can be applied.
+    """
+
+    code: str = "DOCUMENT_ALREADY_MATCHED"
+
+    def __init__(self, document_ref: str):
+        self.document_ref = document_ref
+        super().__init__(
+            f"Document {document_ref} is already fully matched"
+        )
+
+
+class MatchVarianceExceededError(ReconciliationError):
+    """
+    Three-way match variance exceeds configured tolerance.
+
+    When matching PO -> Receipt -> Invoice, price or quantity
+    variances must be within configured tolerances.
+    """
+
+    code: str = "MATCH_VARIANCE_EXCEEDED"
+
+    def __init__(
+        self,
+        match_type: str,
+        variance_type: str,
+        variance_amount: str,
+        tolerance: str,
+        currency: str | None = None,
+    ):
+        self.match_type = match_type
+        self.variance_type = variance_type
+        self.variance_amount = variance_amount
+        self.tolerance = tolerance
+        self.currency = currency
+        unit = f" {currency}" if currency else ""
+        super().__init__(
+            f"{match_type} {variance_type} variance of {variance_amount}{unit} "
+            f"exceeds tolerance of {tolerance}{unit}"
+        )
+
+
+class BankReconciliationError(ReconciliationError):
+    """
+    Bank statement reconciliation error.
+
+    Errors specific to matching bank statement lines with GL entries.
+    """
+
+    code: str = "BANK_RECONCILIATION_ERROR"
+
+    def __init__(self, statement_line_id: str, reason: str):
+        self.statement_line_id = statement_line_id
+        self.reason = reason
+        super().__init__(
+            f"Bank reconciliation error for line {statement_line_id}: {reason}"
+        )
+
+
+# Valuation related exceptions
+
+
+class ValuationError(FinanceKernelError):
+    """Base exception for valuation/costing related errors."""
+
+    code: str = "VALUATION_ERROR"
+
+
+class InsufficientInventoryError(ValuationError):
+    """
+    Not enough inventory available to fulfill the requested quantity.
+
+    When consuming inventory via FIFO/LIFO/etc., there must be
+    sufficient quantity in available cost lots.
+    """
+
+    code: str = "INSUFFICIENT_INVENTORY"
+
+    def __init__(
+        self,
+        item_id: str,
+        requested_quantity: str,
+        available_quantity: str,
+        unit: str,
+    ):
+        self.item_id = item_id
+        self.requested_quantity = requested_quantity
+        self.available_quantity = available_quantity
+        self.unit = unit
+        super().__init__(
+            f"Insufficient inventory for item {item_id}: "
+            f"requested {requested_quantity} {unit}, "
+            f"only {available_quantity} {unit} available"
+        )
+
+
+class LotNotFoundError(ValuationError):
+    """
+    Specified cost lot does not exist.
+
+    When using specific identification (lot picking), the
+    specified lot must exist.
+    """
+
+    code: str = "LOT_NOT_FOUND"
+
+    def __init__(self, lot_id: str, item_id: str | None = None):
+        self.lot_id = lot_id
+        self.item_id = item_id
+        item_info = f" for item {item_id}" if item_id else ""
+        super().__init__(
+            f"Cost lot {lot_id} not found{item_info}"
+        )
+
+
+class LotDepletedError(ValuationError):
+    """
+    Cost lot has no remaining quantity.
+
+    When consuming from a specific lot, the lot must have
+    available quantity remaining.
+    """
+
+    code: str = "LOT_DEPLETED"
+
+    def __init__(self, lot_id: str, item_id: str):
+        self.lot_id = lot_id
+        self.item_id = item_id
+        super().__init__(
+            f"Cost lot {lot_id} for item {item_id} is fully depleted"
+        )
+
+
+class StandardCostNotFoundError(ValuationError):
+    """
+    No standard cost defined for the item.
+
+    When using standard costing, a standard cost must be
+    defined for the item before it can be issued.
+    """
+
+    code: str = "STANDARD_COST_NOT_FOUND"
+
+    def __init__(self, item_id: str, as_of_date: str | None = None):
+        self.item_id = item_id
+        self.as_of_date = as_of_date
+        date_info = f" as of {as_of_date}" if as_of_date else ""
+        super().__init__(
+            f"No standard cost defined for item {item_id}{date_info}"
+        )
+
+
+# Correction related exceptions
+
+
+class CorrectionError(FinanceKernelError):
+    """Base exception for correction/unwind related errors."""
+
+    code: str = "CORRECTION_ERROR"
+
+
+class AlreadyCorrectedError(CorrectionError):
+    """
+    Document has already been corrected/voided.
+
+    A document can only be corrected once. To make further
+    corrections, correct the correction document.
+    """
+
+    code: str = "ALREADY_CORRECTED"
+
+    def __init__(self, document_ref: str, correction_ref: str):
+        self.document_ref = document_ref
+        self.correction_ref = correction_ref
+        super().__init__(
+            f"Document {document_ref} has already been corrected by {correction_ref}"
+        )
+
+
+class CorrectionCascadeBlockedError(CorrectionError):
+    """
+    Correction cascade is blocked by a downstream artifact.
+
+    When unwinding a document cascade, some downstream artifacts
+    may not be correctable (e.g., period closed, already corrected).
+    """
+
+    code: str = "CORRECTION_CASCADE_BLOCKED"
+
+    def __init__(
+        self,
+        root_ref: str,
+        blocked_ref: str,
+        reason: str,
+        depth: int,
+    ):
+        self.root_ref = root_ref
+        self.blocked_ref = blocked_ref
+        self.reason = reason
+        self.depth = depth
+        super().__init__(
+            f"Cascade correction of {root_ref} blocked at depth {depth}: "
+            f"{blocked_ref} cannot be unwound - {reason}"
+        )
+
+
+class UnwindDepthExceededError(CorrectionError):
+    """
+    Correction cascade exceeded maximum allowed depth.
+
+    To prevent runaway recursion, cascade unwinding has a
+    maximum depth limit. If exceeded, the correction must
+    be handled manually.
+    """
+
+    code: str = "UNWIND_DEPTH_EXCEEDED"
+
+    def __init__(self, root_ref: str, max_depth: int, reached_depth: int):
+        self.root_ref = root_ref
+        self.max_depth = max_depth
+        self.reached_depth = reached_depth
+        super().__init__(
+            f"Unwind of {root_ref} exceeded max depth: "
+            f"reached {reached_depth}, max is {max_depth}"
+        )
+
+
+class NoGLImpactError(CorrectionError):
+    """
+    Document has no GL entries to correct.
+
+    Some documents may not have GL impact (e.g., draft documents,
+    non-financial artifacts). These cannot be "corrected" in the
+    accounting sense.
+    """
+
+    code: str = "NO_GL_IMPACT"
+
+    def __init__(self, document_ref: str):
+        self.document_ref = document_ref
+        super().__init__(
+            f"Document {document_ref} has no GL entries to correct"
+        )
+
+
+# Party related exceptions
+
+
+class PartyError(FinanceKernelError):
+    """Base exception for party-related errors."""
+
+    code: str = "PARTY_ERROR"
+
+
+class PartyNotFoundError(PartyError):
+    """
+    Party with given code or ID was not found.
+
+    Parties are required for transactions with external entities
+    (customers, suppliers, employees).
+    """
+
+    code: str = "PARTY_NOT_FOUND"
+
+    def __init__(self, party_code: str):
+        self.party_code = party_code
+        super().__init__(f"Party not found: {party_code}")
+
+
+class PartyFrozenError(PartyError):
+    """
+    Party is frozen and cannot transact.
+
+    Frozen parties are blocked from new transactions. This may be
+    due to credit issues, legal holds, or other business reasons.
+    """
+
+    code: str = "PARTY_FROZEN"
+
+    def __init__(self, party_code: str, reason: str | None = None):
+        self.party_code = party_code
+        self.reason = reason
+        reason_text = f": {reason}" if reason else ""
+        super().__init__(
+            f"Party {party_code} is frozen and cannot transact{reason_text}"
+        )
+
+
+class PartyInactiveError(PartyError):
+    """
+    Party is inactive and cannot be used for new transactions.
+
+    Inactive parties still exist for historical reference but
+    cannot be assigned to new documents or transactions.
+    """
+
+    code: str = "PARTY_INACTIVE"
+
+    def __init__(self, party_code: str):
+        self.party_code = party_code
+        super().__init__(
+            f"Party {party_code} is inactive and cannot be used for new transactions"
+        )
+
+
+class CreditLimitExceededError(PartyError):
+    """
+    Transaction would exceed party's credit limit.
+
+    For customers with credit limits, new invoices or orders
+    cannot exceed the remaining available credit.
+    """
+
+    code: str = "CREDIT_LIMIT_EXCEEDED"
+
+    def __init__(
+        self,
+        party_code: str,
+        credit_limit: str,
+        current_balance: str,
+        requested_amount: str,
+        currency: str,
+    ):
+        self.party_code = party_code
+        self.credit_limit = credit_limit
+        self.current_balance = current_balance
+        self.requested_amount = requested_amount
+        self.currency = currency
+        available = f"{credit_limit} - {current_balance}"
+        super().__init__(
+            f"Credit limit exceeded for {party_code}: "
+            f"limit {credit_limit} {currency}, balance {current_balance} {currency}, "
+            f"requested {requested_amount} {currency}"
+        )
+
+
+class PartyReferencedError(PartyError):
+    """
+    Party cannot be deleted because it is referenced by transactions.
+
+    Parties with transaction history cannot be deleted, only
+    deactivated or closed.
+    """
+
+    code: str = "PARTY_REFERENCED"
+
+    def __init__(self, party_code: str, reference_count: int):
+        self.party_code = party_code
+        self.reference_count = reference_count
+        super().__init__(
+            f"Party {party_code} cannot be deleted: "
+            f"referenced by {reference_count} transaction(s)"
+        )
+
+
+# Contract related exceptions
+
+
+class ContractError(FinanceKernelError):
+    """Base exception for contract-related errors."""
+
+    code: str = "CONTRACT_ERROR"
+
+
+class ContractNotFoundError(ContractError):
+    """
+    Contract with given number or ID was not found.
+
+    Contracts are required for cost-chargeable government work.
+    """
+
+    code: str = "CONTRACT_NOT_FOUND"
+
+    def __init__(self, contract_id: str):
+        self.contract_id = contract_id
+        super().__init__(f"Contract not found: {contract_id}")
+
+
+class ContractInactiveError(ContractError):
+    """
+    Contract is not active and cannot accept new charges.
+
+    Contracts that are suspended, completed, or closed cannot
+    accept new cost charges.
+    """
+
+    code: str = "CONTRACT_INACTIVE"
+
+    def __init__(self, contract_number: str, status: str):
+        self.contract_number = contract_number
+        self.status = status
+        super().__init__(
+            f"Contract {contract_number} is {status} and cannot accept charges"
+        )
+
+
+class ContractFundingExceededError(ContractError):
+    """
+    Charge would exceed contract's funded amount.
+
+    DCAA requires that costs do not exceed obligated funding.
+    """
+
+    code: str = "CONTRACT_FUNDING_EXCEEDED"
+
+    def __init__(
+        self,
+        contract_number: str,
+        funded_amount: str,
+        incurred_amount: str,
+        charge_amount: str,
+        currency: str,
+    ):
+        self.contract_number = contract_number
+        self.funded_amount = funded_amount
+        self.incurred_amount = incurred_amount
+        self.charge_amount = charge_amount
+        self.currency = currency
+        super().__init__(
+            f"Funding exceeded for contract {contract_number}: "
+            f"funded {funded_amount} {currency}, incurred {incurred_amount} {currency}, "
+            f"charge would add {charge_amount} {currency}"
+        )
+
+
+class ContractCeilingExceededError(ContractError):
+    """
+    Charge would exceed contract's ceiling amount.
+
+    Contract ceiling is the maximum total value (not-to-exceed).
+    """
+
+    code: str = "CONTRACT_CEILING_EXCEEDED"
+
+    def __init__(
+        self,
+        contract_number: str,
+        ceiling_amount: str,
+        current_total: str,
+        charge_amount: str,
+        currency: str,
+    ):
+        self.contract_number = contract_number
+        self.ceiling_amount = ceiling_amount
+        self.current_total = current_total
+        self.charge_amount = charge_amount
+        self.currency = currency
+        super().__init__(
+            f"Ceiling exceeded for contract {contract_number}: "
+            f"ceiling {ceiling_amount} {currency}, current {current_total} {currency}, "
+            f"charge would add {charge_amount} {currency}"
+        )
+
+
+class ContractPOPExpiredError(ContractError):
+    """
+    Charge date is outside contract's period of performance.
+
+    Costs can only be charged within the period of performance.
+    """
+
+    code: str = "CONTRACT_POP_EXPIRED"
+
+    def __init__(
+        self,
+        contract_number: str,
+        charge_date: str,
+        pop_start: str | None,
+        pop_end: str | None,
+    ):
+        self.contract_number = contract_number
+        self.charge_date = charge_date
+        self.pop_start = pop_start
+        self.pop_end = pop_end
+        pop_range = f"{pop_start or 'N/A'} to {pop_end or 'N/A'}"
+        super().__init__(
+            f"Charge date {charge_date} is outside period of performance "
+            f"for contract {contract_number}: {pop_range}"
+        )
+
+
+class CLINNotFoundError(ContractError):
+    """
+    Contract line item (CLIN) was not found.
+
+    Costs must be charged to valid CLINs.
+    """
+
+    code: str = "CLIN_NOT_FOUND"
+
+    def __init__(self, contract_number: str, clin_number: str):
+        self.contract_number = contract_number
+        self.clin_number = clin_number
+        super().__init__(
+            f"CLIN {clin_number} not found on contract {contract_number}"
+        )
+
+
+class CLINInactiveError(ContractError):
+    """
+    CLIN is not active and cannot accept charges.
+    """
+
+    code: str = "CLIN_INACTIVE"
+
+    def __init__(self, contract_number: str, clin_number: str):
+        self.contract_number = contract_number
+        self.clin_number = clin_number
+        super().__init__(
+            f"CLIN {clin_number} on contract {contract_number} is inactive"
+        )
+
+
+class UnallowableCostToContractError(ContractError):
+    """
+    Unallowable cost cannot be charged to a government contract.
+
+    DCAA requires strict segregation of allowable and unallowable costs.
+    """
+
+    code: str = "UNALLOWABLE_COST_TO_CONTRACT"
+
+    def __init__(
+        self,
+        contract_number: str,
+        cost_type: str,
+        unallowable_reason: str | None = None,
+    ):
+        self.contract_number = contract_number
+        self.cost_type = cost_type
+        self.unallowable_reason = unallowable_reason
+        reason_text = f" ({unallowable_reason})" if unallowable_reason else ""
+        super().__init__(
+            f"Unallowable {cost_type} cost{reason_text} cannot be charged "
+            f"to contract {contract_number}"
         )

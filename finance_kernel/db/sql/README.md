@@ -4,17 +4,22 @@ This directory contains PostgreSQL trigger definitions for database-level immuta
 
 ## File Organization
 
-| File | Entity | Invariants Enforced |
-|------|--------|---------------------|
-| `01_journal_entry.sql` | JournalEntry | Posted entries immutable |
-| `02_journal_line.sql` | JournalLine | Lines immutable when parent posted |
-| `03_audit_event.sql` | AuditEvent | Always immutable (no exceptions) |
-| `04_account.sql` | Account | Structural fields immutable when referenced |
-| `05_fiscal_period.sql` | FiscalPeriod | Closed periods immutable |
-| `06_rounding.sql` | JournalLine | Rounding fraud prevention |
-| `07_dimension.sql` | Dimension/DimensionValue | Reference data immutability |
-| `08_exchange_rate.sql` | ExchangeRate | Rate immutability and validation |
-| `99_drop_all.sql` | All | Drops all triggers (for migrations) |
+| File | Entity | Triggers | Invariants Enforced |
+|------|--------|----------|---------------------|
+| `01_journal_entry.sql` | JournalEntry | 2 | Posted entries immutable (update + delete) |
+| `02_journal_line.sql` | JournalLine | 2 | Lines immutable when parent posted (update + delete) |
+| `03_audit_event.sql` | AuditEvent | 2 | Always immutable, no exceptions (update + delete) |
+| `04_account.sql` | Account | 2 | Structural fields immutable when referenced; last rounding account protected |
+| `05_fiscal_period.sql` | FiscalPeriod | 2 | Closed periods immutable (update + delete) |
+| `06_rounding.sql` | JournalLine | 2 | Single rounding line per entry; threshold enforcement |
+| `07_dimension.sql` | Dimension/DimensionValue | 4 | Code immutability; deletion protection; value structural immutability; referenced value deletion |
+| `08_exchange_rate.sql` | ExchangeRate | 4 | Rate validation (positive, non-zero); referenced rate immutability; deletion protection; arbitrage detection |
+| `09_event_immutability.sql` | Event | 2 | Event records immutable after ingestion (update + delete) |
+| `10_balance_enforcement.sql` | JournalEntry/Line | 2 | R12 balanced entries; no lines added to posted entries |
+| `11_economic_link_immutability.sql` | EconomicLink | 2 | Link records immutable (update + delete) |
+| `99_drop_all.sql` | All | — | Drops all triggers (for migrations) |
+
+**Total: 26 triggers across 11 SQL files (+ 1 drop file)**
 
 ## Numbered Prefixes
 

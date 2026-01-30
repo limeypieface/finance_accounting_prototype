@@ -21,7 +21,7 @@ from enum import Enum
 from uuid import UUID
 
 from sqlalchemy import DateTime, Index, String, BigInteger
-from sqlalchemy.dialects.sqlite import JSON
+from sqlalchemy import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from finance_kernel.db.base import Base, UUIDString

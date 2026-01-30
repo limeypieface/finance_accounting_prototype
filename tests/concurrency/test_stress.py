@@ -28,7 +28,7 @@ from uuid import uuid4
 from typing import Callable
 import statistics
 
-from finance_kernel.db.engine import get_session_factory, is_postgres
+from finance_kernel.db.engine import get_session_factory
 from finance_kernel.services.posting_orchestrator import PostingOrchestrator, PostingStatus
 from finance_kernel.services.sequence_service import SequenceService
 from finance_kernel.services.auditor_service import AuditorService
@@ -44,19 +44,23 @@ pytestmark = [pytest.mark.postgres, pytest.mark.slow_locks]
 
 
 def cleanup_test_data(session):
-    """Clean up all test data from the database."""
-    from finance_kernel.models.journal import JournalEntry, JournalLine
-    from finance_kernel.models.event import Event
-    from finance_kernel.models.audit_event import AuditEvent
-    from finance_kernel.services.sequence_service import SequenceCounter
+    """Clean up all test data from the database.
 
-    session.query(JournalLine).delete()
-    session.query(JournalEntry).delete()
-    session.query(AuditEvent).delete()
-    session.query(Event).delete()
-    session.query(FiscalPeriod).delete()
-    session.query(Account).delete()
-    session.query(SequenceCounter).delete()
+    Uses TRUNCATE CASCADE to bypass immutability triggers that prevent
+    deletion of posted journal entries and audit events.
+    """
+    from sqlalchemy import text
+
+    tables_to_truncate = [
+        "interpretation_outcomes", "economic_events",
+        "journal_lines", "journal_entries", "audit_events", "events",
+        "fiscal_periods", "accounts", "sequence_counters",
+    ]
+    for table in tables_to_truncate:
+        try:
+            session.execute(text(f"TRUNCATE {table} CASCADE"))
+        except Exception:
+            session.rollback()
     session.commit()
 
 
@@ -190,17 +194,15 @@ class TestHighVolumePosting:
             accounts, period = setup_test_data(setup_session, actor_id)
             effective_date = period.start_date
 
-        barrier = Barrier(num_threads)
-        results = []
-        results_lock = Lock()
+        barrier = Barrier(num_threads, timeout=60)
         start_time = time.time()
 
         def post_event(thread_id: int):
+            barrier.wait()
             session = pg_session_factory()
             try:
                 clock = SystemClock()
                 orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
-                barrier.wait()
 
                 result = orchestrator.post_event(
                     event_id=uuid4(),
@@ -216,26 +218,19 @@ class TestHighVolumePosting:
                         ]
                     },
                 )
-                with results_lock:
-                    results.append((thread_id, result))
-            except Exception as e:
-                with results_lock:
-                    results.append((thread_id, e))
+                assert result.status == PostingStatus.POSTED, (
+                    f"Thread {thread_id}: expected POSTED, got {result.status}"
+                )
+                return result
             finally:
                 session.close()
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [executor.submit(post_event, i) for i in range(num_threads)]
-            wait(futures)
+            results = [f.result() for f in futures]
 
         elapsed = time.time() - start_time
-        posted = [r for tid, r in results if hasattr(r, 'status') and r.status == PostingStatus.POSTED]
-        errors = [r for tid, r in results if isinstance(r, Exception)]
-
-        assert len(posted) == num_threads, (
-            f"Expected {num_threads} POSTED, got {len(posted)}. "
-            f"Errors ({len(errors)}): {[str(e)[:100] for e in errors[:5]]}"
-        )
+        assert len(results) == num_threads
         print(f"\n500 concurrent posts: {elapsed:.2f}s ({num_threads/elapsed:.1f} events/sec)")
 
 
@@ -263,18 +258,16 @@ class TestExtremeConcurrency:
             accounts, period = setup_test_data(setup_session, actor_id)
             effective_date = period.start_date
 
-        barrier = Barrier(num_threads)
-        results = []
-        results_lock = Lock()
+        barrier = Barrier(num_threads, timeout=60)
 
         def post_event(thread_id: int):
+            barrier.wait()
             session = pg_session_factory()
             try:
                 clock = SystemClock()
                 orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
-                barrier.wait()
 
-                result = orchestrator.post_event(
+                return orchestrator.post_event(
                     event_id=event_id,
                     event_type="generic.posting",
                     occurred_at=clock.now(),
@@ -288,26 +281,21 @@ class TestExtremeConcurrency:
                         ]
                     },
                 )
-                with results_lock:
-                    results.append((thread_id, result))
-            except Exception as e:
-                with results_lock:
-                    results.append((thread_id, e))
             finally:
                 session.close()
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [executor.submit(post_event, i) for i in range(num_threads)]
-            wait(futures)
+            results = [f.result() for f in futures]
 
-        posted = [r for tid, r in results if hasattr(r, 'status') and r.status == PostingStatus.POSTED]
-        already_posted = [r for tid, r in results if hasattr(r, 'status') and r.status == PostingStatus.ALREADY_POSTED]
-        errors = [r for tid, r in results if isinstance(r, Exception)]
+        posted = [r for r in results if r.status == PostingStatus.POSTED]
+        already_posted = [r for r in results if r.status == PostingStatus.ALREADY_POSTED]
 
         assert len(posted) == 1, (
             f"Expected exactly 1 POSTED, got {len(posted)}. "
-            f"Already posted: {len(already_posted)}, Errors: {len(errors)}"
+            f"Already posted: {len(already_posted)}"
         )
+        assert len(already_posted) == num_threads - 1
 
         # Verify only one journal entry exists
         with pg_session_factory() as verify_session:
@@ -323,35 +311,26 @@ class TestExtremeConcurrency:
         1000 concurrent sequence allocations - all must be unique.
         """
         num_threads = 1000
-        barrier = Barrier(num_threads)
-        sequences = []
-        sequences_lock = Lock()
+        barrier = Barrier(num_threads, timeout=60)
 
         def allocate(thread_id: int):
+            barrier.wait()
             session = pg_session_factory()
             try:
                 service = SequenceService(session)
-                barrier.wait()
                 seq = service.next_value("stress_test_seq")
                 session.commit()
-                with sequences_lock:
-                    sequences.append(seq)
-            except Exception as e:
-                with sequences_lock:
-                    sequences.append(f"ERROR:{e}")
+                return seq
             finally:
                 session.close()
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [executor.submit(allocate, i) for i in range(num_threads)]
-            wait(futures)
+            sequences = [f.result() for f in futures]
 
-        valid = [s for s in sequences if isinstance(s, int)]
-        errors = [s for s in sequences if isinstance(s, str)]
-
-        assert len(valid) == len(set(valid)), f"Duplicate sequences! {len(valid)} total, {len(set(valid))} unique"
-        assert len(errors) == 0, f"Errors: {errors[:5]}"
-        print(f"\n1000 sequence allocations successful, range: {min(valid)} - {max(valid)}")
+        assert len(sequences) == num_threads
+        assert len(sequences) == len(set(sequences)), f"Duplicate sequences! {len(sequences)} total, {len(set(sequences))} unique"
+        print(f"\n1000 sequence allocations successful, range: {min(sequences)} - {max(sequences)}")
 
 
 class TestSustainedLoad:
@@ -502,16 +481,16 @@ class TestLargeTrialBalance:
         # Post entries in parallel batches
         num_workers = 50
         entries_per_worker = num_entries // num_workers
-        barrier = Barrier(num_workers)
-        posted_counts = [0] * num_workers
+        barrier = Barrier(num_workers, timeout=60)
 
         def post_batch(worker_id: int):
+            barrier.wait()
             session = pg_session_factory()
             try:
                 clock = SystemClock()
                 orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
-                barrier.wait()
 
+                worker_posted = 0
                 for i in range(entries_per_worker):
                     # Vary the accounts to create realistic distribution
                     patterns = [
@@ -536,18 +515,22 @@ class TestLargeTrialBalance:
                             ]
                         },
                     )
-                    if result.status == PostingStatus.POSTED:
-                        posted_counts[worker_id] += 1
+                    assert result.status == PostingStatus.POSTED, (
+                        f"Worker {worker_id} event {i}: expected POSTED, got {result.status}"
+                    )
+                    worker_posted += 1
+                return worker_posted
             finally:
                 session.close()
 
         start_time = time.time()
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = [executor.submit(post_batch, i) for i in range(num_workers)]
-            wait(futures)
+            counts = [f.result() for f in futures]
         post_time = time.time() - start_time
 
-        total_posted = sum(posted_counts)
+        total_posted = sum(counts)
+        assert total_posted == num_entries
 
         # Now compute trial balance and time it
         start_time = time.time()
@@ -597,13 +580,18 @@ class TestMixedWorkload:
 
         stop_event = ThreadEvent()
         write_counts = [0] * num_writers
+        write_errors = [0] * num_writers
+        write_error_samples = []
         read_counts = [0] * num_readers
         read_errors = [0] * num_readers
         balance_always_balanced = [True] * num_readers
+        thread_alive = [False] * (num_writers + num_readers)
+        samples_lock = Lock()
 
         def writer(worker_id: int):
             session = pg_session_factory()
             try:
+                thread_alive[worker_id] = True
                 clock = SystemClock()
                 orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
 
@@ -625,14 +613,24 @@ class TestMixedWorkload:
                         )
                         if result.status == PostingStatus.POSTED:
                             write_counts[worker_id] += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        write_errors[worker_id] += 1
+                        with samples_lock:
+                            if len(write_error_samples) < 10:
+                                write_error_samples.append(f"writer-{worker_id}: {e}")
+                        try:
+                            session.rollback()
+                        except Exception:
+                            session.close()
+                            session = pg_session_factory()
+                            orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
             finally:
                 session.close()
 
         def reader(reader_id: int):
             session = pg_session_factory()
             try:
+                thread_alive[num_writers + reader_id] = True
                 selector = LedgerSelector(session)
 
                 while not stop_event.is_set():
@@ -661,18 +659,35 @@ class TestMixedWorkload:
 
             wait(writer_futures + reader_futures)
 
+        # Verify all threads actually ran
+        assert all(thread_alive), (
+            f"Not all threads started. Alive: {sum(thread_alive)}/{num_writers + num_readers}"
+        )
+
         total_writes = sum(write_counts)
         total_reads = sum(read_counts)
+        total_write_errors = sum(write_errors)
         total_read_errors = sum(read_errors)
 
         print(f"\nMixed workload results ({duration_seconds}s):")
         print(f"  Total writes: {total_writes} ({total_writes/duration_seconds:.1f}/sec)")
         print(f"  Total reads: {total_reads} ({total_reads/duration_seconds:.1f}/sec)")
+        print(f"  Write errors: {total_write_errors}")
         print(f"  Read errors: {total_read_errors}")
+        if write_error_samples:
+            print(f"  Write error samples: {write_error_samples[:3]}")
 
         assert all(balance_always_balanced), "Trial balance was unbalanced during concurrent reads!"
         assert total_writes > 0, "No writes completed"
         assert total_reads > 0, "No reads completed"
+        # Write error rate should be low — transient retries are expected, but
+        # a majority of failures means something is broken.
+        if total_writes + total_write_errors > 0:
+            write_error_rate = total_write_errors / (total_writes + total_write_errors)
+            assert write_error_rate < 0.20, (
+                f"Write error rate too high: {write_error_rate:.1%}. "
+                f"Samples: {write_error_samples}"
+            )
 
 
 class TestAuditChainStress:
@@ -698,16 +713,16 @@ class TestAuditChainStress:
             accounts, period = setup_test_data(setup_session, actor_id)
             effective_date = period.start_date
 
-        barrier = Barrier(num_workers)
-        posted_counts = [0] * num_workers
+        barrier = Barrier(num_workers, timeout=60)
 
         def post_batch(worker_id: int):
+            barrier.wait()
             session = pg_session_factory()
             try:
                 clock = SystemClock()
                 orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
-                barrier.wait()
 
+                worker_posted = 0
                 for i in range(events_per_worker):
                     result = orchestrator.post_event(
                         event_id=uuid4(),
@@ -723,16 +738,21 @@ class TestAuditChainStress:
                             ]
                         },
                     )
-                    if result.status == PostingStatus.POSTED:
-                        posted_counts[worker_id] += 1
+                    assert result.status == PostingStatus.POSTED, (
+                        f"Worker {worker_id} event {i}: expected POSTED, got {result.status}"
+                    )
+                    worker_posted += 1
+
+                return worker_posted
             finally:
                 session.close()
 
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = [executor.submit(post_batch, i) for i in range(num_workers)]
-            wait(futures)
+            counts = [f.result() for f in futures]
 
-        total_posted = sum(posted_counts)
+        total_posted = sum(counts)
+        assert total_posted == num_events
 
         # Verify audit chain
         start_time = time.time()

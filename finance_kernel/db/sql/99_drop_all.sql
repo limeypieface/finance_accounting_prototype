@@ -28,6 +28,10 @@ DROP TRIGGER IF EXISTS trg_exchange_rate_validate ON exchange_rates;
 DROP TRIGGER IF EXISTS trg_exchange_rate_immutability ON exchange_rates;
 DROP TRIGGER IF EXISTS trg_exchange_rate_delete ON exchange_rates;
 DROP TRIGGER IF EXISTS trg_exchange_rate_arbitrage ON exchange_rates;
+DROP TRIGGER IF EXISTS trg_event_immutability_update ON events;
+DROP TRIGGER IF EXISTS trg_event_immutability_delete ON events;
+DROP TRIGGER IF EXISTS trg_journal_entry_balance_check ON journal_entries;
+DROP TRIGGER IF EXISTS trg_journal_line_no_insert_posted ON journal_lines;
 
 -- Drop all functions
 DROP FUNCTION IF EXISTS prevent_posted_journal_entry_modification();
@@ -50,3 +54,7 @@ DROP FUNCTION IF EXISTS validate_exchange_rate_value();
 DROP FUNCTION IF EXISTS prevent_referenced_exchange_rate_modification();
 DROP FUNCTION IF EXISTS prevent_referenced_exchange_rate_deletion();
 DROP FUNCTION IF EXISTS check_exchange_rate_arbitrage();
+DROP FUNCTION IF EXISTS prevent_event_modification();
+DROP FUNCTION IF EXISTS prevent_event_deletion();
+DROP FUNCTION IF EXISTS enforce_balanced_journal_entry();
+DROP FUNCTION IF EXISTS prevent_line_insert_on_posted_entry();

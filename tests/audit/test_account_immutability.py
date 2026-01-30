@@ -170,14 +170,14 @@ class TestAccountLockedAfterReference:
         # Create an event (required for journal entry FK)
         event = create_event(event_type="test.account_ref")
 
-        # Create a posted journal entry referencing the account
+        # Create journal entry as DRAFT first (triggers block line inserts on POSTED entries)
         entry = JournalEntry(
             source_event_id=event.event_id,
             source_event_type="test.account_ref",
             occurred_at=deterministic_clock.now(),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
-            status=JournalEntryStatus.POSTED,
+            status=JournalEntryStatus.DRAFT,
             idempotency_key=f"test:account_ref:{uuid4()}",
             posting_rule_version=1,
             description="Test entry for account reference",
@@ -186,7 +186,7 @@ class TestAccountLockedAfterReference:
         session.add(entry)
         session.flush()
 
-        # Create journal lines referencing the accounts
+        # Add journal lines while entry is still DRAFT
         debit_line = JournalLine(
             journal_entry_id=entry.id,
             account_id=account.id,
@@ -207,6 +207,10 @@ class TestAccountLockedAfterReference:
         )
         session.add(debit_line)
         session.add(credit_line)
+        session.flush()
+
+        # Now transition to POSTED
+        entry.status = JournalEntryStatus.POSTED
         session.flush()
 
         return {

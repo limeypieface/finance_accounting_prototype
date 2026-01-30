@@ -35,8 +35,6 @@ create_tables()
 **Environment configuration:**
 ```bash
 DATABASE_URL=postgresql://user:pass@localhost/finance_kernel
-# or for SQLite (testing only)
-DATABASE_URL=sqlite:///./finance.db
 ```
 
 ---
@@ -56,7 +54,7 @@ class JournalEntry(Base):
     idempotency_key: str        # UNIQUE - ensures exactly-once posting
     effective_date: date        # Accounting date
     posted_at: datetime         # When posted
-    status: EntryStatus         # draft | posted | reversed
+    status: JournalEntryStatus   # draft | posted | reversed
     seq: int                    # Global sequence number
     posting_rule_version: int   # For replay compatibility
 
@@ -216,19 +214,29 @@ Trigger SQL is stored in separate `.sql` files for better maintainability:
 
 ```
 db/
+├── __init__.py          # Package init
+├── base.py              # Base, TrackedBase, UUIDString
+├── engine.py            # Connection management, table creation
+├── types.py             # Custom SQLAlchemy column types
 ├── triggers.py          # Python loader and API
+├── immutability.py      # ORM-level event listeners
 └── sql/
     ├── README.md        # SQL file documentation
-    ├── 01_journal_entry.sql
-    ├── 02_journal_line.sql
-    ├── 03_audit_event.sql
-    ├── 04_account.sql
-    ├── 05_fiscal_period.sql
-    ├── 06_rounding.sql
-    ├── 07_dimension.sql
-    ├── 08_exchange_rate.sql
-    └── 99_drop_all.sql
+    ├── 01_journal_entry.sql          # 2 triggers
+    ├── 02_journal_line.sql           # 2 triggers
+    ├── 03_audit_event.sql            # 2 triggers
+    ├── 04_account.sql                # 2 triggers
+    ├── 05_fiscal_period.sql          # 2 triggers
+    ├── 06_rounding.sql               # 2 triggers
+    ├── 07_dimension.sql              # 4 triggers
+    ├── 08_exchange_rate.sql          # 4 triggers
+    ├── 09_event_immutability.sql     # 2 triggers
+    ├── 10_balance_enforcement.sql    # 2 triggers
+    ├── 11_economic_link_immutability.sql  # 2 triggers
+    └── 99_drop_all.sql               # Drops all triggers
 ```
+
+**Total: 26 PostgreSQL triggers across 11 SQL files.**
 
 **Benefits of SQL files:**
 - Syntax highlighting in editors
@@ -254,7 +262,7 @@ from finance_kernel.db.triggers import install_trigger_file
 install_trigger_file(engine, "01_journal_entry.sql")
 ```
 
-**Triggers implemented:**
+**All 26 triggers implemented:**
 
 | Trigger | Table | Protection |
 |---------|-------|------------|
@@ -264,11 +272,26 @@ install_trigger_file(engine, "01_journal_entry.sql")
 | `trg_journal_line_immutability_delete` | journal_lines | Blocks deletion when parent posted |
 | `trg_audit_event_immutability_update` | audit_events | Always blocks (audit is sacred) |
 | `trg_audit_event_immutability_delete` | audit_events | Always blocks |
+| `trg_account_structural_immutability_update` | accounts | Blocks structural field changes when referenced |
+| `trg_account_last_rounding_delete` | accounts | Protects last rounding account |
 | `trg_fiscal_period_immutability_update` | fiscal_periods | Blocks modification of closed periods |
 | `trg_fiscal_period_immutability_delete` | fiscal_periods | Blocks deletion of closed/used periods |
+| `trg_journal_line_single_rounding` | journal_lines | Only one rounding line per entry |
+| `trg_journal_line_rounding_threshold` | journal_lines | Rounding amount must be small |
 | `trg_dimension_code_immutability` | dimensions | Blocks code change when values exist |
+| `trg_dimension_deletion_protection` | dimensions | Blocks deletion when values exist |
 | `trg_dimension_value_structural_immutability` | dimension_values | Blocks code/name/dimension_code changes |
+| `trg_dimension_value_deletion_protection` | dimension_values | Blocks deletion when referenced |
+| `trg_exchange_rate_validate` | exchange_rates | Rate must be positive and non-zero |
 | `trg_exchange_rate_immutability` | exchange_rates | Blocks modification when referenced |
+| `trg_exchange_rate_delete` | exchange_rates | Blocks deletion when referenced |
+| `trg_exchange_rate_arbitrage` | exchange_rates | Detects inconsistent inverse rates |
+| `trg_event_immutability_update` | events | Blocks event record modification |
+| `trg_event_immutability_delete` | events | Blocks event record deletion |
+| `trg_journal_entry_balance_check` | journal_entries | Enforces balanced entries (R12) |
+| `trg_journal_line_no_insert_posted` | journal_lines | Blocks adding lines to posted entries |
+| `trg_economic_link_immutability_update` | economic_links | Blocks link record modification |
+| `trg_economic_link_immutability_delete` | economic_links | Blocks link record deletion |
 
 **Example - blocked raw SQL:**
 ```sql
@@ -281,36 +304,35 @@ DELETE FROM audit_events WHERE seq = 1;
 -- ERROR: R10 Violation: Audit events are immutable ...
 ```
 
-**Additional fraud prevention triggers:**
-
-| Trigger | Protection |
-|---------|------------|
-| `trg_journal_line_single_rounding` | Only one rounding line per entry |
-| `trg_journal_line_rounding_threshold` | Rounding amount must be small (prevents hiding large amounts as "rounding") |
-| `trg_exchange_rate_validate` | Rate must be positive and reasonable |
-| `trg_exchange_rate_arbitrage` | Prevents rate/inverse rate inconsistency |
-
 ---
 
-### Custom Types (`types.py`)
+### Custom Types (`types.py` and `base.py`)
 
-Custom SQLAlchemy types for domain-specific data.
+Annotated type aliases for domain-specific columns. No floats anywhere in the finance kernel -- all monetary values use `Decimal` with explicit precision.
 
 ```python
-# Money stored as integer minor units (cents) for precision
-class MoneyType(TypeDecorator):
-    impl = BigInteger
+# Monetary amount: Numeric(38, 9) -- 38 digits total, 9 decimal places
+Money = Annotated[Decimal, Numeric(38, 9)]
 
-    def process_bind_param(self, value, dialect):
-        if value is not None:
-            return int(value * 100)  # Store as cents
-        return value
+# Exchange rate: Numeric(38, 18) -- 38 digits total, 18 decimal places
+Rate = Annotated[Decimal, Numeric(38, 18)]
 
-    def process_result_value(self, value, dialect):
-        if value is not None:
-            return Decimal(value) / 100
-        return value
+# Currency: String(3) -- ISO 4217 code
+Currency = Annotated[str, String(3)]
+
+# Sequence: BigInteger
+Sequence = Annotated[int, BigInteger]
+
+# Hash: String(64) -- SHA-256 hex
+PayloadHash = Annotated[str, String(64)]
 ```
+
+**Constants:**
+- `MONEY_DECIMAL_PLACES = 9`
+- `RATE_DECIMAL_PLACES = 18`
+- `DEFAULT_ROUNDING = ROUND_HALF_UP`
+
+UUIDs are stored as `String(36)` via the `UUIDString(TypeDecorator)` defined in `base.py`.
 
 ---
 
@@ -379,13 +401,12 @@ finally:
 
 | Database | Support Level | Notes |
 |----------|---------------|-------|
-| PostgreSQL 15+ | Full | Production recommended. Triggers enabled. |
-| SQLite | Testing only | No triggers. ORM immutability only. |
+| PostgreSQL 15+ | Full | Required. ORM + trigger immutability. |
 
-**Why PostgreSQL for production?**
+PostgreSQL is the **only supported backend**. It provides:
 - Robust ACID compliance
 - Database-level triggers for defense in depth
-- Better concurrency handling
+- Proper concurrency handling
 - JSONB support for dimensions
 
 ---
@@ -423,12 +444,12 @@ corrected = create_new_entry(corrected_data)
 
 ### Trigger not firing
 
-**Cause**: Triggers only work on PostgreSQL.
+**Cause**: Triggers may not be installed.
 
-**Solution**: Ensure you're using PostgreSQL in production:
+**Solution**: Verify triggers are installed:
 ```python
 from finance_kernel.db.triggers import triggers_installed
 
 if not triggers_installed(engine):
-    raise RuntimeError("Production requires PostgreSQL with triggers")
+    raise RuntimeError("Triggers not installed. Call create_tables() first.")
 ```

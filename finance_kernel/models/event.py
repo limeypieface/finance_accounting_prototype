@@ -14,11 +14,13 @@ Hard invariants:
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import Date, DateTime, Index, Integer, String, UniqueConstraint
-from sqlalchemy.dialects.sqlite import JSON
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Date, DateTime, Index, Integer, String, UniqueConstraint, event
+from sqlalchemy import JSON
+from sqlalchemy.orm import Mapped, mapped_column, Session
+from sqlalchemy.orm.attributes import get_history
 
 from finance_kernel.db.base import Base, UUIDString
+from finance_kernel.exceptions import ImmutabilityViolationError
 
 
 class Event(Base):
@@ -111,3 +113,25 @@ class Event(Base):
         Format: producer:event_type:event_id
         """
         return f"{self.producer}:{self.event_type}:{self.event_id}"
+
+
+# =============================================================================
+# ORM-Level Immutability Protection
+# =============================================================================
+# R10 Compliance: Events are immutable after ingestion.
+#
+# This event listener prevents ANY modifications to Event objects after
+# they have been persisted. The database trigger provides a second layer
+# of defense for raw SQL updates.
+# =============================================================================
+
+@event.listens_for(Event, "before_update")
+def prevent_event_update(mapper, connection, target):
+    """
+    Prevent any updates to Event objects.
+
+    R10 Violation: Events are immutable once ingested.
+    """
+    raise ImmutabilityViolationError(
+        f"R10 Violation: Events are immutable - cannot modify event {target.event_id}"
+    )

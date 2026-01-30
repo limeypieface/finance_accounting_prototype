@@ -23,7 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
 )
-from sqlalchemy.dialects.sqlite import JSON
+from sqlalchemy import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from finance_kernel.db.base import Base, UUIDString

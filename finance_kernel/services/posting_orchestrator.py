@@ -12,13 +12,17 @@ All state-changing operations define their own transaction scope.
 No reliance on ambient or nested transactions.
 """
 
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
+from uuid import uuid4 as _uuid4
 
 from sqlalchemy.orm import Session
+
+from finance_kernel.logging_config import get_logger, LogContext
 
 from finance_kernel.domain.bookkeeper import Bookkeeper, BookkeeperResult
 from finance_kernel.domain.clock import Clock, SystemClock
@@ -34,6 +38,8 @@ from finance_kernel.services.ingestor_service import IngestorService, IngestStat
 from finance_kernel.services.ledger_service import LedgerService, PersistResult
 from finance_kernel.services.period_service import PeriodService
 from finance_kernel.services.reference_data_loader import ReferenceDataLoader
+
+logger = get_logger("services.posting_orchestrator")
 
 
 class PostingStatus(str, Enum):
@@ -154,31 +160,55 @@ class PostingOrchestrator:
         Returns:
             PostingResult with status and journal entry details.
         """
-        try:
-            result = self._do_post_event(
-                event_id=event_id,
-                event_type=event_type,
-                occurred_at=occurred_at,
-                effective_date=effective_date,
-                actor_id=actor_id,
-                producer=producer,
-                payload=payload,
-                schema_version=schema_version,
-                required_dimensions=required_dimensions,
-                is_adjustment=is_adjustment,
+        correlation_id = str(_uuid4())
+        with LogContext.bind(
+            correlation_id=correlation_id,
+            event_id=str(event_id),
+            actor_id=str(actor_id),
+            producer=producer,
+        ):
+            logger.info(
+                "posting_started",
+                extra={"event_type": event_type, "effective_date": str(effective_date)},
             )
+            t0 = time.monotonic()
+            try:
+                result = self._do_post_event(
+                    event_id=event_id,
+                    event_type=event_type,
+                    occurred_at=occurred_at,
+                    effective_date=effective_date,
+                    actor_id=actor_id,
+                    producer=producer,
+                    payload=payload,
+                    schema_version=schema_version,
+                    required_dimensions=required_dimensions,
+                    is_adjustment=is_adjustment,
+                )
 
-            # R7: Commit on success (if auto_commit enabled)
-            if self._auto_commit and result.is_success:
-                self._session.commit()
+                # R7: Commit on success (if auto_commit enabled)
+                if self._auto_commit and result.is_success:
+                    self._session.commit()
 
-            return result
+                duration_ms = round((time.monotonic() - t0) * 1000, 2)
+                logger.info(
+                    "posting_completed",
+                    extra={
+                        "status": result.status.value,
+                        "duration_ms": duration_ms,
+                        "journal_entry_id": str(result.journal_entry_id) if result.journal_entry_id else None,
+                        "seq": result.seq,
+                    },
+                )
+                return result
 
-        except Exception as e:
-            # R7: Rollback on failure (if auto_commit enabled)
-            if self._auto_commit:
-                self._session.rollback()
-            raise
+            except Exception:
+                duration_ms = round((time.monotonic() - t0) * 1000, 2)
+                # R7: Rollback on failure (if auto_commit enabled)
+                if self._auto_commit:
+                    self._session.rollback()
+                logger.error("posting_failed", extra={"duration_ms": duration_ms}, exc_info=True)
+                raise
 
     def _do_post_event(
         self,
@@ -207,6 +237,10 @@ class PostingOrchestrator:
         )
 
         if ingest_result.status == IngestStatus.REJECTED:
+            logger.warning(
+                "posting_ingestion_failed",
+                extra={"reason": ingest_result.message},
+            )
             return PostingResult(
                 status=PostingStatus.INGESTION_FAILED,
                 event_id=event_id,
@@ -228,12 +262,20 @@ class PostingOrchestrator:
             )
         except AdjustmentsNotAllowedError as e:
             # R13: Adjustment policy violation
+            logger.warning(
+                "posting_period_violation",
+                extra={"status": PostingStatus.ADJUSTMENTS_NOT_ALLOWED.value},
+            )
             return PostingResult(
                 status=PostingStatus.ADJUSTMENTS_NOT_ALLOWED,
                 event_id=event_id,
                 message=str(e),
             )
         except Exception as e:
+            logger.warning(
+                "posting_period_violation",
+                extra={"status": PostingStatus.PERIOD_CLOSED.value},
+            )
             return PostingResult(
                 status=PostingStatus.PERIOD_CLOSED,
                 event_id=event_id,
@@ -252,6 +294,10 @@ class PostingOrchestrator:
         )
 
         if not bookkeeper_result.is_valid:
+            logger.warning(
+                "posting_validation_failed",
+                extra={"status": PostingStatus.VALIDATION_FAILED.value},
+            )
             return PostingResult(
                 status=PostingStatus.VALIDATION_FAILED,
                 event_id=event_id,
@@ -265,6 +311,10 @@ class PostingOrchestrator:
         ledger_result = self._ledger.persist(bookkeeper_result.proposed_entry)
 
         if ledger_result.status == PersistResult.ALREADY_EXISTS:
+            logger.info(
+                "posting_already_posted",
+                extra={"existing_entry_id": str(ledger_result.existing_entry_id) if ledger_result.existing_entry_id else None},
+            )
             return PostingResult(
                 status=PostingStatus.ALREADY_POSTED,
                 event_id=event_id,
@@ -316,89 +366,111 @@ class PostingOrchestrator:
         Returns:
             PostingResult with status and journal entry details.
         """
-        # Get the event envelope
-        event_envelope = self._ingestor.get_event(event_id)
+        correlation_id = str(_uuid4())
+        with LogContext.bind(
+            correlation_id=correlation_id,
+            event_id=str(event_id),
+        ):
+            logger.info(
+                "posting_existing_started",
+                extra={"strategy_version": strategy_version},
+            )
+            t0 = time.monotonic()
 
-        if event_envelope is None:
+            # Get the event envelope
+            event_envelope = self._ingestor.get_event(event_id)
+
+            if event_envelope is None:
+                return PostingResult(
+                    status=PostingStatus.INGESTION_FAILED,
+                    event_id=event_id,
+                    message="Event not found",
+                )
+
+            # Check period is open (and allows adjustments if applicable)
+            # R13 Compliance: Enforces allows_adjustments policy (same as post_event)
+            from finance_kernel.exceptions import AdjustmentsNotAllowedError
+
+            try:
+                self._period_service.validate_adjustment_allowed(
+                    event_envelope.effective_date,
+                    is_adjustment=is_adjustment,
+                )
+            except AdjustmentsNotAllowedError as e:
+                # R13: Adjustment policy violation
+                return PostingResult(
+                    status=PostingStatus.ADJUSTMENTS_NOT_ALLOWED,
+                    event_id=event_id,
+                    message=str(e),
+                )
+            except Exception as e:
+                return PostingResult(
+                    status=PostingStatus.PERIOD_CLOSED,
+                    event_id=event_id,
+                    message=str(e),
+                )
+
+            # Load reference data
+            reference_data = self._reference_loader.load(
+                required_dimensions=frozenset(required_dimensions or set())
+            )
+
+            # Transform
+            bookkeeper_result = self._bookkeeper.propose(
+                event_envelope,
+                reference_data,
+                strategy_version=strategy_version,
+            )
+
+            if not bookkeeper_result.is_valid:
+                return PostingResult(
+                    status=PostingStatus.VALIDATION_FAILED,
+                    event_id=event_id,
+                    validation=bookkeeper_result.validation,
+                    message="Posting validation failed",
+                )
+
+            assert bookkeeper_result.proposed_entry is not None
+
+            # Persist
+            ledger_result = self._ledger.persist(bookkeeper_result.proposed_entry)
+
+            if ledger_result.status == PersistResult.ALREADY_EXISTS:
+                return PostingResult(
+                    status=PostingStatus.ALREADY_POSTED,
+                    event_id=event_id,
+                    journal_entry_id=ledger_result.existing_entry_id,
+                    message=ledger_result.message,
+                )
+
+            if ledger_result.status == PersistResult.FAILED:
+                return PostingResult(
+                    status=PostingStatus.VALIDATION_FAILED,
+                    event_id=event_id,
+                    message=ledger_result.message,
+                )
+
+            assert ledger_result.record is not None
+
+            duration_ms = round((time.monotonic() - t0) * 1000, 2)
+            logger.info(
+                "posting_existing_completed",
+                extra={
+                    "status": PostingStatus.POSTED.value,
+                    "duration_ms": duration_ms,
+                    "journal_entry_id": str(ledger_result.record.id),
+                    "seq": ledger_result.record.seq,
+                },
+            )
+
             return PostingResult(
-                status=PostingStatus.INGESTION_FAILED,
+                status=PostingStatus.POSTED,
                 event_id=event_id,
-                message="Event not found",
+                journal_entry_id=ledger_result.record.id,
+                seq=ledger_result.record.seq,
+                record=ledger_result.record,
+                message="Event posted successfully",
             )
-
-        # Check period is open (and allows adjustments if applicable)
-        # R13 Compliance: Enforces allows_adjustments policy (same as post_event)
-        from finance_kernel.exceptions import AdjustmentsNotAllowedError
-
-        try:
-            self._period_service.validate_adjustment_allowed(
-                event_envelope.effective_date,
-                is_adjustment=is_adjustment,
-            )
-        except AdjustmentsNotAllowedError as e:
-            # R13: Adjustment policy violation
-            return PostingResult(
-                status=PostingStatus.ADJUSTMENTS_NOT_ALLOWED,
-                event_id=event_id,
-                message=str(e),
-            )
-        except Exception as e:
-            return PostingResult(
-                status=PostingStatus.PERIOD_CLOSED,
-                event_id=event_id,
-                message=str(e),
-            )
-
-        # Load reference data
-        reference_data = self._reference_loader.load(
-            required_dimensions=frozenset(required_dimensions or set())
-        )
-
-        # Transform
-        bookkeeper_result = self._bookkeeper.propose(
-            event_envelope,
-            reference_data,
-            strategy_version=strategy_version,
-        )
-
-        if not bookkeeper_result.is_valid:
-            return PostingResult(
-                status=PostingStatus.VALIDATION_FAILED,
-                event_id=event_id,
-                validation=bookkeeper_result.validation,
-                message="Posting validation failed",
-            )
-
-        assert bookkeeper_result.proposed_entry is not None
-
-        # Persist
-        ledger_result = self._ledger.persist(bookkeeper_result.proposed_entry)
-
-        if ledger_result.status == PersistResult.ALREADY_EXISTS:
-            return PostingResult(
-                status=PostingStatus.ALREADY_POSTED,
-                event_id=event_id,
-                journal_entry_id=ledger_result.existing_entry_id,
-                message=ledger_result.message,
-            )
-
-        if ledger_result.status == PersistResult.FAILED:
-            return PostingResult(
-                status=PostingStatus.VALIDATION_FAILED,
-                event_id=event_id,
-                message=ledger_result.message,
-            )
-
-        assert ledger_result.record is not None
-
-        return PostingResult(
-            status=PostingStatus.POSTED,
-            event_id=event_id,
-            journal_entry_id=ledger_result.record.id,
-            seq=ledger_result.record.seq,
-            record=ledger_result.record,
-            message="Event posted successfully",
-        )
 
     def validate_chain(self) -> bool:
         """

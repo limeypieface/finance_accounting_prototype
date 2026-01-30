@@ -8,6 +8,14 @@ from finance_kernel.models.exchange_rate import ExchangeRate
 from finance_kernel.models.dimensions import Dimension, DimensionValue
 from finance_kernel.models.audit_event import AuditEvent
 from finance_kernel.models.economic_link import EconomicLinkModel
+from finance_kernel.models.party import Party, PartyType, PartyStatus
+from finance_kernel.models.contract import (
+    Contract,
+    ContractLineItem,
+    ContractStatus,
+    ContractType,
+    ICEReportingFrequency,
+)
 
 __all__ = [
     "Account",
@@ -25,4 +33,12 @@ __all__ = [
     "DimensionValue",
     "AuditEvent",
     "EconomicLinkModel",
+    "Party",
+    "PartyType",
+    "PartyStatus",
+    "Contract",
+    "ContractLineItem",
+    "ContractStatus",
+    "ContractType",
+    "ICEReportingFrequency",
 ]

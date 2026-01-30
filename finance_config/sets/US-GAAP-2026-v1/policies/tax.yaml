@@ -1,0 +1,180 @@
+policies:
+- name: SalesTaxCollected
+  version: 1
+  module: tax
+  description: Sales tax collected from customer
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: tax.sales_tax_collected
+  meaning:
+    economic_type: TAX_LIABILITY_INCREASE
+    dimensions:
+    - jurisdiction
+  ledger_effects:
+  - ledger: GL
+    debit_role: TAX_CLEARING
+    credit_role: TAX_PAYABLE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_TAX_AMOUNT
+    message: Tax collected amount must be positive
+  line_mappings:
+  - role: TAX_CLEARING
+    side: debit
+  - role: TAX_PAYABLE
+    side: credit
+- name: UseTaxAccrued
+  version: 1
+  module: tax
+  description: Use tax self-assessed on purchase
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: tax.use_tax_accrued
+  meaning:
+    economic_type: TAX_EXPENSE_ACCRUAL
+    dimensions:
+    - jurisdiction
+  ledger_effects:
+  - ledger: GL
+    debit_role: TAX_EXPENSE
+    credit_role: USE_TAX_ACCRUAL
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_TAX_AMOUNT
+    message: Use tax amount must be positive
+  line_mappings:
+  - role: TAX_EXPENSE
+    side: debit
+  - role: USE_TAX_ACCRUAL
+    side: credit
+- name: TaxPayment
+  version: 1
+  module: tax
+  description: Tax remitted to jurisdiction
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: tax.payment
+  meaning:
+    economic_type: TAX_LIABILITY_DECREASE
+    dimensions:
+    - jurisdiction
+  ledger_effects:
+  - ledger: GL
+    debit_role: TAX_PAYABLE
+    credit_role: CASH
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_PAYMENT_AMOUNT
+    message: Tax payment amount must be positive
+  line_mappings:
+  - role: TAX_PAYABLE
+    side: debit
+  - role: CASH
+    side: credit
+- name: VatInput
+  version: 1
+  module: tax
+  description: VAT paid on purchase (input credit)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: tax.vat_input
+  meaning:
+    economic_type: TAX_ASSET_INCREASE
+    dimensions:
+    - jurisdiction
+  ledger_effects:
+  - ledger: GL
+    debit_role: TAX_RECEIVABLE
+    credit_role: TAX_CLEARING
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_TAX_AMOUNT
+    message: VAT input amount must be positive
+  line_mappings:
+  - role: TAX_RECEIVABLE
+    side: debit
+  - role: TAX_CLEARING
+    side: credit
+- name: VatOutput
+  version: 1
+  module: tax
+  description: VAT collected on sale (output)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: tax.vat_output
+  meaning:
+    economic_type: TAX_LIABILITY_INCREASE
+    dimensions:
+    - jurisdiction
+  ledger_effects:
+  - ledger: GL
+    debit_role: TAX_CLEARING
+    credit_role: TAX_PAYABLE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_TAX_AMOUNT
+    message: VAT output amount must be positive
+  line_mappings:
+  - role: TAX_CLEARING
+    side: debit
+  - role: TAX_PAYABLE
+    side: credit
+- name: VatSettlement
+  version: 1
+  module: tax
+  description: Net VAT payment (output minus input)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: tax.vat_settlement
+  meaning:
+    economic_type: TAX_SETTLEMENT
+    dimensions:
+    - jurisdiction
+  ledger_effects:
+  - ledger: GL
+    debit_role: TAX_PAYABLE
+    credit_role: TAX_RECEIVABLE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_SETTLEMENT_AMOUNT
+    message: VAT settlement amount must be positive
+  line_mappings:
+  - role: TAX_PAYABLE
+    side: debit
+  - role: TAX_RECEIVABLE
+    side: credit
+    from_context: input_vat_amount
+  - role: CASH
+    side: credit
+    from_context: net_payment
+- name: TaxRefundReceived
+  version: 1
+  module: tax
+  description: Tax refund received from jurisdiction
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: tax.refund_received
+  meaning:
+    economic_type: TAX_ASSET_DECREASE
+    dimensions:
+    - jurisdiction
+  ledger_effects:
+  - ledger: GL
+    debit_role: CASH
+    credit_role: TAX_RECEIVABLE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_REFUND_AMOUNT
+    message: Tax refund amount must be positive
+  line_mappings:
+  - role: CASH
+    side: debit
+  - role: TAX_RECEIVABLE
+    side: credit

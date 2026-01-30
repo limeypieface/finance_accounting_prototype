@@ -18,10 +18,9 @@ from sqlalchemy.types import TypeDecorator
 
 class UUIDString(TypeDecorator):
     """
-    Platform-independent UUID type.
+    UUID type stored as String(36).
 
-    Uses String(36) as storage, converting UUID objects to/from strings.
-    This ensures compatibility with SQLite which doesn't have native UUID support.
+    Converts UUID objects to/from their string representation for storage.
     """
 
     impl = String(36)
@@ -55,7 +54,7 @@ class Base(DeclarativeBase):
         Decimal: Numeric(38, 9),
         # Timestamps with timezone awareness
         datetime: DateTime(timezone=True),
-        # UUIDs stored as string (SQLite compatibility)
+        # UUIDs stored as string
         PyUUID: UUIDString(),
         # Large integers for sequences
         int: BigInteger,

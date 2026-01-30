@@ -11,6 +11,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from finance_kernel.db.base import Base
+from finance_kernel.logging_config import get_logger
+
+logger = get_logger("services.sequence")
 
 
 class SequenceCounter(Base):
@@ -108,6 +111,10 @@ class SequenceService:
                 self._session.add(counter)
                 self._session.flush()
                 savepoint.commit()
+                logger.debug(
+                    "sequence_allocated",
+                    extra={"sequence_name": sequence_name, "value": 1},
+                )
                 return 1
             except IntegrityError:
                 # Another thread created the counter, rollback savepoint and retry
@@ -126,6 +133,10 @@ class SequenceService:
         # Increment and return
         counter.current_value += 1
         self._session.flush()
+        logger.debug(
+            "sequence_allocated",
+            extra={"sequence_name": sequence_name, "value": counter.current_value},
+        )
         return counter.current_value
 
     def current_value(self, sequence_name: str) -> int | None:

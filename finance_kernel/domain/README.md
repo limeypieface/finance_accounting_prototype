@@ -264,6 +264,130 @@ class DeterministicClock(Clock):
 
 ---
 
+## Extended Components
+
+The domain layer has grown beyond the core components above. The following subsystems provide economic interpretation, profile-driven posting, and schema governance.
+
+### Accounting Policy (`accounting_policy.py`)
+
+Declarative definitions that govern how events become journal entries. Each policy specifies a trigger (which events it matches), meaning (economic interpretation), ledger effects (debit/credit roles), guards (reject/block conditions), and engine bindings.
+
+```python
+from finance_kernel.domain.accounting_policy import (
+    AccountingPolicy,
+    PolicyTrigger,
+    PolicyMeaning,
+    LedgerEffect,
+    GuardCondition,
+    GuardType,
+)
+```
+
+### Policy Infrastructure
+
+| File | Purpose |
+|------|---------|
+| `policy_compiler.py` | Compiles raw policy definitions into executable form |
+| `policy_selector.py` | Selects exactly one policy for a given event (with where-clause dispatch) |
+| `policy_authority.py` | Governs which policies are admissible (effective dates, precedence, controls) |
+| `ledger_registry.py` | Maps account roles to actual COA codes per ledger |
+| `meaning_builder.py` | Extracts economic meaning from events using policies |
+
+### Accounting Intent (`accounting_intent.py`)
+
+The intermediate representation between economic meaning and journal entries. A `MeaningBuilder` produces an `AccountingIntent`, which the `InterpretationCoordinator` (services layer) converts into actual journal entries.
+
+### Policy Bridge (`policy_bridge.py`)
+
+Connects `AccountingPolicy` definitions (from modules) to the kernel's `PolicySelector` and `MeaningBuilder`. Provides `register_rich_profile()` for registering policies with their line mappings, and `build_accounting_intent()` for multi-ledger intent construction.
+
+### Economic Links (`economic_link.py`)
+
+First-class artifact relationships forming a knowledge graph. Links connect documents (PO → Receipt → Invoice → Payment) with typed, immutable edges. Supports cycle detection, max-children constraints, and unconsumed value tracking.
+
+```python
+from finance_kernel.domain.economic_link import (
+    ArtifactRef, ArtifactType, EconomicLink, LinkType, LinkQuery,
+)
+```
+
+### Event Validation (`event_validator.py`)
+
+Validates incoming events against registered schemas before they enter the posting pipeline.
+
+### Reference Snapshots (`reference_snapshot.py`)
+
+Captures a frozen snapshot of reference data (accounts, rates, dimensions) at posting time. Ensures replay determinism by allowing historical events to be re-processed against their original reference data.
+
+### Valuation (`valuation.py`)
+
+Domain-level valuation primitives used by the `ValuationLayer` engine for cost lot management.
+
+### Subledger Control (`subledger_control.py`)
+
+Defines control account relationships for subledger reconciliation (e.g., AP subledger must reconcile to the AP control account in the GL).
+
+### Schemas (`schemas/`)
+
+Event payload schema definitions organized by business domain:
+
+```
+schemas/
+├── __init__.py
+├── base.py                    # Base schema classes and validation
+├── registry.py                # Schema registry (lookup by event type + version)
+└── definitions/
+    ├── __init__.py
+    ├── ap.py                  # Accounts Payable event schemas
+    ├── ar.py                  # Accounts Receivable event schemas
+    ├── asset.py               # Fixed Asset event schemas
+    ├── bank.py                # Banking/Cash event schemas
+    ├── contract.py            # Contract billing event schemas
+    ├── dcaa.py                # DCAA compliance event schemas
+    ├── deferred.py            # Deferred revenue/expense schemas
+    ├── fx.py                  # Foreign exchange event schemas
+    ├── generic.py             # Generic/cross-cutting event schemas
+    ├── inventory.py           # Inventory event schemas
+    └── payroll.py             # Payroll event schemas
+```
+
+### Policy Definitions (in `finance_modules/`)
+
+Accounting policy definitions now live in their respective modules (not in the kernel):
+
+```
+finance_modules/
+├── ap/profiles.py             # AP event → journal entry policies
+├── ar/profiles.py             # AR event → journal entry policies
+├── assets/profiles.py         # Fixed asset event policies
+├── cash/profiles.py           # Cash/banking event policies
+├── contracts/profiles.py      # Contract billing + DCAA policies
+├── expense/profiles.py        # Expense event policies
+├── gl/profiles.py             # GL + deferred + FX policies
+├── inventory/profiles.py      # Inventory event policies
+├── payroll/profiles.py        # Payroll event policies
+├── procurement/profiles.py    # Procurement event policies
+├── tax/profiles.py            # Tax event policies
+└── wip/profiles.py            # WIP event policies
+```
+
+Each module's `profiles.py` exports a `register()` function that registers all
+policies via `PolicyBridge.register_rich_profile()`. All policies are also
+declared in the centralized YAML configuration (`finance_config/sets/`), which
+is the source of truth at runtime.
+
+### Strategies (`strategies/`)
+
+Posting strategies beyond the base framework:
+
+```
+strategies/
+├── __init__.py
+└── generic_strategy.py        # Generic posting strategy implementation
+```
+
+---
+
 ## Design Principles
 
 ### 1. Immutability by Default

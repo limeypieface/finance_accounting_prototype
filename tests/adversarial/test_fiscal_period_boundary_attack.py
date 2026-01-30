@@ -28,47 +28,58 @@ from sqlalchemy import text
 from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
 from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
 from finance_kernel.services.period_service import PeriodService
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator, PostingStatus
-from finance_kernel.domain.strategy import BasePostingStrategy
-from finance_kernel.domain.strategy_registry import StrategyRegistry
-from finance_kernel.domain.dtos import EventEnvelope, LineSpec, LineSide as DomainLineSide, ReferenceData
-from finance_kernel.domain.values import Money
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
+from finance_kernel.domain.accounting_intent import (
+    AccountingIntent,
+    AccountingIntentSnapshot,
+    IntentLine,
+    LedgerIntent,
+)
+from finance_kernel.domain.meaning_builder import EconomicEventData, MeaningBuilderResult
 from finance_kernel.exceptions import ImmutabilityViolationError
+from tests.conftest import make_source_event
 
 
-def _register_simple_strategy(event_type: str) -> None:
-    """Register a simple balanced strategy for testing."""
+def _make_meaning_and_intent(session, actor_id, clock, effective_date, amount=Decimal("100.00"), currency="USD"):
+    """Create a MeaningBuilderResult and AccountingIntent for testing."""
+    source_event_id = uuid4()
+    econ_event_id = uuid4()
+    # Create source Event record (FK requirement for JournalEntry)
+    make_source_event(session, source_event_id, actor_id, clock, effective_date)
 
-    class SimpleStrategy(BasePostingStrategy):
-        def __init__(self, evt_type: str):
-            self._event_type = evt_type
-            self._version = 1
+    econ_data = EconomicEventData(
+        source_event_id=source_event_id,
+        economic_type="test.boundary.exploit",
+        effective_date=effective_date,
+        profile_id="BoundaryExploitTest",
+        profile_version=1,
+        profile_hash=None,
+        quantity=amount,
+    )
+    meaning_result = MeaningBuilderResult.ok(econ_data)
 
-        @property
-        def event_type(self) -> str:
-            return self._event_type
-
-        @property
-        def version(self) -> int:
-            return self._version
-
-        def _compute_line_specs(
-            self, event: EventEnvelope, ref: ReferenceData
-        ) -> tuple[LineSpec, ...]:
-            return (
-                LineSpec(
-                    account_code="1000",
-                    side=DomainLineSide.DEBIT,
-                    money=Money.of(Decimal("100.00"), "USD"),
+    intent = AccountingIntent(
+        econ_event_id=econ_event_id,
+        source_event_id=source_event_id,
+        profile_id="BoundaryExploitTest",
+        profile_version=1,
+        effective_date=effective_date,
+        ledger_intents=(
+            LedgerIntent(
+                ledger_id="GL",
+                lines=(
+                    IntentLine.debit("CashAsset", amount, currency),
+                    IntentLine.credit("SalesRevenue", amount, currency),
                 ),
-                LineSpec(
-                    account_code="4000",
-                    side=DomainLineSide.CREDIT,
-                    money=Money.of(Decimal("100.00"), "USD"),
-                ),
-            )
+            ),
+        ),
+        snapshot=AccountingIntentSnapshot(
+            coa_version=1,
+            dimension_schema_version=1,
+        ),
+    )
 
-    StrategyRegistry.register(SimpleStrategy(event_type))
+    return meaning_result, intent
 
 
 class TestFiscalPeriodBoundaryAttack:
@@ -256,98 +267,78 @@ class TestBoundaryAttackWithPostingExploit:
         self,
         session,
         period_service,
-        posting_orchestrator: PostingOrchestrator,
+        interpretation_coordinator: InterpretationCoordinator,
         standard_accounts,
+        current_period,
+        role_resolver,
         test_actor_id,
         deterministic_clock,
     ):
         """
         Full attack demonstration:
-        1. Create and close January period (Jan 1-31)
-        2. Attempt to shrink end_date to Jan 30
-        3. If successful, post a fraudulent entry dated Jan 31
-        4. Entry appears in "January" but bypassed period close
+        1. Create and close February period (Feb 1-28)
+        2. Verify period is closed
+        3. Attempt to shrink end_date to Feb 27
+        4. If successful, post a fraudulent entry dated Feb 28
+        5. Entry appears in "February" but bypassed period close
 
-        If step 2 succeeds, the exploit is complete.
+        If step 3 succeeds, the exploit is complete.
+
+        Note: Uses February to avoid overlap with current_period fixture
+        which covers the deterministic clock's month (January 2024).
         """
-        # Step 1: Create and close January period
+        # Step 1: Create and close February period
         period_service.create_period(
-            period_code="2024-01-EXPLOIT",
-            name="January 2024 (Exploit Test)",
-            start_date=date(2024, 1, 1),
-            end_date=date(2024, 1, 31),
+            period_code="2024-02-EXPLOIT",
+            name="February 2024 (Exploit Test)",
+            start_date=date(2024, 2, 1),
+            end_date=date(2024, 2, 29),
             actor_id=test_actor_id,
         )
         session.flush()
 
-        period_service.close_period("2024-01-EXPLOIT", test_actor_id)
+        period_service.close_period("2024-02-EXPLOIT", test_actor_id)
         session.flush()
 
-        period = session.query(FiscalPeriod).filter_by(period_code="2024-01-EXPLOIT").one()
+        period = session.query(FiscalPeriod).filter_by(period_code="2024-02-EXPLOIT").one()
 
-        # Verify posting to Jan 31 is blocked (period is closed)
-        event_type = "test.exploit.before"
-        _register_simple_strategy(event_type)
+        # Step 2: Verify period is closed
+        assert period.status == PeriodStatus.CLOSED
+        assert period.end_date == date(2024, 2, 29)
 
+        # Step 3: THE ATTACK - shrink end_date
+        savepoint = session.begin_nested()
         try:
-            result_before = posting_orchestrator.post_event(
-                event_id=uuid4(),
-                event_type=event_type,
-                occurred_at=deterministic_clock.now(),
-                effective_date=date(2024, 1, 31),  # Last day of closed period
-                actor_id=test_actor_id,
-                producer="test",
-                payload={"before_exploit": True},
-            )
+            period.end_date = date(2024, 2, 28)
+            session.flush()
 
-            # Should be rejected - period is closed
-            assert result_before.status == PostingStatus.PERIOD_CLOSED, (
-                "Pre-exploit check failed: posting to closed period should be rejected"
-            )
+            # If we get here, the attack succeeded - try to exploit it
+            session.refresh(period)
+            if period.end_date == date(2024, 2, 28):
+                # Step 4: Post fraudulent entry to the "reopened" Feb 29
+                # Since Feb 29 is no longer covered by any closed period,
+                # the guard would not fire and posting would succeed.
+                meaning_result, intent = _make_meaning_and_intent(session, test_actor_id, deterministic_clock, date(2024, 2, 29))
 
-            # Step 2: THE ATTACK - shrink end_date
-            savepoint = session.begin_nested()
-            try:
-                period.end_date = date(2024, 1, 30)
-                session.flush()
+                result_after = interpretation_coordinator.interpret_and_post(
+                    meaning_result=meaning_result,
+                    accounting_intent=intent,
+                    actor_id=test_actor_id,
+                )
 
-                # If we get here, the attack succeeded - try to exploit it
-                # Re-fetch period to confirm change
-                session.refresh(period)
-                if period.end_date == date(2024, 1, 30):
-                    # Step 3: Post fraudulent entry to the "reopened" Jan 31
-                    exploit_event_type = "test.exploit.after"
-                    _register_simple_strategy(exploit_event_type)
+                if result_after.success:
+                    pytest.fail(
+                        "FULL EXPLOIT SUCCESSFUL:\n"
+                        "1. February period was closed (Feb 1-29)\n"
+                        "2. Attacker changed end_date to Feb 28\n"
+                        "3. Feb 29 posting SUCCEEDED despite month being 'closed'\n"
+                        "4. Financial audit trail is now compromised\n"
+                        "5. Month-end close is meaningless if boundaries can shift"
+                    )
 
-                    try:
-                        result_after = posting_orchestrator.post_event(
-                            event_id=uuid4(),
-                            event_type=exploit_event_type,
-                            occurred_at=deterministic_clock.now(),
-                            effective_date=date(2024, 1, 31),  # Now "open"!
-                            actor_id=test_actor_id,
-                            producer="test",
-                            payload={"fraudulent_entry": True},
-                        )
-
-                        if result_after.status == PostingStatus.POSTED:
-                            pytest.fail(
-                                "FULL EXPLOIT SUCCESSFUL:\n"
-                                "1. January period was closed (Jan 1-31)\n"
-                                "2. Attacker changed end_date to Jan 30\n"
-                                "3. Jan 31 posting SUCCEEDED despite month being 'closed'\n"
-                                "4. Financial audit trail is now compromised\n"
-                                "5. Month-end close is meaningless if boundaries can shift"
-                            )
-                    finally:
-                        StrategyRegistry._strategies.pop(exploit_event_type, None)
-
-            except ImmutabilityViolationError:
-                # Good - attack was blocked
-                savepoint.rollback()
-
-        finally:
-            StrategyRegistry._strategies.pop(event_type, None)
+        except ImmutabilityViolationError:
+            # Good - attack was blocked
+            savepoint.rollback()
 
 
 class TestBoundaryAttackAuditImplications:

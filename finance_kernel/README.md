@@ -33,11 +33,11 @@ This kernel treats financial data as immutable facts. Once a transaction is post
 │  │  Orchestrates: MeaningBuilder → JournalWriter → OutcomeRecorder   │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │  ┌──────────────┐ ┌────────────────┐ ┌─────────────────────────────┐   │
-│  │ProfileRegistry│ │ MeaningBuilder │ │    ReferenceSnapshot        │   │
+│  │PolicySelector │ │ MeaningBuilder │ │    ReferenceSnapshot        │   │
 │  │  (P1: unique) │ │  (pure domain) │ │  (R21: determinism)         │   │
 │  └──────────────┘ └────────────────┘ └─────────────────────────────┘   │
 │  ┌──────────────┐ ┌────────────────┐ ┌─────────────────────────────┐   │
-│  │PolicyRegistry │ │AccountingIntent│ │   EconomicProfile           │   │
+│  │PolicyAuthority│ │AccountingIntent│ │   AccountingPolicy          │   │
 │  │  (authority)  │ │  (L1: roles)   │ │  (declarative governance)   │   │
 │  └──────────────┘ └────────────────┘ └─────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -176,7 +176,7 @@ These invariants are **non-negotiable**. The system is designed to make violatio
 
 | Rule | Name | Description | Enforcement |
 |------|------|-------------|-------------|
-| **P1** | Profile uniqueness | Exactly one EconomicProfile matches any event or event is rejected | ProfileRegistry precedence resolution |
+| **P1** | Profile uniqueness | Exactly one AccountingPolicy matches any event or event is rejected | PolicySelector precedence resolution |
 | **P11** | Multi-ledger atomicity | Multi-ledger postings from single AccountingIntent are atomic | JournalWriter atomic transaction |
 | **P15** | Outcome uniqueness | Every accepted BusinessEvent has exactly one InterpretationOutcome | Unique constraint on source_event_id |
 
@@ -190,8 +190,8 @@ These invariants are **non-negotiable**. The system is designed to make violatio
    ▼
 2. InterpretationCoordinator.interpret_and_post()
    │
-   ├─► ProfileRegistry.find_for_event()
-   │   - Match event_type to EconomicProfile (P1: exactly one match)
+   ├─► PolicySelector.find_for_event()
+   │   - Match event_type to AccountingPolicy (P1: exactly one match)
    │   - Apply precedence rules (override > scope > priority)
    │
    ├─► ReferenceSnapshotService.capture()
@@ -201,7 +201,7 @@ These invariants are **non-negotiable**. The system is designed to make violatio
    ├─► MeaningBuilder.extract()
    │   - Evaluate guard conditions (REJECT/BLOCK)
    │   - Extract economic meaning from profile
-   │   - Validate against PolicyRegistry (authority check)
+   │   - Validate against PolicyAuthority (authority check)
    │   - Produce EconomicEventData
    │
    ├─► AccountingIntent.from_profile()
@@ -257,22 +257,40 @@ finance_kernel/
 │   ├── clock.py                   # Time abstraction for testability
 │   │
 │   │   # === Interpretation Layer ===
-│   ├── economic_profile.py        # Declarative governance profiles
+│   ├── accounting_policy.py       # Declarative governance profiles
 │   ├── accounting_intent.py       # Contract between economic/finance layers
 │   ├── meaning_builder.py         # Extract economic meaning from events
 │   ├── reference_snapshot.py      # Frozen reference data for replay
-│   ├── profile_registry.py        # Profile lookup with precedence
-│   ├── policy_registry.py         # Authority/governance control
-│   ├── profile_compiler.py        # Profile compilation/validation
+│   ├── policy_selector.py         # Profile lookup with precedence
+│   ├── policy_authority.py        # Authority/governance control
+│   ├── policy_compiler.py         # Profile compilation/validation
+│   ├── policy_bridge.py           # Bridge between policy and posting
 │   ├── ledger_registry.py         # Ledger definitions
 │   ├── valuation.py               # Valuation models
 │   ├── subledger_control.py       # Subledger control contracts
 │   ├── economic_link.py           # Event linkage domain logic
+│   ├── event_validator.py         # Event validation logic
 │   │
-│   └── schemas/                   # Event schema definitions
-│       ├── registry.py                # Schema registry
-│       ├── base.py                    # Base schema classes
-│       └── definitions/               # Per-event-type schemas
+│   ├── schemas/                   # Event schema definitions
+│   │   ├── registry.py                # Schema registry
+│   │   ├── base.py                    # Base schema classes
+│   │   └── definitions/               # Per-event-type schemas
+│   │       ├── generic.py                 # Generic posting
+│   │       ├── ap.py                      # AP invoice/payment
+│   │       ├── ar.py                      # AR invoice/payment/credit
+│   │       ├── asset.py                   # Acquisition/depreciation/disposal
+│   │       ├── bank.py                    # Deposit/withdrawal/transfer
+│   │       ├── deferred.py                # Revenue/expense recognition
+│   │       ├── fx.py                      # FX revaluation
+│   │       ├── inventory.py               # Receipt/issue/adjustment
+│   │       ├── payroll.py                 # Timesheet/labor distribution
+│   │       ├── contract.py                # Contract billing events
+│   │       └── dcaa.py                    # DCAA compliance events
+│   │   # Profiles live in finance_modules/*/profiles.py
+│   │
+│   └── strategies/                # Posting strategies
+│       ├── __init__.py
+│       └── generic_strategy.py        # Generic posting strategy
 │
 ├── services/                  # Stateful services with I/O
 │   ├── posting_orchestrator.py    # Main entry point (legacy)
@@ -288,7 +306,9 @@ finance_kernel/
 │   ├── journal_writer.py              # Atomic multi-ledger posting
 │   ├── outcome_recorder.py            # InterpretationOutcome management
 │   ├── reference_snapshot_service.py  # Snapshot capture/retrieval
-│   └── link_graph_service.py          # Economic event linkage
+│   ├── link_graph_service.py          # Economic event linkage
+│   ├── contract_service.py            # Contract lifecycle management
+│   └── party_service.py               # Party (customer/supplier) management
 │
 ├── models/                    # SQLAlchemy ORM models
 │   ├── journal.py                 # JournalEntry, JournalLine
@@ -302,7 +322,9 @@ finance_kernel/
 │   │   # === Interpretation Models ===
 │   ├── economic_event.py          # Interpreted economic meaning
 │   ├── interpretation_outcome.py  # Terminal interpretation state
-│   └── economic_link.py           # Event linkage records
+│   ├── economic_link.py           # Event linkage records
+│   ├── party.py                   # Party (Customer/Supplier) with status
+│   └── contract.py                # Contract, ContractLineItem (DCAA)
 │
 ├── db/                        # Database infrastructure
 │   ├── engine.py                  # Connection management
@@ -310,13 +332,15 @@ finance_kernel/
 │   ├── triggers.py                # PostgreSQL triggers (defense in depth)
 │   ├── types.py                   # Custom SQLAlchemy types
 │   └── sql/                       # SQL trigger scripts
-│       ├── 01_hash_chain.sql
+│       ├── 01_journal_entry.sql
 │       ├── ...
 │       ├── 09_event_immutability.sql
 │       ├── 10_balance_enforcement.sql
 │       └── 11_economic_link_immutability.sql
 │
 ├── selectors/                 # Read-only query services
+│   ├── __init__.py
+│   ├── base.py                    # Base selector class
 │   ├── ledger_selector.py         # Ledger queries, trial balance
 │   └── journal_selector.py        # Journal entry queries
 │
@@ -327,15 +351,30 @@ finance_engines/               # Pure Calculation Engines
 ├── __init__.py
 ├── variance.py                    # Price, quantity, FX variance calculations
 ├── allocation.py                  # FIFO, LIFO, prorata, weighted allocation
+├── allocation_cascade.py          # DCAA multi-step indirect cost allocation
 ├── matching.py                    # 3-way match, bank reconciliation
 ├── aging.py                       # AP/AR aging buckets
 ├── subledger.py                   # Base subledger pattern
-└── tax.py                         # VAT, GST, withholding, compound tax
+├── tax.py                         # VAT, GST, withholding, compound tax
+├── billing.py                     # Government contract billing (CPFF, T&M, FFP)
+├── ice.py                         # DCAA Incurred Cost Electronically (Schedules A-J)
+├── contracts.py                   # Contract engine utilities
+├── tracer.py                      # Engine tracing/diagnostics
+├── correction/                    # Correction/reversal engines
+│   └── unwind.py                      # Unwind logic
+├── reconciliation/                # Document reconciliation
+│   └── domain.py                      # Reconciliation domain models
+└── valuation/                     # Cost layer valuation
+    └── cost_lot.py                    # Cost lot tracking
+
+finance_services/              # Stateful Services
+├── correction_service.py         # CorrectionEngine (stateful)
+├── reconciliation_service.py     # ReconciliationManager (stateful)
+├── subledger_service.py          # SubledgerService (stateful)
+└── valuation_service.py          # ValuationLayer (stateful)
 
 docs/                          # Design Documentation
-├── MODULE_DEVELOPMENT_GUIDE.md    # How to build ERP modules
-├── ap_module_design.md            # AP module reference design
-└── reusable_modules.md            # Reusable engine patterns
+└── MODULE_DEVELOPMENT_GUIDE.md    # How to build ERP modules
 ```
 
 ---
@@ -421,7 +460,7 @@ The `domain/` package contains **zero I/O operations**. The Bookkeeper, MeaningB
 
 ### 2. Declarative Economic Profiles
 
-Instead of procedural code, event interpretation is driven by **declarative EconomicProfiles**:
+Instead of procedural code, event interpretation is driven by **declarative AccountingPolicies**:
 - **Trigger**: Which events match this profile
 - **Meaning**: What economic type and dimensions to extract
 - **Ledger Effects**: What debits/credits to generate
@@ -563,22 +602,22 @@ with get_session() as session:
         print(f"Posted: {result.journal_entry_id}")
 ```
 
-### Creating an Economic Profile
+### Creating an Accounting Policy
 
 ```python
-from finance_kernel.domain.economic_profile import (
-    EconomicProfile, ProfileTrigger, ProfileMeaning,
+from finance_kernel.domain.accounting_policy import (
+    AccountingPolicy, PolicyTrigger, PolicyMeaning,
     LedgerEffect, GuardCondition, GuardType
 )
 
-profile = EconomicProfile(
+profile = AccountingPolicy(
     name="ap.invoice.standard",
     version=1,
-    trigger=ProfileTrigger(
+    trigger=PolicyTrigger(
         event_type="ap.invoice.received",
         conditions={"invoice_type": "standard"},
     ),
-    meaning=ProfileMeaning(
+    meaning=PolicyMeaning(
         economic_type="LIABILITY_RECOGNITION",
         dimension_extraction={"vendor": "$.vendor_id"},
     ),
@@ -598,37 +637,42 @@ profile = EconomicProfile(
     ],
 )
 
-ProfileRegistry.register(profile)
+PolicySelector.register(profile)
 ```
 
 ---
 
-## Future Engines Roadmap
+## Engine Status
 
-### Completed Primitives
+### All Engines Complete
 
-| Primitive | Status | Description |
-|-----------|--------|-------------|
-| **EconomicLink** | Done | First-class pointer connecting artifacts (Receipt→PO, Payment→Invoice). Includes `LinkGraphService` with cycle detection, graph traversal, and unconsumed value calculation. |
-| **Finance Engines** | Done | Pure function engines: Variance, Allocation, Matching, Aging, Tax, Subledger. |
-| **Interpretation Layer** | Done | EconomicProfile, MeaningBuilder, AccountingIntent, JournalWriter, OutcomeRecorder with L1-L5/P1/P11/P15 invariants. |
+| Engine | Status | Description |
+|--------|--------|-------------|
+| **EconomicLink** | ✅ Done | First-class pointer connecting artifacts (Receipt→PO, Payment→Invoice). Includes `LinkGraphService` with cycle detection, graph traversal, and unconsumed value calculation. |
+| **Variance** | ✅ Done | PPV, quantity variance, FX variance, sales price variance. |
+| **Allocation** | ✅ Done | FIFO, LIFO, pro-rata, weighted, equal, specific allocation methods. |
+| **AllocationCascade** | ✅ Done | DCAA multi-step indirect cost allocation (Fringe → Overhead → G&A). |
+| **Matching** | ✅ Done | 3-way match (PO↔Receipt↔Invoice), 2-way match, bank reconciliation. |
+| **Aging** | ✅ Done | AP/AR aging buckets, configurable periods, slow-moving inventory. |
+| **Tax** | ✅ Done | VAT, GST, withholding, compound (tax-on-tax), inclusive/exclusive. |
+| **Subledger** | ✅ Done | Base subledger pattern for AP, AR, Bank, Inventory, Fixed Assets. |
+| **ReconciliationManager** | ✅ Done | Payment application, document matching, open/matched state tracking. |
+| **ValuationLayer** | ✅ Done | FIFO/LIFO/weighted average/standard cost lot tracking. |
+| **CorrectionEngine** | ✅ Done | Cascade unwind, compensating entries via EconomicLink graph. |
+| **BillingEngine** | ✅ Done | Government contract billing (CPFF, T&M, FFP, cost-plus). Pure engine in `finance_engines/billing.py`. |
+| **ICE Engine** | ✅ Done | DCAA Incurred Cost Electronically submission (Schedules A-J). Pure engine in `finance_engines/ice.py`. |
+| **Interpretation Layer** | ✅ Done | AccountingPolicy, MeaningBuilder, AccountingIntent, JournalWriter, OutcomeRecorder with L1-L5/P1/P11/P15 invariants. |
+| **Schema System** | ✅ Done | 11 schema definition files covering all ERP domains. |
+| **Profile System** | ✅ Done | 10 profile files including DCAA allocation and guards. |
 
-### Build Next (High Priority)
-
-| Engine | Why Build | Notes |
-|--------|-----------|-------|
-| **ReconciliationManager** | Direct consumer of EconomicLink. Tracks Open/Matched state for invoices and payments. | Natural next step after EconomicLink |
-| **ValuationLayer** | Tracks specific lots of value (e.g., 10 units at $5) for FIFO/LIFO costing. | Orthogonal to EconomicLink; needed for inventory |
-
-### Defer or Extend Existing
+### Potential Future Extensions
 
 | Engine | Assessment | Recommendation |
 |--------|-----------|----------------|
 | **AccumulatorEngine** | Gathers costs over time for WIP and Accruals | Defer until concrete WIP use case emerges |
-| **CorrectionEngine** | Recursive reversals via EconomicLink graph | Start with manual reversals; automate later |
 | **GaplessSequenceEngine** | Strictly monotonic document numbering | Extend SequenceService if needed |
 | **DimensionConstraintEngine** | Cross-dimension rules | Can be validation rules in EventValidator |
-| **EffectivityResolver** | Policy/ExchangeRate lookup by timestamp | Already in PolicyRegistry; extend if needed |
+| **EffectivityResolver** | Policy/ExchangeRate lookup by timestamp | Already in PolicyAuthority; extend if needed |
 
 ---
 
@@ -636,18 +680,28 @@ ProfileRegistry.register(profile)
 
 All invariants have comprehensive test coverage:
 
-| Category | Directory | Purpose |
-|----------|-----------|---------|
-| **Unit** | `tests/unit/`, `tests/domain/` | Local correctness |
-| **Concurrency** | `tests/concurrency/` | Race safety |
-| **Crash** | `tests/crash/` | Durability |
-| **Replay** | `tests/replay/` | Determinism |
-| **Adversarial** | `tests/adversarial/` | Attack resistance |
-| **Audit** | `tests/audit/` | Audit trail integrity |
-| **Architecture** | `tests/architecture/` | Architectural compliance |
-| **Fuzzing** | `tests/fuzzing/` | Fuzz testing |
-| **Database Security** | `tests/database_security/` | PostgreSQL triggers, isolation |
-| **Security** | `tests/security/` | SQL injection prevention |
+| Category | Directory | Files | Test Classes |
+|----------|-----------|-------|--------------|
+| **Unit** | `tests/unit/` | 2 | 10 |
+| **Domain** | `tests/domain/` | 20 | 153 |
+| **Architecture** | `tests/architecture/` | 8 | 15 |
+| **Engines** | `tests/engines/` | 12 | 104 |
+| **Modules** | `tests/modules/` | 31 | 163 |
+| **Services** | `tests/services/` | 3 | 27 |
+| **Posting** | `tests/posting/` | 4 | 11 |
+| **Audit** | `tests/audit/` | 9 | 37 |
+| **Adversarial** | `tests/adversarial/` | 10 | 36 |
+| **Concurrency** | `tests/concurrency/` | 5 | 22 |
+| **Replay** | `tests/replay/` | 4 | 18 |
+| **Crash** | `tests/crash/` | 2 | 9 |
+| **Fuzzing** | `tests/fuzzing/` | 2 | 10 |
+| **Multi-Currency** | `tests/multicurrency/` | 2 | 13 |
+| **Database Security** | `tests/database_security/` | 1 | 5 |
+| **Security** | `tests/security/` | 1 | 8 |
+| **Integration** | `tests/integration/` | 2 | - |
+| **Demo** | `tests/demo/` | 1 | - |
+| **Other** | Various | 5 | 17 |
+| **Total** | | **122** | **717** |
 
 ---
 
@@ -655,5 +709,3 @@ All invariants have comprehensive test coverage:
 
 - `db/README.md` - Database layer details
 - `../docs/MODULE_DEVELOPMENT_GUIDE.md` - How to build ERP modules
-- `../docs/ap_module_design.md` - AP module reference design
-- `../docs/reusable_modules.md` - Reusable engine patterns

@@ -37,11 +37,56 @@ from uuid import uuid4
 from sqlalchemy import text
 
 from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator, PostingStatus
-from finance_kernel.domain.strategy import BasePostingStrategy
-from finance_kernel.domain.strategy_registry import StrategyRegistry
-from finance_kernel.domain.dtos import EventEnvelope, LineSpec, LineSide as DomainLineSide, ReferenceData
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
+from finance_kernel.domain.accounting_intent import (
+    AccountingIntent,
+    AccountingIntentSnapshot,
+    IntentLine,
+    IntentLineSide,
+    LedgerIntent,
+)
+from finance_kernel.domain.meaning_builder import EconomicEventData, MeaningBuilderResult
 from finance_kernel.domain.values import Money
+from finance_kernel.exceptions import MultipleRoundingLinesError, RoundingAmountExceededError
+from tests.conftest import make_source_event
+
+
+def _make_meaning_result(session, actor_id, clock, effective_date, amount=Decimal("100.00")):
+    """Create a successful MeaningBuilderResult for testing."""
+    source_event_id = uuid4()
+    # Create source Event record (FK requirement for JournalEntry)
+    make_source_event(session, source_event_id, actor_id, clock, effective_date)
+    econ_data = EconomicEventData(
+        source_event_id=source_event_id,
+        economic_type="test.rounding",
+        effective_date=effective_date,
+        profile_id="RoundingTest",
+        profile_version=1,
+        profile_hash=None,
+        quantity=amount,
+    )
+    return MeaningBuilderResult.ok(econ_data), source_event_id
+
+
+def _make_intent(source_event_id, effective_date, lines, profile_id="RoundingTest"):
+    """Create an AccountingIntent with the given lines."""
+    return AccountingIntent(
+        econ_event_id=uuid4(),
+        source_event_id=source_event_id,
+        profile_id=profile_id,
+        profile_version=1,
+        effective_date=effective_date,
+        ledger_intents=(
+            LedgerIntent(
+                ledger_id="GL",
+                lines=tuple(lines),
+            ),
+        ),
+        snapshot=AccountingIntentSnapshot(
+            coa_version=1,
+            dimension_schema_version=1,
+        ),
+    )
 
 
 class TestMultipleRoundingLines:
@@ -49,84 +94,113 @@ class TestMultipleRoundingLines:
     Test that an entry cannot have multiple lines marked is_rounding=True.
     """
 
-    def test_two_rounding_lines_via_posting_orchestrator(
+    def test_two_rounding_lines_rejected(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        interpretation_coordinator: InterpretationCoordinator,
         standard_accounts,
         current_period,
+        role_resolver,
         test_actor_id,
         deterministic_clock,
     ):
         """
-        Attempt to post an entry that results in multiple rounding lines.
+        Attempt to post an entry with multiple rounding lines.
 
-        The posting workflow should ensure at most ONE rounding line.
+        The JournalWriter enforces at most ONE rounding line per entry.
+        Two rounding lines should raise MultipleRoundingLinesError.
         """
-        # Use a strategy that produces an unbalanced result requiring rounding
-        event_type = "test.multi.rounding.check"
+        today = deterministic_clock.now().date()
+        meaning_result, source_id = _make_meaning_result(session, test_actor_id, deterministic_clock, today)
 
-        class MultiRoundingStrategy(BasePostingStrategy):
-            def __init__(self):
-                self._event_type = event_type
-                self._version = 1
+        # Create an intent with TWO rounding lines (balanced overall)
+        # Debit: $100.01 to CashAsset
+        # Credit: $100.00 to SalesRevenue
+        # Credit: $0.005 rounding to RoundingExpense (rounding line 1)
+        # Credit: $0.005 rounding to RoundingExpense (rounding line 2)
+        intent = _make_intent(
+            source_id,
+            today,
+            lines=[
+                IntentLine.debit("CashAsset", Decimal("100.01"), "USD"),
+                IntentLine.credit("SalesRevenue", Decimal("100.00"), "USD"),
+                IntentLine(
+                    account_role="RoundingExpense",
+                    side=IntentLineSide.CREDIT,
+                    money=Money.of(Decimal("0.005"), "USD"),
+                    is_rounding=True,
+                ),
+                IntentLine(
+                    account_role="RoundingExpense",
+                    side=IntentLineSide.CREDIT,
+                    money=Money.of(Decimal("0.005"), "USD"),
+                    is_rounding=True,
+                ),
+            ],
+        )
 
-            @property
-            def event_type(self) -> str:
-                return self._event_type
-
-            @property
-            def version(self) -> int:
-                return self._version
-
-            def _compute_line_specs(
-                self, event: EventEnvelope, ref: ReferenceData
-            ) -> tuple[LineSpec, ...]:
-                # Return lines that need rounding
-                return (
-                    LineSpec(
-                        account_code="1000",
-                        side=DomainLineSide.DEBIT,
-                        money=Money.of(Decimal("100.001"), "USD"),
-                    ),
-                    LineSpec(
-                        account_code="4000",
-                        side=DomainLineSide.CREDIT,
-                        money=Money.of(Decimal("100.00"), "USD"),
-                    ),
-                )
-
-        StrategyRegistry.register(MultiRoundingStrategy())
-
-        try:
-            result = posting_orchestrator.post_event(
-                event_id=uuid4(),
-                event_type=event_type,
-                occurred_at=deterministic_clock.now(),
-                effective_date=deterministic_clock.now().date(),
+        with pytest.raises(MultipleRoundingLinesError):
+            interpretation_coordinator.interpret_and_post(
+                meaning_result=meaning_result,
+                accounting_intent=intent,
                 actor_id=test_actor_id,
-                producer="test",
-                payload={},
             )
 
-            if result.status == PostingStatus.POSTED:
-                # Check how many rounding lines exist
-                rounding_count = session.execute(
-                    text("""
-                        SELECT COUNT(*) FROM journal_lines
-                        WHERE journal_entry_id = :entry_id AND is_rounding = true
-                    """),
-                    {"entry_id": str(result.journal_entry_id)},
-                ).scalar()
+    def test_single_rounding_line_accepted(
+        self,
+        session,
+        interpretation_coordinator: InterpretationCoordinator,
+        standard_accounts,
+        current_period,
+        role_resolver,
+        test_actor_id,
+        deterministic_clock,
+    ):
+        """
+        Verify that a single rounding line within threshold is accepted.
 
-                # Document the result
-                assert rounding_count <= 1, (
-                    f"INVARIANT CHECK: Entry has {rounding_count} rounding lines. "
-                    f"Expected at most 1."
-                )
+        This confirms the invariant only blocks MULTIPLE rounding lines,
+        not a single legitimate rounding adjustment.
+        """
+        today = deterministic_clock.now().date()
+        meaning_result, source_id = _make_meaning_result(session, test_actor_id, deterministic_clock, today)
 
-        finally:
-            StrategyRegistry._strategies.pop(event_type, None)
+        # Single rounding line within threshold
+        intent = _make_intent(
+            source_id,
+            today,
+            lines=[
+                IntentLine.debit("CashAsset", Decimal("100.003"), "USD"),
+                IntentLine.credit("SalesRevenue", Decimal("100.00"), "USD"),
+                IntentLine(
+                    account_role="RoundingExpense",
+                    side=IntentLineSide.CREDIT,
+                    money=Money.of(Decimal("0.003"), "USD"),
+                    is_rounding=True,
+                ),
+            ],
+        )
+
+        result = interpretation_coordinator.interpret_and_post(
+            meaning_result=meaning_result,
+            accounting_intent=intent,
+            actor_id=test_actor_id,
+        )
+        session.flush()
+
+        assert result.success
+
+        # Verify exactly one rounding line exists
+        entry_id = result.journal_result.entries[0].entry_id
+        rounding_count = session.execute(
+            text("""
+                SELECT COUNT(*) FROM journal_lines
+                WHERE journal_entry_id = :entry_id AND is_rounding = true
+            """),
+            {"entry_id": str(entry_id)},
+        ).scalar()
+
+        assert rounding_count == 1
 
 
 class TestLargeRoundingAmount:
@@ -140,14 +214,15 @@ class TestLargeRoundingAmount:
     def test_ten_thousand_dollar_rounding_via_direct_line_creation(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        interpretation_coordinator: InterpretationCoordinator,
         standard_accounts,
         current_period,
+        role_resolver,
         test_actor_id,
         deterministic_clock,
     ):
         """
-        Create an entry via orchestrator, then check if we can manually
+        Create an entry via coordinator, then check if we can manually
         add a massive "rounding" line.
 
         The Attack:
@@ -158,177 +233,145 @@ class TestLargeRoundingAmount:
         Note: This tests whether the DB/ORM blocks direct line injection.
         """
         # First, post a legitimate entry
-        event_type = "test.large.rounding"
+        today = deterministic_clock.now().date()
+        meaning_result, source_id = _make_meaning_result(session, test_actor_id, deterministic_clock, today, amount=Decimal("10000.00"))
 
-        class SimpleStrategy(BasePostingStrategy):
-            def __init__(self):
-                self._event_type = event_type
-                self._version = 1
+        intent = _make_intent(
+            source_id,
+            today,
+            lines=[
+                IntentLine.debit("CashAsset", Decimal("10000.00"), "USD"),
+                IntentLine.credit("SalesRevenue", Decimal("10000.00"), "USD"),
+            ],
+        )
 
-            @property
-            def event_type(self) -> str:
-                return self._event_type
+        result = interpretation_coordinator.interpret_and_post(
+            meaning_result=meaning_result,
+            accounting_intent=intent,
+            actor_id=test_actor_id,
+        )
+        assert result.success
+        session.flush()
 
-            @property
-            def version(self) -> int:
-                return self._version
+        # Get the posted entry
+        entry_id = result.journal_result.entries[0].entry_id
+        entry = session.get(JournalEntry, entry_id)
+        assert entry.status == JournalEntryStatus.POSTED
 
-            def _compute_line_specs(
-                self, event: EventEnvelope, ref: ReferenceData
-            ) -> tuple[LineSpec, ...]:
-                return (
-                    LineSpec(
-                        account_code="1000",
-                        side=DomainLineSide.DEBIT,
-                        money=Money.of(Decimal("10000.00"), "USD"),
-                    ),
-                    LineSpec(
-                        account_code="4000",
-                        side=DomainLineSide.CREDIT,
-                        money=Money.of(Decimal("10000.00"), "USD"),
-                    ),
-                )
+        # THE ATTACK: Try to add a $10,000 "rounding" line to a posted entry
+        rounding_account = standard_accounts["rounding"]
 
-        StrategyRegistry.register(SimpleStrategy())
+        attack_line = JournalLine(
+            journal_entry_id=entry.id,
+            account_id=rounding_account.id,
+            side=LineSide.CREDIT,
+            amount=Decimal("10000.00"),  # Massive "rounding"
+            currency="USD",
+            line_seq=99,
+            is_rounding=True,
+        )
+        session.add(attack_line)
 
         try:
-            result = posting_orchestrator.post_event(
-                event_id=uuid4(),
-                event_type=event_type,
-                occurred_at=deterministic_clock.now(),
-                effective_date=deterministic_clock.now().date(),
-                actor_id=test_actor_id,
-                producer="test",
-                payload={},
+            session.flush()
+
+            # If we get here, the attack succeeded
+            pytest.fail(
+                "INVARIANT BROKEN: Added a $10,000 'rounding' line to a POSTED entry. "
+                "This should have been blocked by immutability rules."
             )
 
-            assert result.status == PostingStatus.POSTED
+        except Exception as e:
+            # Good - blocked (likely by immutability rules on posted entries)
+            session.rollback()
 
-            # Get the posted entry
-            entry = session.get(JournalEntry, result.journal_entry_id)
-            assert entry.status == JournalEntryStatus.POSTED
-
-            # THE ATTACK: Try to add a $10,000 "rounding" line to a posted entry
-            rounding_account = standard_accounts["rounding"]
-
-            attack_line = JournalLine(
-                journal_entry_id=entry.id,
-                account_id=rounding_account.id,
-                side=LineSide.CREDIT,
-                amount=Decimal("10000.00"),  # Massive "rounding"
-                currency="USD",
-                line_seq=99,
-                is_rounding=True,
-            )
-            session.add(attack_line)
-
-            try:
-                session.flush()
-
-                # If we get here, the attack succeeded
-                pytest.fail(
-                    "INVARIANT BROKEN: Added a $10,000 'rounding' line to a POSTED entry. "
-                    "This should have been blocked by immutability rules."
-                )
-
-            except Exception as e:
-                # Good - blocked (likely by immutability rules on posted entries)
-                session.rollback()
-
-        finally:
-            StrategyRegistry._strategies.pop(event_type, None)
-
-    def test_strategy_producing_large_rounding(
+    def test_intent_with_massive_rounding_rejected(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        interpretation_coordinator: InterpretationCoordinator,
         standard_accounts,
         current_period,
+        role_resolver,
         test_actor_id,
         deterministic_clock,
     ):
         """
-        Test a strategy that produces a massive imbalance requiring "rounding".
+        Test that an AccountingIntent with a massive rounding line is rejected.
 
-        If the posting orchestrator doesn't validate rounding thresholds,
-        this will create an entry with material misstatement.
+        The JournalWriter enforces a rounding threshold: the rounding amount
+        must be <= max(0.01, 0.01 * number_of_non_rounding_lines).
+
+        A $10,000 rounding line vastly exceeds any reasonable threshold.
         """
-        event_type = "test.massive.imbalance"
+        today = deterministic_clock.now().date()
+        meaning_result, source_id = _make_meaning_result(session, test_actor_id, deterministic_clock, today, amount=Decimal("20000.00"))
 
-        class MassiveImbalanceStrategy(BasePostingStrategy):
-            """Strategy that produces $10,000 imbalance."""
+        # Create an intent that's "balanced" only by a massive rounding line
+        # Debit: $20,000 to CashAsset
+        # Credit: $10,000 to SalesRevenue
+        # Credit: $10,000 to RoundingExpense (is_rounding=True) -- fraud!
+        intent = _make_intent(
+            source_id,
+            today,
+            lines=[
+                IntentLine.debit("CashAsset", Decimal("20000.00"), "USD"),
+                IntentLine.credit("SalesRevenue", Decimal("10000.00"), "USD"),
+                IntentLine(
+                    account_role="RoundingExpense",
+                    side=IntentLineSide.CREDIT,
+                    money=Money.of(Decimal("10000.00"), "USD"),
+                    is_rounding=True,
+                ),
+            ],
+        )
 
-            def __init__(self):
-                self._event_type = event_type
-                self._version = 1
-
-            @property
-            def event_type(self) -> str:
-                return self._event_type
-
-            @property
-            def version(self) -> int:
-                return self._version
-
-            def _compute_line_specs(
-                self, event: EventEnvelope, ref: ReferenceData
-            ) -> tuple[LineSpec, ...]:
-                # Intentionally unbalanced by $10,000
-                return (
-                    LineSpec(
-                        account_code="1000",
-                        side=DomainLineSide.DEBIT,
-                        money=Money.of(Decimal("20000.00"), "USD"),
-                    ),
-                    LineSpec(
-                        account_code="4000",
-                        side=DomainLineSide.CREDIT,
-                        money=Money.of(Decimal("10000.00"), "USD"),
-                    ),
-                )
-
-        StrategyRegistry.register(MassiveImbalanceStrategy())
-
-        try:
-            result = posting_orchestrator.post_event(
-                event_id=uuid4(),
-                event_type=event_type,
-                occurred_at=deterministic_clock.now(),
-                effective_date=deterministic_clock.now().date(),
+        # The JournalWriter should reject this due to rounding threshold
+        with pytest.raises(RoundingAmountExceededError):
+            interpretation_coordinator.interpret_and_post(
+                meaning_result=meaning_result,
+                accounting_intent=intent,
                 actor_id=test_actor_id,
-                producer="test",
-                payload={},
             )
 
-            if result.status == PostingStatus.POSTED:
-                # Check if a $10,000 rounding line was created
-                rounding_lines = session.execute(
-                    text("""
-                        SELECT amount FROM journal_lines
-                        WHERE journal_entry_id = :entry_id AND is_rounding = true
-                    """),
-                    {"entry_id": str(result.journal_entry_id)},
-                ).fetchall()
+    def test_unbalanced_entry_without_rounding_rejected(
+        self,
+        session,
+        interpretation_coordinator: InterpretationCoordinator,
+        standard_accounts,
+        current_period,
+        role_resolver,
+        test_actor_id,
+        deterministic_clock,
+    ):
+        """
+        Test that a massively unbalanced entry is rejected outright.
 
-                if rounding_lines:
-                    for (amount,) in rounding_lines:
-                        if amount >= Decimal("1.00"):
-                            pytest.fail(
-                                f"INVARIANT BROKEN: Entry posted with ${amount} 'rounding' line.\n"
-                                f"A $10,000 imbalance should NOT be auto-corrected as 'rounding'.\n"
-                                f"Rounding is for sub-penny currency conversion differences only.\n"
-                                f"This should have been rejected as UNBALANCED_ENTRY."
-                            )
+        If the posting pipeline doesn't validate balancing,
+        this will create an entry with a material misstatement.
+        A $10,000 imbalance should NOT be auto-corrected as 'rounding'.
+        """
+        today = deterministic_clock.now().date()
+        meaning_result, source_id = _make_meaning_result(session, test_actor_id, deterministic_clock, today, amount=Decimal("20000.00"))
 
-            elif result.status == PostingStatus.VALIDATION_FAILED:
-                # Good - the imbalance was rejected
-                pass
-            else:
-                # Document the result
-                print(f"Posting result: {result.status}, message: {result.message}")
+        # Intentionally unbalanced by $10,000 - no rounding line
+        intent = _make_intent(
+            source_id,
+            today,
+            lines=[
+                IntentLine.debit("CashAsset", Decimal("20000.00"), "USD"),
+                IntentLine.credit("SalesRevenue", Decimal("10000.00"), "USD"),
+            ],
+        )
 
-        finally:
-            StrategyRegistry._strategies.pop(event_type, None)
+        result = interpretation_coordinator.interpret_and_post(
+            meaning_result=meaning_result,
+            accounting_intent=intent,
+            actor_id=test_actor_id,
+        )
+
+        # Should be rejected as unbalanced
+        assert not result.success
+        assert result.error_code is not None
 
 
 class TestRoundingThresholdDocumentation:
@@ -401,4 +444,3 @@ class TestRoundingThresholdDocumentation:
 
         for inv in expected_invariants:
             print(f"  EXPECTED INVARIANT: {inv}")
-

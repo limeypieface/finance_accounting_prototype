@@ -21,50 +21,65 @@ from sqlalchemy import text
 
 from finance_kernel.models.account import Account, AccountType, NormalBalance, AccountTag
 from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator, PostingStatus
-from finance_kernel.domain.strategy import BasePostingStrategy
-from finance_kernel.domain.strategy_registry import StrategyRegistry
-from finance_kernel.domain.dtos import EventEnvelope, LineSpec, LineSide as DomainLineSide, ReferenceData
-from finance_kernel.domain.values import Money
+from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
+from finance_kernel.services.outcome_recorder import OutcomeRecorder
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
+from finance_kernel.domain.accounting_intent import (
+    AccountingIntent,
+    AccountingIntentSnapshot,
+    IntentLine,
+    LedgerIntent,
+)
+from finance_kernel.domain.meaning_builder import EconomicEventData, MeaningBuilderResult
 from finance_kernel.exceptions import ImmutabilityViolationError
+from tests.conftest import make_source_event
 
 
-def _register_strategy(event_type: str, debit_code: str, credit_code: str, amount: Decimal) -> None:
-    """Register a strategy that posts to specific accounts."""
+def _post_entry(coordinator, session, actor_id, clock, effective_date, debit_role, credit_role, amount):
+    """Post a balanced entry via InterpretationCoordinator."""
+    source_event_id = uuid4()
+    econ_event_id = uuid4()
 
-    class TestStrategy(BasePostingStrategy):
-        def __init__(self, evt_type: str, dr_code: str, cr_code: str, amt: Decimal):
-            self._event_type = evt_type
-            self._debit_code = dr_code
-            self._credit_code = cr_code
-            self._amount = amt
-            self._version = 1
+    # Create source Event record (FK requirement for JournalEntry)
+    make_source_event(session, source_event_id, actor_id, clock, effective_date)
 
-        @property
-        def event_type(self) -> str:
-            return self._event_type
+    econ_data = EconomicEventData(
+        source_event_id=source_event_id,
+        economic_type="test.hierarchy",
+        effective_date=effective_date,
+        profile_id="HierarchyTest",
+        profile_version=1,
+        profile_hash=None,
+        quantity=amount,
+    )
+    meaning_result = MeaningBuilderResult.ok(econ_data)
 
-        @property
-        def version(self) -> int:
-            return self._version
-
-        def _compute_line_specs(
-            self, event: EventEnvelope, ref: ReferenceData
-        ) -> tuple[LineSpec, ...]:
-            return (
-                LineSpec(
-                    account_code=self._debit_code,
-                    side=DomainLineSide.DEBIT,
-                    money=Money.of(self._amount, "USD"),
+    intent = AccountingIntent(
+        econ_event_id=econ_event_id,
+        source_event_id=source_event_id,
+        profile_id="HierarchyTest",
+        profile_version=1,
+        effective_date=effective_date,
+        ledger_intents=(
+            LedgerIntent(
+                ledger_id="GL",
+                lines=(
+                    IntentLine.debit(debit_role, amount, "USD"),
+                    IntentLine.credit(credit_role, amount, "USD"),
                 ),
-                LineSpec(
-                    account_code=self._credit_code,
-                    side=DomainLineSide.CREDIT,
-                    money=Money.of(self._amount, "USD"),
-                ),
-            )
+            ),
+        ),
+        snapshot=AccountingIntentSnapshot(
+            coa_version=1,
+            dimension_schema_version=1,
+        ),
+    )
 
-    StrategyRegistry.register(TestStrategy(event_type, debit_code, credit_code, amount))
+    return coordinator.interpret_and_post(
+        meaning_result=meaning_result,
+        accounting_intent=intent,
+        actor_id=actor_id,
+    )
 
 
 class TestAccountHierarchyIntegrity:
@@ -88,10 +103,10 @@ class TestAccountHierarchyIntegrity:
     def account_tree_with_balances(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
         current_period,
         test_actor_id,
         deterministic_clock,
+        auditor_service,
     ):
         """
         Create an account tree with posted balances.
@@ -151,41 +166,33 @@ class TestAccountHierarchyIntegrity:
         session.add(revenue)
         session.flush()
 
-        # Post $50,000 to Equipment
-        event_type1 = "test.equipment.purchase"
-        _register_strategy(event_type1, "1110", "4000", Decimal("50000.00"))
+        # Build a local InterpretationCoordinator with custom role bindings
+        resolver = RoleResolver()
+        resolver.register_binding("Equipment", equipment.id, equipment.code)
+        resolver.register_binding("Vehicles", vehicles.id, vehicles.code)
+        resolver.register_binding("Revenue", revenue.id, revenue.code)
 
-        try:
-            result1 = posting_orchestrator.post_event(
-                event_id=uuid4(),
-                event_type=event_type1,
-                occurred_at=deterministic_clock.now(),
-                effective_date=deterministic_clock.now().date(),
-                actor_id=test_actor_id,
-                producer="test",
-                payload={},
-            )
-            assert result1.status == PostingStatus.POSTED
-        finally:
-            StrategyRegistry._strategies.pop(event_type1, None)
+        writer = JournalWriter(session, resolver, deterministic_clock, auditor_service)
+        recorder = OutcomeRecorder(session, deterministic_clock)
+        coordinator = InterpretationCoordinator(session, writer, recorder, deterministic_clock)
+
+        today = deterministic_clock.now().date()
+
+        # Post $50,000 to Equipment
+        result1 = _post_entry(
+            coordinator, session, test_actor_id, deterministic_clock, today,
+            debit_role="Equipment", credit_role="Revenue",
+            amount=Decimal("50000.00"),
+        )
+        assert result1.success
 
         # Post $30,000 to Vehicles
-        event_type2 = "test.vehicle.purchase"
-        _register_strategy(event_type2, "1120", "4000", Decimal("30000.00"))
-
-        try:
-            result2 = posting_orchestrator.post_event(
-                event_id=uuid4(),
-                event_type=event_type2,
-                occurred_at=deterministic_clock.now(),
-                effective_date=deterministic_clock.now().date(),
-                actor_id=test_actor_id,
-                producer="test",
-                payload={},
-            )
-            assert result2.status == PostingStatus.POSTED
-        finally:
-            StrategyRegistry._strategies.pop(event_type2, None)
+        result2 = _post_entry(
+            coordinator, session, test_actor_id, deterministic_clock, today,
+            debit_role="Vehicles", credit_role="Revenue",
+            amount=Decimal("30000.00"),
+        )
+        assert result2.success
 
         session.flush()
 

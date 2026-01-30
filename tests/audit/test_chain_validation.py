@@ -16,7 +16,7 @@ from decimal import Decimal
 from uuid import uuid4
 from datetime import datetime, date
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 
 from finance_kernel.models.audit_event import AuditEvent, AuditAction
 from finance_kernel.models.journal import JournalEntry, JournalEntryStatus
@@ -27,43 +27,37 @@ from finance_kernel.domain.strategy_registry import StrategyRegistry
 from finance_kernel.domain.strategy import BasePostingStrategy
 from finance_kernel.domain.dtos import EventEnvelope, LineSpec, LineSide, ReferenceData
 from finance_kernel.domain.values import Money
-from finance_kernel.db.engine import get_engine, is_postgres
 
 
 @contextmanager
-def disabled_immutability():
+def disabled_immutability(session):
     """
     Context manager that disables both ORM and database-level immutability enforcement.
 
     Use this for tests that need to simulate tampering with audit data.
+
+    Accepts the test session so triggers are disabled on the SAME connection
+    (avoids deadlock with the session fixture's open transaction).
     """
     from finance_kernel.db.immutability import (
         register_immutability_listeners,
         unregister_immutability_listeners,
     )
-    from finance_kernel.db.triggers import (
-        install_immutability_triggers,
-        uninstall_immutability_triggers,
-    )
-
-    engine = get_engine()
 
     # Disable ORM listeners
     unregister_immutability_listeners()
 
-    # Disable database triggers (PostgreSQL only)
-    if is_postgres():
-        uninstall_immutability_triggers(engine)
+    # Disable all triggers on this connection (transaction-scoped)
+    session.execute(text("SET LOCAL session_replication_role = 'replica'"))
 
     try:
         yield
     finally:
+        # Re-enable triggers on this connection
+        session.execute(text("SET LOCAL session_replication_role = 'origin'"))
+
         # Re-enable ORM listeners
         register_immutability_listeners()
-
-        # Re-enable database triggers (PostgreSQL only)
-        if is_postgres():
-            install_immutability_triggers(engine)
 
 
 @dataclass
@@ -367,7 +361,7 @@ class TestTamperDetection:
             original_payload_hash = audit_event.payload_hash
             tampered_hash = "tampered_" + original_payload_hash[:50]
 
-            with disabled_immutability():
+            with disabled_immutability(session):
                 session.execute(
                     update(AuditEvent)
                     .where(AuditEvent.id == audit_event.id)
@@ -423,7 +417,7 @@ class TestTamperDetection:
                 second_event = events[1]
 
                 # Disable immutability to simulate tampering
-                with disabled_immutability():
+                with disabled_immutability(session):
                     session.execute(
                         update(AuditEvent)
                         .where(AuditEvent.id == second_event.id)

@@ -1,10 +1,11 @@
 """
-Idempotency tests for the posting engine.
+Idempotency tests using the interpretation pipeline.
 
 Verifies:
-- N retries → one JournalEntry
-- Payload mismatch → reject
-- Same event always returns same result
+- Event ingestion: N retries → one Event (IngestorService)
+- Posting: N retries with same econ_event_id → one JournalEntry (JournalWriter)
+- Payload mismatch → rejection (IngestorService)
+- InterpretationOutcome: one outcome per source_event_id (P15)
 """
 
 import pytest
@@ -12,12 +13,81 @@ from decimal import Decimal
 from uuid import uuid4
 
 from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator, PostingStatus
-from finance_kernel.domain.strategy_registry import StrategyRegistry
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
+from finance_kernel.services.journal_writer import WriteStatus
+from finance_kernel.domain.accounting_intent import (
+    AccountingIntent,
+    AccountingIntentSnapshot,
+    IntentLine,
+    LedgerIntent,
+)
+from finance_kernel.domain.meaning_builder import (
+    EconomicEventData,
+    MeaningBuilderResult,
+)
+from tests.conftest import make_source_event
+
+
+def _make_meaning_and_intent(
+    session,
+    actor_id,
+    clock,
+    effective_date,
+    source_event_id=None,
+    econ_event_id=None,
+    amount=Decimal("100.00"),
+    currency="USD",
+    profile_id="IdempotencyTest",
+    create_event_record=True,
+):
+    """Create a MeaningBuilderResult and AccountingIntent for testing."""
+    source_event_id = source_event_id or uuid4()
+    econ_event_id = econ_event_id or uuid4()
+    # Create source Event record (FK requirement for JournalEntry)
+    if create_event_record:
+        make_source_event(session, source_event_id, actor_id, clock, effective_date)
+
+    econ_data = EconomicEventData(
+        source_event_id=source_event_id,
+        economic_type="test.idempotency",
+        effective_date=effective_date,
+        profile_id=profile_id,
+        profile_version=1,
+        profile_hash=None,
+        quantity=amount,
+    )
+    meaning_result = MeaningBuilderResult.ok(econ_data)
+
+    intent = AccountingIntent(
+        econ_event_id=econ_event_id,
+        source_event_id=source_event_id,
+        profile_id=profile_id,
+        profile_version=1,
+        effective_date=effective_date,
+        ledger_intents=(
+            LedgerIntent(
+                ledger_id="GL",
+                lines=(
+                    IntentLine.debit("CashAsset", amount, currency),
+                    IntentLine.credit("SalesRevenue", amount, currency),
+                ),
+            ),
+        ),
+        snapshot=AccountingIntentSnapshot(
+            coa_version=1,
+            dimension_schema_version=1,
+        ),
+    )
+
+    return meaning_result, intent
 
 
 class TestEventIngestionIdempotency:
-    """Tests for event ingestion idempotency."""
+    """Tests for event ingestion idempotency (IngestorService).
+
+    IngestorService is a foundational service used by both old and new
+    architectures. These tests remain valid as-is.
+    """
 
     def test_duplicate_event_same_payload(
         self,
@@ -26,13 +96,12 @@ class TestEventIngestionIdempotency:
         test_actor_id,
         deterministic_clock,
     ):
-        """Test that ingesting the same event twice returns duplicate status."""
+        """Ingesting the same event twice returns duplicate status."""
         event_id = uuid4()
         payload = {"amount": "100.00", "description": "Test"}
         now = deterministic_clock.now()
         today = now.date()
 
-        # First ingestion
         result1 = ingestor_service.ingest(
             event_id=event_id,
             event_type="test.event",
@@ -42,10 +111,8 @@ class TestEventIngestionIdempotency:
             producer="test",
             payload=payload,
         )
-
         assert result1.status == IngestStatus.ACCEPTED
 
-        # Second ingestion (duplicate)
         result2 = ingestor_service.ingest(
             event_id=event_id,
             event_type="test.event",
@@ -55,7 +122,6 @@ class TestEventIngestionIdempotency:
             producer="test",
             payload=payload,
         )
-
         assert result2.status == IngestStatus.DUPLICATE
         assert result2.event_id == event_id
 
@@ -66,12 +132,11 @@ class TestEventIngestionIdempotency:
         test_actor_id,
         deterministic_clock,
     ):
-        """Test that same event_id with different payload is rejected."""
+        """Same event_id with different payload is rejected."""
         event_id = uuid4()
         now = deterministic_clock.now()
         today = now.date()
 
-        # First ingestion
         ingestor_service.ingest(
             event_id=event_id,
             event_type="test.event",
@@ -82,7 +147,6 @@ class TestEventIngestionIdempotency:
             payload={"amount": "100.00"},
         )
 
-        # Second ingestion with different payload - should be rejected
         result = ingestor_service.ingest(
             event_id=event_id,
             event_type="test.event",
@@ -92,7 +156,6 @@ class TestEventIngestionIdempotency:
             producer="test",
             payload={"amount": "200.00"},  # Different amount
         )
-
         assert result.status == IngestStatus.REJECTED
         assert "mismatch" in result.message.lower()
 
@@ -103,13 +166,12 @@ class TestEventIngestionIdempotency:
         test_actor_id,
         deterministic_clock,
     ):
-        """Test that 100 duplicate ingestions result in one event."""
+        """100 duplicate ingestions result in one event."""
         event_id = uuid4()
         payload = {"test": "data"}
         now = deterministic_clock.now()
         today = now.date()
 
-        # Ingest 100 times
         accepted_count = 0
         duplicate_count = 0
 
@@ -123,176 +185,142 @@ class TestEventIngestionIdempotency:
                 producer="test",
                 payload=payload,
             )
-
             if result.status == IngestStatus.ACCEPTED:
                 accepted_count += 1
             elif result.status == IngestStatus.DUPLICATE:
                 duplicate_count += 1
 
-        # Should have exactly one accepted, 99 duplicates
         assert accepted_count == 1
         assert duplicate_count == 99
 
 
 class TestPostingIdempotency:
-    """Tests for posting idempotency via PostingOrchestrator."""
+    """Tests for posting idempotency via InterpretationCoordinator.
 
-    def test_post_same_event_twice_returns_same_result(
+    The JournalWriter uses idempotency keys ({econ_event_id}:{ledger_id}:{profile_version})
+    to ensure that the same economic event is only posted once per ledger.
+    """
+
+    def test_post_same_event_twice_returns_already_exists(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        interpretation_coordinator: InterpretationCoordinator,
         standard_accounts,
         current_period,
+        role_resolver,
         test_actor_id,
         deterministic_clock,
     ):
-        """Test that posting the same event twice returns same journal entry."""
-        # Register a test strategy for this event type
-        from finance_kernel.domain.strategy import BasePostingStrategy
-        from finance_kernel.domain.dtos import EventEnvelope, LineSpec, LineSide, ReferenceData
-        from finance_kernel.domain.values import Money
+        """Posting the same economic event twice returns ALREADY_EXISTS on second attempt."""
+        today = deterministic_clock.now().date()
+        source_event_id = uuid4()
+        econ_event_id = uuid4()
 
-        class TestStrategy(BasePostingStrategy):
-            def __init__(self, evt_type: str):
-                self._event_type = evt_type
-                self._version = 1
+        meaning_result1, intent1 = _make_meaning_and_intent(
+            session, test_actor_id, deterministic_clock,
+            today,
+            source_event_id=source_event_id,
+            econ_event_id=econ_event_id,
+        )
 
-            @property
-            def event_type(self) -> str:
-                return self._event_type
+        # First posting
+        result1 = interpretation_coordinator.interpret_and_post(
+            meaning_result=meaning_result1,
+            accounting_intent=intent1,
+            actor_id=test_actor_id,
+        )
+        session.flush()
+        assert result1.success
 
-            @property
-            def version(self) -> int:
-                return self._version
+        # Second posting with DIFFERENT source_event_id but same econ_event_id
+        # This tests JournalWriter idempotency (key is econ_event_id:GL:1)
+        source_event_id2 = uuid4()
+        meaning_result2, intent2 = _make_meaning_and_intent(
+            session, test_actor_id, deterministic_clock,
+            today,
+            source_event_id=source_event_id2,
+            econ_event_id=econ_event_id,
+        )
 
-            def _compute_line_specs(
-                self, event: EventEnvelope, ref: ReferenceData
-            ) -> tuple[LineSpec, ...]:
-                amount = Decimal(event.payload.get("amount", "100.00"))
-                return (
-                    LineSpec(
-                        account_code="1000",
-                        side=LineSide.DEBIT,
-                        money=Money.of(amount, "USD"),
-                    ),
-                    LineSpec(
-                        account_code="4000",
-                        side=LineSide.CREDIT,
-                        money=Money.of(amount, "USD"),
-                    ),
-                )
+        result2 = interpretation_coordinator.interpret_and_post(
+            meaning_result=meaning_result2,
+            accounting_intent=intent2,
+            actor_id=test_actor_id,
+        )
+        session.flush()
 
-        StrategyRegistry.register(TestStrategy("test.sale"))
+        # Second attempt should succeed but with ALREADY_EXISTS status
+        assert result2.success
+        assert result2.journal_result is not None
+        assert result2.journal_result.status == WriteStatus.ALREADY_EXISTS
 
-        try:
-            event_id = uuid4()
-            now = deterministic_clock.now()
-            today = now.date()
-
-            # First posting
-            result1 = posting_orchestrator.post_event(
-                event_id=event_id,
-                event_type="test.sale",
-                occurred_at=now,
-                effective_date=today,
-                actor_id=test_actor_id,
-                producer="test",
-                payload={"amount": "100.00"},
-            )
-            assert result1.status == PostingStatus.POSTED
-
-            # Second posting
-            result2 = posting_orchestrator.post_event(
-                event_id=event_id,
-                event_type="test.sale",
-                occurred_at=now,
-                effective_date=today,
-                actor_id=test_actor_id,
-                producer="test",
-                payload={"amount": "100.00"},
-            )
-            assert result2.status == PostingStatus.ALREADY_POSTED
-            assert result2.journal_entry_id == result1.journal_entry_id
-        finally:
-            StrategyRegistry._strategies.pop("test.sale", None)
-
-    def test_many_post_attempts_one_entry(
+    def test_outcome_per_source_event_is_unique(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        interpretation_coordinator: InterpretationCoordinator,
         standard_accounts,
         current_period,
+        role_resolver,
         test_actor_id,
         deterministic_clock,
     ):
-        """Test that 100 post attempts result in one journal entry."""
-        # Register a test strategy for this event type
-        from finance_kernel.domain.strategy import BasePostingStrategy
-        from finance_kernel.domain.dtos import EventEnvelope, LineSpec, LineSide, ReferenceData
-        from finance_kernel.domain.values import Money
+        """P15: Each source_event_id gets exactly one InterpretationOutcome.
 
-        class TestStrategy(BasePostingStrategy):
-            def __init__(self, evt_type: str):
-                self._event_type = evt_type
-                self._version = 1
+        Attempting to record a second outcome for the same source_event_id
+        should be rejected.
+        """
+        today = deterministic_clock.now().date()
 
-            @property
-            def event_type(self) -> str:
-                return self._event_type
+        # First event posts normally
+        meaning_result1, intent1 = _make_meaning_and_intent(session, test_actor_id, deterministic_clock, today)
+        result1 = interpretation_coordinator.interpret_and_post(
+            meaning_result=meaning_result1,
+            accounting_intent=intent1,
+            actor_id=test_actor_id,
+        )
+        session.flush()
+        assert result1.success
+        assert result1.outcome is not None
 
-            @property
-            def version(self) -> int:
-                return self._version
+        # Same source_event_id should not get a second outcome
+        source_event_id = result1.outcome.source_event_id
+        econ_data2 = EconomicEventData(
+            source_event_id=source_event_id,
+            economic_type="test.idempotency",
+            effective_date=today,
+            profile_id="IdempotencyTest",
+            profile_version=1,
+            profile_hash=None,
+            quantity=Decimal("100.00"),
+        )
+        meaning_result2 = MeaningBuilderResult.ok(econ_data2)
 
-            def _compute_line_specs(
-                self, event: EventEnvelope, ref: ReferenceData
-            ) -> tuple[LineSpec, ...]:
-                amount = Decimal(event.payload.get("amount", "100.00"))
-                return (
-                    LineSpec(
-                        account_code="1000",
-                        side=LineSide.DEBIT,
-                        money=Money.of(amount, "USD"),
+        intent2 = AccountingIntent(
+            econ_event_id=uuid4(),
+            source_event_id=source_event_id,
+            profile_id="IdempotencyTest",
+            profile_version=1,
+            effective_date=today,
+            ledger_intents=(
+                LedgerIntent(
+                    ledger_id="GL",
+                    lines=(
+                        IntentLine.debit("CashAsset", Decimal("100.00"), "USD"),
+                        IntentLine.credit("SalesRevenue", Decimal("100.00"), "USD"),
                     ),
-                    LineSpec(
-                        account_code="4000",
-                        side=LineSide.CREDIT,
-                        money=Money.of(amount, "USD"),
-                    ),
-                )
+                ),
+            ),
+            snapshot=AccountingIntentSnapshot(
+                coa_version=1,
+                dimension_schema_version=1,
+            ),
+        )
 
-        StrategyRegistry.register(TestStrategy("test.multi"))
-
-        try:
-            event_id = uuid4()
-            now = deterministic_clock.now()
-            today = now.date()
-
-            posted_count = 0
-            already_posted_count = 0
-            entry_id = None
-
-            for _ in range(100):
-                result = posting_orchestrator.post_event(
-                    event_id=event_id,
-                    event_type="test.multi",
-                    occurred_at=now,
-                    effective_date=today,
-                    actor_id=test_actor_id,
-                    producer="test",
-                    payload={"amount": "100.00"},
-                )
-
-                if result.status == PostingStatus.POSTED:
-                    posted_count += 1
-                    entry_id = result.journal_entry_id
-                elif result.status == PostingStatus.ALREADY_POSTED:
-                    already_posted_count += 1
-                    # Verify same entry ID
-                    assert result.journal_entry_id == entry_id
-
-            # Should have exactly one posted, 99 already_posted
-            assert posted_count == 1
-            assert already_posted_count == 99
-        finally:
-            StrategyRegistry._strategies.pop("test.multi", None)
+        # The coordinator should detect P15 violation
+        from finance_kernel.services.outcome_recorder import OutcomeAlreadyExistsError
+        with pytest.raises(OutcomeAlreadyExistsError):
+            interpretation_coordinator.interpret_and_post(
+                meaning_result=meaning_result2,
+                accounting_intent=intent2,
+                actor_id=test_actor_id,
+            )

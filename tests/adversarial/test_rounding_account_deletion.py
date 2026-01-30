@@ -22,7 +22,8 @@ from finance_kernel.domain.strategy import BasePostingStrategy
 from finance_kernel.domain.strategy_registry import StrategyRegistry
 from finance_kernel.domain.dtos import EventEnvelope, LineSpec, LineSide as DomainLineSide, ReferenceData
 from finance_kernel.domain.values import Money
-from finance_kernel.exceptions import ImmutabilityViolationError
+from finance_kernel.exceptions import ImmutabilityViolationError, AccountReferencedError
+from sqlalchemy.exc import IntegrityError
 
 
 def _register_rounding_strategy(event_type: str, rounding_account_code: str) -> None:
@@ -104,23 +105,26 @@ class TestDeleteAllRoundingAccounts:
             session.flush()
 
             # Now try to delete the rounding account - should fail
-            session.delete(rounding_account)
+            # Use nested transaction so failure doesn't break the session
+            with pytest.raises((IntegrityError, ImmutabilityViolationError, AccountReferencedError)) as exc_info:
+                with session.begin_nested():
+                    session.delete(rounding_account)
+                    session.flush()
 
-            with pytest.raises(Exception) as exc_info:
-                session.flush()
-
-            # Should be blocked by FK constraint or immutability
+            # Should be blocked by FK constraint, immutability, or referenced check
             error_msg = str(exc_info.value).lower()
             assert (
                 "foreign key" in error_msg
                 or "constraint" in error_msg
                 or "violates" in error_msg
                 or "immutability" in error_msg
-            )
+                or "referenced" in error_msg
+                or "cannot be deleted" in error_msg
+                or "rounding" in error_msg
+            ), f"Expected deletion protection error, got: {exc_info.value}"
 
         finally:
             StrategyRegistry._strategies.pop(event_type, None)
-            session.rollback()
 
     def test_attempt_delete_all_rounding_accounts_bulk(
         self,
@@ -187,22 +191,24 @@ class TestDeleteAllRoundingAccounts:
 
         # Attempt to delete the second (now last) USD rounding account - should FAIL
         # Use a savepoint so we can continue testing
-        savepoint = session.begin_nested()
-        session.delete(rounding2)
-        with pytest.raises(ImmutabilityViolationError) as exc_info:
-            session.flush()
+        # The error can be ImmutabilityViolationError (ORM) or IntegrityError (PostgreSQL trigger)
+        with pytest.raises((ImmutabilityViolationError, IntegrityError)) as exc_info:
+            with session.begin_nested():
+                session.delete(rounding2)
+                session.flush()
 
-        assert "rounding" in str(exc_info.value).lower()
-        savepoint.rollback()
+        assert "rounding" in str(exc_info.value).lower(), f"Expected rounding error, got: {exc_info.value}"
+
+        # Re-fetch rounding2 since it might have been expunged
+        session.expire_all()
 
         # Attempt to delete the only EUR rounding account - should also FAIL
-        savepoint2 = session.begin_nested()
-        session.delete(rounding3)
-        with pytest.raises(ImmutabilityViolationError) as exc_info:
-            session.flush()
+        with pytest.raises((ImmutabilityViolationError, IntegrityError)) as exc_info:
+            with session.begin_nested():
+                session.delete(rounding3)
+                session.flush()
 
-        assert "rounding" in str(exc_info.value).lower()
-        savepoint2.rollback()
+        assert "rounding" in str(exc_info.value).lower(), f"Expected rounding error, got: {exc_info.value}"
 
         # Verify at least one rounding account remains per currency
         usd_remaining = session.execute(
@@ -248,18 +254,19 @@ class TestDeleteAllRoundingAccounts:
         assert jpy_rounding_count == 1, "Should have exactly 1 JPY rounding account"
 
         # Attempt to delete the last rounding account for JPY
-        session.delete(single_rounding)
-
         # This SHOULD raise an error if the invariant is enforced
-        with pytest.raises(ImmutabilityViolationError) as exc_info:
-            session.flush()
+        # The error can be ImmutabilityViolationError (ORM) or IntegrityError (PostgreSQL trigger)
+        with pytest.raises((ImmutabilityViolationError, IntegrityError)) as exc_info:
+            with session.begin_nested():
+                session.delete(single_rounding)
+                session.flush()
 
         # Verify the error message is appropriate
-        assert "rounding" in str(exc_info.value).lower()
-        assert "JPY" in str(exc_info.value) or "last" in str(exc_info.value).lower()
-
-        # Clean up session state for teardown
-        session.rollback()
+        error_str = str(exc_info.value).lower()
+        assert "rounding" in error_str, f"Expected rounding error, got: {exc_info.value}"
+        assert (
+            "jpy" in error_str or "last" in error_str or "currency" in error_str
+        ), f"Expected currency or 'last' in error, got: {exc_info.value}"
 
     def test_raw_sql_delete_all_rounding_accounts(
         self,

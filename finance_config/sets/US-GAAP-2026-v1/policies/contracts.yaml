@@ -1,0 +1,1033 @@
+policies:
+- name: ContractCostDirectLabor
+  version: 1
+  module: contracts
+  description: Records direct labor cost incurred against contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.cost_incurred
+    where:
+    - field: payload.cost_type
+      value: DIRECT_LABOR
+  meaning:
+    economic_type: CONTRACT_COST_INCURRENCE
+    dimensions:
+    - org_unit
+    - cost_center
+    - contract_number
+    - clin_number
+    - labor_category
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_DIRECT_LABOR
+    credit_role: LABOR_CLEARING
+  - ledger: CONTRACT
+    debit_role: CONTRACT_COST_INCURRED
+    credit_role: COST_CLEARING
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Cost amount must be positive
+  line_mappings:
+  - role: WIP_DIRECT_LABOR
+    side: debit
+  - role: LABOR_CLEARING
+    side: credit
+  - role: CONTRACT_COST_INCURRED
+    side: debit
+    ledger: CONTRACT
+  - role: COST_CLEARING
+    side: credit
+    ledger: CONTRACT
+- name: ContractCostDirectMaterial
+  version: 1
+  module: contracts
+  description: Records direct material cost incurred against contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.cost_incurred
+    where:
+    - field: payload.cost_type
+      value: DIRECT_MATERIAL
+  meaning:
+    economic_type: CONTRACT_COST_INCURRENCE
+    dimensions:
+    - org_unit
+    - cost_center
+    - contract_number
+    - clin_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_DIRECT_MATERIAL
+    credit_role: MATERIAL_CLEARING
+  - ledger: CONTRACT
+    debit_role: CONTRACT_COST_INCURRED
+    credit_role: COST_CLEARING
+  line_mappings:
+  - role: WIP_DIRECT_MATERIAL
+    side: debit
+  - role: MATERIAL_CLEARING
+    side: credit
+  - role: CONTRACT_COST_INCURRED
+    side: debit
+    ledger: CONTRACT
+  - role: COST_CLEARING
+    side: credit
+    ledger: CONTRACT
+- name: ContractCostSubcontract
+  version: 1
+  module: contracts
+  description: Records subcontract cost incurred against contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.cost_incurred
+    where:
+    - field: payload.cost_type
+      value: SUBCONTRACT
+  meaning:
+    economic_type: CONTRACT_COST_INCURRENCE
+    dimensions:
+    - org_unit
+    - contract_number
+    - clin_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_SUBCONTRACT
+    credit_role: AP_CLEARING
+  - ledger: CONTRACT
+    debit_role: CONTRACT_COST_INCURRED
+    credit_role: COST_CLEARING
+  line_mappings:
+  - role: WIP_SUBCONTRACT
+    side: debit
+  - role: AP_CLEARING
+    side: credit
+  - role: CONTRACT_COST_INCURRED
+    side: debit
+    ledger: CONTRACT
+  - role: COST_CLEARING
+    side: credit
+    ledger: CONTRACT
+- name: ContractCostTravel
+  version: 1
+  module: contracts
+  description: Records travel cost incurred against contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.cost_incurred
+    where:
+    - field: payload.cost_type
+      value: TRAVEL
+  meaning:
+    economic_type: CONTRACT_COST_INCURRENCE
+    dimensions:
+    - org_unit
+    - contract_number
+    - clin_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_TRAVEL
+    credit_role: EXPENSE_CLEARING
+  - ledger: CONTRACT
+    debit_role: CONTRACT_COST_INCURRED
+    credit_role: COST_CLEARING
+  line_mappings:
+  - role: WIP_TRAVEL
+    side: debit
+  - role: EXPENSE_CLEARING
+    side: credit
+  - role: CONTRACT_COST_INCURRED
+    side: debit
+    ledger: CONTRACT
+  - role: COST_CLEARING
+    side: credit
+    ledger: CONTRACT
+- name: ContractCostODC
+  version: 1
+  module: contracts
+  description: Records other direct cost incurred against contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.cost_incurred
+    where:
+    - field: payload.cost_type
+      value: ODC
+  meaning:
+    economic_type: CONTRACT_COST_INCURRENCE
+    dimensions:
+    - org_unit
+    - contract_number
+    - clin_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_ODC
+    credit_role: EXPENSE_CLEARING
+  - ledger: CONTRACT
+    debit_role: CONTRACT_COST_INCURRED
+    credit_role: COST_CLEARING
+  line_mappings:
+  - role: WIP_ODC
+    side: debit
+  - role: EXPENSE_CLEARING
+    side: credit
+  - role: CONTRACT_COST_INCURRED
+    side: debit
+    ledger: CONTRACT
+  - role: COST_CLEARING
+    side: credit
+    ledger: CONTRACT
+- name: ContractCostIndirectFringe
+  version: 1
+  module: contracts
+  description: Records fringe cost allocated to contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.cost_incurred
+    where:
+    - field: payload.cost_type
+      value: INDIRECT_FRINGE
+  meaning:
+    economic_type: CONTRACT_INDIRECT_ALLOCATION
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_FRINGE
+    credit_role: FRINGE_POOL_APPLIED
+  - ledger: CONTRACT
+    debit_role: CONTRACT_COST_INCURRED
+    credit_role: COST_CLEARING
+  line_mappings:
+  - role: WIP_FRINGE
+    side: debit
+  - role: FRINGE_POOL_APPLIED
+    side: credit
+  - role: CONTRACT_COST_INCURRED
+    side: debit
+    ledger: CONTRACT
+  - role: COST_CLEARING
+    side: credit
+    ledger: CONTRACT
+- name: ContractCostIndirectOverhead
+  version: 1
+  module: contracts
+  description: Records overhead cost allocated to contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.cost_incurred
+    where:
+    - field: payload.cost_type
+      value: INDIRECT_OVERHEAD
+  meaning:
+    economic_type: CONTRACT_INDIRECT_ALLOCATION
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_OVERHEAD
+    credit_role: OVERHEAD_POOL_APPLIED
+  - ledger: CONTRACT
+    debit_role: CONTRACT_COST_INCURRED
+    credit_role: COST_CLEARING
+  line_mappings:
+  - role: WIP_OVERHEAD
+    side: debit
+  - role: OVERHEAD_POOL_APPLIED
+    side: credit
+  - role: CONTRACT_COST_INCURRED
+    side: debit
+    ledger: CONTRACT
+  - role: COST_CLEARING
+    side: credit
+    ledger: CONTRACT
+- name: ContractCostIndirectGA
+  version: 1
+  module: contracts
+  description: Records G&A cost allocated to contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.cost_incurred
+    where:
+    - field: payload.cost_type
+      value: INDIRECT_GA
+  meaning:
+    economic_type: CONTRACT_INDIRECT_ALLOCATION
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_GA
+    credit_role: GA_POOL_APPLIED
+  - ledger: CONTRACT
+    debit_role: CONTRACT_COST_INCURRED
+    credit_role: COST_CLEARING
+  line_mappings:
+  - role: WIP_GA
+    side: debit
+  - role: GA_POOL_APPLIED
+    side: credit
+  - role: CONTRACT_COST_INCURRED
+    side: debit
+    ledger: CONTRACT
+  - role: COST_CLEARING
+    side: credit
+    ledger: CONTRACT
+- name: ContractBillingCostReimbursement
+  version: 1
+  module: contracts
+  description: Records provisional billing for cost-reimbursement contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.billing_provisional
+    where:
+    - field: payload.billing_type
+      value: COST_REIMBURSEMENT
+  meaning:
+    economic_type: CONTRACT_BILLING
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: UNBILLED_AR
+    credit_role: WIP_BILLED
+  - ledger: GL
+    debit_role: UNBILLED_AR
+    credit_role: DEFERRED_FEE_REVENUE
+  - ledger: CONTRACT
+    debit_role: BILLED
+    credit_role: COST_BILLED
+  guards:
+  - guard_type: reject
+    expression: payload.total_billing <= 0
+    reason_code: INVALID_BILLING
+    message: Billing amount must be positive
+  line_mappings:
+  - role: UNBILLED_AR
+    side: debit
+  - role: WIP_BILLED
+    side: credit
+  - role: UNBILLED_AR
+    side: debit
+  - role: DEFERRED_FEE_REVENUE
+    side: credit
+  - role: BILLED
+    side: debit
+    ledger: CONTRACT
+  - role: COST_BILLED
+    side: credit
+    ledger: CONTRACT
+- name: ContractBillingTimeAndMaterials
+  version: 1
+  module: contracts
+  description: Records provisional billing for T&M contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.billing_provisional
+    where:
+    - field: payload.billing_type
+      value: TIME_AND_MATERIALS
+  meaning:
+    economic_type: CONTRACT_BILLING
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: UNBILLED_AR
+    credit_role: WIP_BILLED
+  - ledger: CONTRACT
+    debit_role: BILLED
+    credit_role: COST_BILLED
+  line_mappings:
+  - role: UNBILLED_AR
+    side: debit
+  - role: WIP_BILLED
+    side: credit
+  - role: BILLED
+    side: debit
+    ledger: CONTRACT
+  - role: COST_BILLED
+    side: credit
+    ledger: CONTRACT
+- name: ContractBillingLaborHour
+  version: 1
+  module: contracts
+  description: Records provisional billing for labor-hour contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.billing_provisional
+    where:
+    - field: payload.billing_type
+      value: LABOR_HOUR
+  meaning:
+    economic_type: CONTRACT_BILLING
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: UNBILLED_AR
+    credit_role: WIP_BILLED
+  - ledger: CONTRACT
+    debit_role: BILLED
+    credit_role: COST_BILLED
+  line_mappings:
+  - role: UNBILLED_AR
+    side: debit
+  - role: WIP_BILLED
+    side: credit
+  - role: BILLED
+    side: debit
+    ledger: CONTRACT
+  - role: COST_BILLED
+    side: credit
+    ledger: CONTRACT
+- name: ContractFeeFixedAccrual
+  version: 1
+  module: contracts
+  description: Records fixed fee accrual on cost-plus contracts
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.fee_accrual
+    where:
+    - field: payload.fee_type
+      value: FIXED_FEE
+  meaning:
+    economic_type: FEE_ACCRUAL
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: DEFERRED_FEE_REVENUE
+    credit_role: FEE_REVENUE_EARNED
+  guards:
+  - guard_type: block
+    expression: payload.cumulative_fee > payload.ceiling_fee if payload.ceiling_fee
+      else False
+    reason_code: FEE_CEILING_EXCEEDED
+    message: Fee accrual would exceed contract ceiling fee
+  line_mappings:
+  - role: DEFERRED_FEE_REVENUE
+    side: debit
+  - role: FEE_REVENUE_EARNED
+    side: credit
+- name: ContractFeeIncentiveAccrual
+  version: 1
+  module: contracts
+  description: Records incentive fee accrual on CPIF contracts
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.fee_accrual
+    where:
+    - field: payload.fee_type
+      value: INCENTIVE_FEE
+  meaning:
+    economic_type: FEE_ACCRUAL
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: DEFERRED_FEE_REVENUE
+    credit_role: FEE_REVENUE_EARNED
+  line_mappings:
+  - role: DEFERRED_FEE_REVENUE
+    side: debit
+  - role: FEE_REVENUE_EARNED
+    side: credit
+- name: ContractFeeAwardAccrual
+  version: 1
+  module: contracts
+  description: Records award fee accrual on CPAF contracts
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.fee_accrual
+    where:
+    - field: payload.fee_type
+      value: AWARD_FEE
+  meaning:
+    economic_type: FEE_ACCRUAL
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: DEFERRED_FEE_REVENUE
+    credit_role: FEE_REVENUE_EARNED
+  line_mappings:
+  - role: DEFERRED_FEE_REVENUE
+    side: debit
+  - role: FEE_REVENUE_EARNED
+    side: credit
+- name: ContractAllocationFringe
+  version: 1
+  module: contracts
+  description: Allocates fringe costs to contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.indirect_allocation
+    where:
+    - field: payload.indirect_type
+      value: FRINGE
+  meaning:
+    economic_type: INDIRECT_ALLOCATION
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_FRINGE
+    credit_role: FRINGE_POOL_APPLIED
+  line_mappings:
+  - role: WIP_FRINGE
+    side: debit
+  - role: FRINGE_POOL_APPLIED
+    side: credit
+- name: ContractAllocationOverhead
+  version: 1
+  module: contracts
+  description: Allocates overhead costs to contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.indirect_allocation
+    where:
+    - field: payload.indirect_type
+      value: OVERHEAD
+  meaning:
+    economic_type: INDIRECT_ALLOCATION
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_OVERHEAD
+    credit_role: OVERHEAD_POOL_APPLIED
+  line_mappings:
+  - role: WIP_OVERHEAD
+    side: debit
+  - role: OVERHEAD_POOL_APPLIED
+    side: credit
+- name: ContractAllocationGA
+  version: 1
+  module: contracts
+  description: Allocates G&A costs to contract
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.indirect_allocation
+    where:
+    - field: payload.indirect_type
+      value: G_AND_A
+  meaning:
+    economic_type: INDIRECT_ALLOCATION
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_GA
+    credit_role: GA_POOL_APPLIED
+  line_mappings:
+  - role: WIP_GA
+    side: debit
+  - role: GA_POOL_APPLIED
+    side: credit
+- name: ContractRateAdjustment
+  version: 1
+  module: contracts
+  description: Records adjustment for final vs provisional indirect rates
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.rate_adjustment
+  meaning:
+    economic_type: RATE_ADJUSTMENT
+    dimensions:
+    - org_unit
+    - contract_number
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_RATE_ADJUSTMENT
+    credit_role: INDIRECT_RATE_VARIANCE
+  line_mappings:
+  - role: WIP_RATE_ADJUSTMENT
+    side: debit
+  - role: INDIRECT_RATE_VARIANCE
+    side: credit
+- name: APInvoiceAllowable
+  version: 1
+  module: contracts
+  description: Records allowable AP invoice - can be charged to government contracts
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.invoice_received
+    schema_version: 2
+    where:
+    - field: payload.allowability
+      value: ALLOWABLE
+  meaning:
+    economic_type: LIABILITY_INCREASE
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+    - contract_id
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE_ALLOWABLE
+    credit_role: ACCOUNTS_PAYABLE
+  - ledger: AP
+    debit_role: INVOICE
+    credit_role: SUPPLIER_BALANCE
+  guards:
+  - guard_type: reject
+    expression: party.is_frozen
+    reason_code: SUPPLIER_FROZEN
+    message: Supplier is frozen - cannot record invoice
+  line_mappings:
+  - role: EXPENSE_ALLOWABLE
+    side: debit
+  - role: ACCOUNTS_PAYABLE
+    side: credit
+  - role: INVOICE
+    side: debit
+    ledger: AP
+  - role: SUPPLIER_BALANCE
+    side: credit
+    ledger: AP
+  precedence:
+    mode: override
+    priority: 100
+    overrides:
+    - APInvoiceExpense
+- name: APInvoiceUnallowable
+  version: 1
+  module: contracts
+  description: Records unallowable AP invoice - segregated from contract cost pools
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.invoice_received
+    schema_version: 2
+    where:
+    - field: payload.allowability
+      value: UNALLOWABLE
+  meaning:
+    economic_type: LIABILITY_INCREASE
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE_UNALLOWABLE
+    credit_role: ACCOUNTS_PAYABLE
+  - ledger: AP
+    debit_role: INVOICE
+    credit_role: SUPPLIER_BALANCE
+  guards:
+  - guard_type: reject
+    expression: party.is_frozen
+    reason_code: SUPPLIER_FROZEN
+    message: Supplier is frozen - cannot record invoice
+  - guard_type: reject
+    expression: payload.contract_id is not None
+    reason_code: UNALLOWABLE_TO_CONTRACT
+    message: Unallowable costs cannot be charged to a contract
+  line_mappings:
+  - role: EXPENSE_UNALLOWABLE
+    side: debit
+  - role: ACCOUNTS_PAYABLE
+    side: credit
+  - role: INVOICE
+    side: debit
+    ledger: AP
+  - role: SUPPLIER_BALANCE
+    side: credit
+    ledger: AP
+  precedence:
+    mode: override
+    priority: 100
+    overrides:
+    - APInvoiceExpense
+- name: APInvoiceConditional
+  version: 1
+  module: contracts
+  description: Records conditional AP invoice - requires audit review for contract
+    charging
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.invoice_received
+    schema_version: 2
+    where:
+    - field: payload.allowability
+      value: CONDITIONAL
+  meaning:
+    economic_type: LIABILITY_INCREASE
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+    - contract_id
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE_CONDITIONAL
+    credit_role: ACCOUNTS_PAYABLE
+  - ledger: AP
+    debit_role: INVOICE
+    credit_role: SUPPLIER_BALANCE
+  guards:
+  - guard_type: reject
+    expression: party.is_frozen
+    reason_code: SUPPLIER_FROZEN
+    message: Supplier is frozen - cannot record invoice
+  - guard_type: block
+    expression: payload.unallowable_reason is None
+    reason_code: CONDITIONAL_REQUIRES_REASON
+    message: Conditional costs require a reason code for audit
+  line_mappings:
+  - role: EXPENSE_CONDITIONAL
+    side: debit
+  - role: ACCOUNTS_PAYABLE
+    side: credit
+  - role: INVOICE
+    side: debit
+    ledger: AP
+  - role: SUPPLIER_BALANCE
+    side: credit
+    ledger: AP
+  precedence:
+    mode: override
+    priority: 100
+    overrides:
+    - APInvoiceExpense
+- name: TimesheetAllowable
+  version: 1
+  module: contracts
+  description: Records allowable labor - can be charged to government contracts
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.timesheet
+    schema_version: 2
+    where:
+    - field: payload.allowability
+      value: ALLOWABLE
+  meaning:
+    economic_type: LABOR_ACCRUAL
+    quantity_field: payload.hours
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+    - department
+    - contract_id
+    - labor_category
+  ledger_effects:
+  - ledger: GL
+    debit_role: LABOR_ALLOWABLE
+    credit_role: ACCRUED_PAYROLL
+  guards:
+  - guard_type: reject
+    expression: payload.hours <= 0
+    reason_code: INVALID_HOURS
+    message: Hours must be positive
+  - guard_type: reject
+    expression: payload.hours > 24
+    reason_code: EXCESSIVE_HOURS
+    message: Hours cannot exceed 24 per day
+  line_mappings:
+  - role: LABOR_ALLOWABLE
+    side: debit
+  - role: ACCRUED_PAYROLL
+    side: credit
+  precedence:
+    mode: override
+    priority: 100
+    overrides:
+    - TimesheetRegular
+    - TimesheetOvertime
+- name: TimesheetUnallowable
+  version: 1
+  module: contracts
+  description: Records unallowable labor - segregated from contract cost pools
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.timesheet
+    schema_version: 2
+    where:
+    - field: payload.allowability
+      value: UNALLOWABLE
+  meaning:
+    economic_type: LABOR_ACCRUAL
+    quantity_field: payload.hours
+    dimensions:
+    - org_unit
+    - cost_center
+    - department
+  ledger_effects:
+  - ledger: GL
+    debit_role: LABOR_UNALLOWABLE
+    credit_role: ACCRUED_PAYROLL
+  guards:
+  - guard_type: reject
+    expression: payload.hours <= 0
+    reason_code: INVALID_HOURS
+    message: Hours must be positive
+  - guard_type: reject
+    expression: payload.contract_id is not None
+    reason_code: UNALLOWABLE_TO_CONTRACT
+    message: Unallowable labor cannot be charged to a contract
+  line_mappings:
+  - role: LABOR_UNALLOWABLE
+    side: debit
+  - role: ACCRUED_PAYROLL
+    side: credit
+  precedence:
+    mode: override
+    priority: 100
+    overrides:
+    - TimesheetRegular
+    - TimesheetOvertime
+- name: LaborDistDirectAllowable
+  version: 1
+  module: contracts
+  description: Records allowable direct labor to WIP - chargeable to contracts
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.labor_distribution
+    schema_version: 2
+    where:
+    - field: payload.labor_type
+      value: DIRECT
+    - field: payload.allowability
+      value: ALLOWABLE
+  meaning:
+    economic_type: LABOR_ALLOCATION
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+    - contract_id
+    - labor_category
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_DIRECT_LABOR
+    credit_role: LABOR_CLEARING
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Distribution amount must be positive
+  line_mappings:
+  - role: WIP_DIRECT_LABOR
+    side: debit
+  - role: LABOR_CLEARING
+    side: credit
+  precedence:
+    mode: override
+    priority: 100
+    overrides:
+    - LaborDistributionDirect
+- name: LaborDistDirectUnallowable
+  version: 1
+  module: contracts
+  description: Records unallowable direct labor - segregated from contract cost pools
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.labor_distribution
+    schema_version: 2
+    where:
+    - field: payload.labor_type
+      value: DIRECT
+    - field: payload.allowability
+      value: UNALLOWABLE
+  meaning:
+    economic_type: LABOR_ALLOCATION
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: LABOR_UNALLOWABLE
+    credit_role: LABOR_CLEARING
+  guards:
+  - guard_type: reject
+    expression: payload.contract_id is not None
+    reason_code: UNALLOWABLE_TO_CONTRACT
+    message: Unallowable labor cannot be charged to a contract
+  line_mappings:
+  - role: LABOR_UNALLOWABLE
+    side: debit
+  - role: LABOR_CLEARING
+    side: credit
+  precedence:
+    mode: override
+    priority: 100
+    overrides:
+    - LaborDistributionDirect
+- name: LaborDistIndirectAllowable
+  version: 1
+  module: contracts
+  description: Records allowable indirect labor to overhead pool - included in indirect
+    rates
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.labor_distribution
+    schema_version: 2
+    where:
+    - field: payload.labor_type
+      value: INDIRECT
+    - field: payload.allowability
+      value: ALLOWABLE
+  meaning:
+    economic_type: OVERHEAD_ALLOCATION
+    dimensions:
+    - org_unit
+    - cost_center
+    - indirect_rate_type
+  ledger_effects:
+  - ledger: GL
+    debit_role: OVERHEAD_POOL_ALLOWABLE
+    credit_role: LABOR_CLEARING
+  line_mappings:
+  - role: OVERHEAD_POOL_ALLOWABLE
+    side: debit
+  - role: LABOR_CLEARING
+    side: credit
+  precedence:
+    mode: override
+    priority: 100
+    overrides:
+    - LaborDistributionIndirect
+- name: LaborDistIndirectUnallowable
+  version: 1
+  module: contracts
+  description: Records unallowable indirect labor - excluded from indirect rate pools
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.labor_distribution
+    schema_version: 2
+    where:
+    - field: payload.labor_type
+      value: INDIRECT
+    - field: payload.allowability
+      value: UNALLOWABLE
+  meaning:
+    economic_type: OVERHEAD_ALLOCATION
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: OVERHEAD_UNALLOWABLE
+    credit_role: LABOR_CLEARING
+  line_mappings:
+  - role: OVERHEAD_UNALLOWABLE
+    side: debit
+  - role: LABOR_CLEARING
+    side: credit
+  precedence:
+    mode: override
+    priority: 100
+    overrides:
+    - LaborDistributionIndirect
+- name: BankWithdrawalExpenseAllowable
+  version: 1
+  module: contracts
+  description: Records allowable expense withdrawal - chargeable to contracts
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: bank.withdrawal
+    schema_version: 2
+    where:
+    - field: payload.destination_type
+      value: EXPENSE
+    - field: payload.allowability
+      value: ALLOWABLE
+  meaning:
+    economic_type: BANK_DECREASE
+    dimensions:
+    - org_unit
+    - cost_center
+    - contract_id
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE_ALLOWABLE
+    credit_role: BANK
+  - ledger: BANK
+    debit_role: WITHDRAWAL
+    credit_role: AVAILABLE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Withdrawal amount must be positive
+  line_mappings:
+  - role: EXPENSE_ALLOWABLE
+    side: debit
+  - role: BANK
+    side: credit
+  - role: WITHDRAWAL
+    side: debit
+    ledger: BANK
+  - role: AVAILABLE
+    side: credit
+    ledger: BANK
+  precedence:
+    mode: override
+    priority: 100
+    overrides:
+    - BankWithdrawalExpense
+- name: BankWithdrawalExpenseUnallowable
+  version: 1
+  module: contracts
+  description: Records unallowable expense withdrawal - segregated from contract cost
+    pools
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: bank.withdrawal
+    schema_version: 2
+    where:
+    - field: payload.destination_type
+      value: EXPENSE
+    - field: payload.allowability
+      value: UNALLOWABLE
+  meaning:
+    economic_type: BANK_DECREASE
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE_UNALLOWABLE
+    credit_role: BANK
+  - ledger: BANK
+    debit_role: WITHDRAWAL
+    credit_role: AVAILABLE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Withdrawal amount must be positive
+  - guard_type: reject
+    expression: payload.contract_id is not None
+    reason_code: UNALLOWABLE_TO_CONTRACT
+    message: Unallowable expenses cannot be charged to a contract
+  line_mappings:
+  - role: EXPENSE_UNALLOWABLE
+    side: debit
+  - role: BANK
+    side: credit
+  - role: WITHDRAWAL
+    side: debit
+    ledger: BANK
+  - role: AVAILABLE
+    side: credit
+    ledger: BANK
+  precedence:
+    mode: override
+    priority: 100
+    overrides:
+    - BankWithdrawalExpense

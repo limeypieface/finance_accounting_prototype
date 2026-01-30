@@ -145,8 +145,7 @@ class LedgerSelector(BaseSelector[JournalLine]):
         if currency is not None:
             query = query.where(JournalLine.currency == currency)
 
-        # Dimension filtering would require JSON query support
-        # For SQLite, this is limited - we filter in Python if needed
+        # Dimension filtering would require JSONB query support
 
         if limit is not None:
             query = query.limit(limit)

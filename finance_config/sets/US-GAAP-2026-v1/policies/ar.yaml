@@ -1,0 +1,428 @@
+policies:
+- name: ARInvoice
+  version: 1
+  module: ar
+  description: Records customer invoice, recognizing revenue
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.invoice
+  meaning:
+    economic_type: REVENUE_RECOGNITION
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCOUNTS_RECEIVABLE
+    credit_role: REVENUE
+  - ledger: AR
+    debit_role: CUSTOMER_BALANCE
+    credit_role: INVOICE
+  guards:
+  - guard_type: reject
+    expression: party.is_frozen
+    reason_code: CUSTOMER_FROZEN
+    message: Customer is frozen - cannot issue invoice
+  - guard_type: block
+    expression: not check_credit_limit(party, payload.gross_amount)
+    reason_code: CREDIT_LIMIT_EXCEEDED
+    message: Transaction would exceed customer credit limit
+  - guard_type: reject
+    expression: payload.gross_amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Invoice amount must be positive
+  line_mappings:
+  - role: ACCOUNTS_RECEIVABLE
+    side: debit
+  - role: REVENUE
+    side: credit
+    foreach: invoice_lines
+  - role: TAX_LIABILITY
+    side: credit
+    from_context: tax_amount
+  - role: CUSTOMER_BALANCE
+    side: debit
+    ledger: AR
+  - role: INVOICE
+    side: credit
+    ledger: AR
+- name: ARPaymentReceived
+  version: 1
+  module: ar
+  description: Records customer payment applied directly to AR balance
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.payment
+  meaning:
+    economic_type: ASSET_INCREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: CASH
+    credit_role: ACCOUNTS_RECEIVABLE
+  - ledger: AR
+    debit_role: PAYMENT
+    credit_role: CUSTOMER_BALANCE
+  guards:
+  - guard_type: reject
+    expression: payload.payment_amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Payment amount must be positive
+  line_mappings:
+  - role: CASH
+    side: debit
+  - role: ACCOUNTS_RECEIVABLE
+    side: credit
+  - role: PAYMENT
+    side: debit
+    ledger: AR
+  - role: CUSTOMER_BALANCE
+    side: credit
+    ledger: AR
+- name: ARReceiptReceived
+  version: 1
+  module: ar
+  description: Records payment received as unapplied cash
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.receipt
+  meaning:
+    economic_type: ASSET_INCREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: CASH
+    credit_role: UNAPPLIED_CASH
+  guards:
+  - guard_type: reject
+    expression: payload.receipt_amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Receipt amount must be positive
+  line_mappings:
+  - role: CASH
+    side: debit
+  - role: UNAPPLIED_CASH
+    side: credit
+- name: ARReceiptApplied
+  version: 1
+  module: ar
+  description: Applies unapplied receipt to an invoice, reducing AR balance
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.receipt_applied
+  meaning:
+    economic_type: LIABILITY_SETTLEMENT
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: UNAPPLIED_CASH
+    credit_role: ACCOUNTS_RECEIVABLE
+  - ledger: AR
+    debit_role: PAYMENT
+    credit_role: CUSTOMER_BALANCE
+  line_mappings:
+  - role: UNAPPLIED_CASH
+    side: debit
+  - role: ACCOUNTS_RECEIVABLE
+    side: credit
+  - role: PAYMENT
+    side: debit
+    ledger: AR
+  - role: CUSTOMER_BALANCE
+    side: credit
+    ledger: AR
+- name: ARReceiptAppliedDiscount
+  version: 1
+  module: ar
+  description: Applies receipt with early payment discount
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.receipt_applied
+    where:
+    - field: payload.has_discount
+      value: true
+  meaning:
+    economic_type: LIABILITY_SETTLEMENT
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: UNAPPLIED_CASH
+    credit_role: ACCOUNTS_RECEIVABLE
+  - ledger: AR
+    debit_role: PAYMENT
+    credit_role: CUSTOMER_BALANCE
+  line_mappings:
+  - role: UNAPPLIED_CASH
+    side: debit
+  - role: DISCOUNT_EXPENSE
+    side: debit
+    from_context: discount_amount
+  - role: ACCOUNTS_RECEIVABLE
+    side: credit
+  - role: PAYMENT
+    side: debit
+    ledger: AR
+  - role: CUSTOMER_BALANCE
+    side: credit
+    ledger: AR
+- name: ARCreditMemoReturn
+  version: 1
+  module: ar
+  description: Records credit memo for customer return
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.credit_memo
+    where:
+    - field: payload.reason_code
+      value: RETURN
+  meaning:
+    economic_type: REVENUE_REVERSAL
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: SALES_RETURNS
+    credit_role: ACCOUNTS_RECEIVABLE
+  - ledger: AR
+    debit_role: CREDIT
+    credit_role: CUSTOMER_BALANCE
+  line_mappings:
+  - role: SALES_RETURNS
+    side: debit
+  - role: ACCOUNTS_RECEIVABLE
+    side: credit
+  - role: CREDIT
+    side: debit
+    ledger: AR
+  - role: CUSTOMER_BALANCE
+    side: credit
+    ledger: AR
+- name: ARCreditMemoPriceAdj
+  version: 1
+  module: ar
+  description: Records credit memo for price adjustment
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.credit_memo
+    where:
+    - field: payload.reason_code
+      value: PRICE_ADJUSTMENT
+  meaning:
+    economic_type: REVENUE_REVERSAL
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: SALES_ALLOWANCE
+    credit_role: ACCOUNTS_RECEIVABLE
+  - ledger: AR
+    debit_role: CREDIT
+    credit_role: CUSTOMER_BALANCE
+  line_mappings:
+  - role: SALES_ALLOWANCE
+    side: debit
+  - role: ACCOUNTS_RECEIVABLE
+    side: credit
+  - role: CREDIT
+    side: debit
+    ledger: AR
+  - role: CUSTOMER_BALANCE
+    side: credit
+    ledger: AR
+- name: ARCreditMemoService
+  version: 1
+  module: ar
+  description: Records credit memo for service credit
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.credit_memo
+    where:
+    - field: payload.reason_code
+      value: SERVICE_CREDIT
+  meaning:
+    economic_type: REVENUE_REVERSAL
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: REVENUE
+    credit_role: ACCOUNTS_RECEIVABLE
+  - ledger: AR
+    debit_role: CREDIT
+    credit_role: CUSTOMER_BALANCE
+  line_mappings:
+  - role: REVENUE
+    side: debit
+  - role: ACCOUNTS_RECEIVABLE
+    side: credit
+  - role: CREDIT
+    side: debit
+    ledger: AR
+  - role: CUSTOMER_BALANCE
+    side: credit
+    ledger: AR
+- name: ARCreditMemoError
+  version: 1
+  module: ar
+  description: Records credit memo for billing error correction
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.credit_memo
+    where:
+    - field: payload.reason_code
+      value: ERROR_CORRECTION
+  meaning:
+    economic_type: REVENUE_REVERSAL
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: REVENUE
+    credit_role: ACCOUNTS_RECEIVABLE
+  - ledger: AR
+    debit_role: CREDIT
+    credit_role: CUSTOMER_BALANCE
+  line_mappings:
+  - role: REVENUE
+    side: debit
+  - role: ACCOUNTS_RECEIVABLE
+    side: credit
+  - role: CREDIT
+    side: debit
+    ledger: AR
+  - role: CUSTOMER_BALANCE
+    side: credit
+    ledger: AR
+- name: ARWriteOff
+  version: 1
+  module: ar
+  description: Writes off invoice as uncollectible against allowance
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.write_off
+  meaning:
+    economic_type: ASSET_DECREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ALLOWANCE_DOUBTFUL
+    credit_role: ACCOUNTS_RECEIVABLE
+  - ledger: AR
+    debit_role: WRITE_OFF
+    credit_role: CUSTOMER_BALANCE
+  guards:
+  - guard_type: reject
+    expression: payload.write_off_amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Write-off amount must be positive
+  line_mappings:
+  - role: ALLOWANCE_DOUBTFUL
+    side: debit
+  - role: ACCOUNTS_RECEIVABLE
+    side: credit
+  - role: WRITE_OFF
+    side: debit
+    ledger: AR
+  - role: CUSTOMER_BALANCE
+    side: credit
+    ledger: AR
+- name: ARBadDebtProvision
+  version: 1
+  module: ar
+  description: Records provision for doubtful accounts
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.bad_debt_provision
+  meaning:
+    economic_type: EXPENSE_RECOGNITION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: BAD_DEBT_EXPENSE
+    credit_role: ALLOWANCE_DOUBTFUL
+  line_mappings:
+  - role: BAD_DEBT_EXPENSE
+    side: debit
+  - role: ALLOWANCE_DOUBTFUL
+    side: credit
+- name: ARDeferredRevenueRecorded
+  version: 1
+  module: ar
+  description: Records advance payment as deferred revenue
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.deferred_revenue_recorded
+  meaning:
+    economic_type: LIABILITY_INCREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: CASH
+    credit_role: DEFERRED_REVENUE
+  line_mappings:
+  - role: CASH
+    side: debit
+  - role: DEFERRED_REVENUE
+    side: credit
+- name: ARDeferredRevenueRecognized
+  version: 1
+  module: ar
+  description: Recognizes deferred revenue as earned
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.deferred_revenue_recognized
+  meaning:
+    economic_type: REVENUE_RECOGNITION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: DEFERRED_REVENUE
+    credit_role: REVENUE
+  line_mappings:
+  - role: DEFERRED_REVENUE
+    side: debit
+  - role: REVENUE
+    side: credit
+- name: ARRefundIssued
+  version: 1
+  module: ar
+  description: Records refund issued to customer
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ar.refund
+  meaning:
+    economic_type: ASSET_DECREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCOUNTS_RECEIVABLE
+    credit_role: CASH
+  - ledger: AR
+    debit_role: REFUND
+    credit_role: CUSTOMER_BALANCE
+  guards:
+  - guard_type: reject
+    expression: payload.refund_amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Refund amount must be positive
+  line_mappings:
+  - role: ACCOUNTS_RECEIVABLE
+    side: debit
+  - role: CASH
+    side: credit
+  - role: REFUND
+    side: debit
+    ledger: AR
+  - role: CUSTOMER_BALANCE
+    side: credit
+    ledger: AR

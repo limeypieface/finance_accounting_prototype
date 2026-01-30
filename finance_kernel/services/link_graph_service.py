@@ -40,7 +40,10 @@ from finance_kernel.exceptions import (
     LinkCycleError,
     MaxChildrenExceededError,
 )
+from finance_kernel.logging_config import get_logger
 from finance_kernel.models.economic_link import EconomicLinkModel
+
+logger = get_logger("services.link_graph")
 
 
 @dataclass(frozen=True)
@@ -160,6 +163,13 @@ class LinkGraphService:
         if link.link_type in self.ACYCLIC_LINK_TYPES:
             cycle_path = self._detect_cycle(link)
             if cycle_path:
+                logger.error(
+                    "cycle_detected_in_link_graph",
+                    extra={
+                        "link_type": link.link_type.value,
+                        "path": [str(ref) for ref in cycle_path],
+                    },
+                )
                 raise LinkCycleError(
                     link_type=link.link_type.value,
                     path=[str(ref) for ref in cycle_path],
@@ -182,6 +192,14 @@ class LinkGraphService:
             orm_link = EconomicLinkModel.from_domain(link)
             self.session.add(orm_link)
             self.session.flush()
+            logger.info(
+                "economic_link_created",
+                extra={
+                    "link_type": link.link_type.value,
+                    "source_ref": str(link.parent_ref),
+                    "target_ref": str(link.child_ref),
+                },
+            )
             return LinkEstablishResult.success(link)
         except IntegrityError as e:
             # Race condition: another process created the link
@@ -664,7 +682,7 @@ class LinkGraphService:
             return list(result.scalars().all())
 
         # For deeper traversal, we'd use a recursive CTE
-        # For now, use iterative approach (simpler, works with SQLite)
+        # For now, use iterative approach (simpler)
         return self._iterative_traversal(query)
 
     def _iterative_traversal(self, query: LinkQuery) -> list[EconomicLinkModel]:

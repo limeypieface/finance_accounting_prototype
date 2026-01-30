@@ -41,7 +41,7 @@ class TestJournalEntryAttackResistance:
     """
 
     @pytest.fixture
-    def posted_entry(self, pg_session, pg_session_factory):
+    def posted_entry(self, pg_session):
         """Create a legitimately posted journal entry for attack testing."""
         require_triggers(lambda: None)()
 
@@ -185,7 +185,7 @@ class TestJournalLineAttackResistance:
     """
 
     @pytest.fixture
-    def posted_entry_with_lines(self, pg_session, pg_session_factory):
+    def posted_entry_with_lines(self, pg_session):
         """Create a posted entry with journal lines for attack testing."""
         require_triggers(lambda: None)()
 
@@ -193,10 +193,13 @@ class TestJournalLineAttackResistance:
         event_id = uuid4()
         entry_id = uuid4()
         line_id = uuid4()
+        credit_line_id = uuid4()
         account_id = uuid4()
+        contra_account_id = uuid4()
         unique_code = f"ATK{str(uuid4())[:8]}"  # Unique account code per test
+        contra_code = f"CTR{str(uuid4())[:8]}"
 
-        # Create account with unique code
+        # Create debit account
         pg_session.execute(
             text("""
                 INSERT INTO accounts (id, code, name, account_type, normal_balance,
@@ -204,6 +207,16 @@ class TestJournalLineAttackResistance:
                 VALUES (:id, :code, 'Test Account', 'asset', 'debit', true, NOW(), :actor_id)
             """),
             {"id": str(account_id), "code": unique_code, "actor_id": str(actor_id)},
+        )
+
+        # Create contra account for balanced entry
+        pg_session.execute(
+            text("""
+                INSERT INTO accounts (id, code, name, account_type, normal_balance,
+                                     is_active, created_at, created_by_id)
+                VALUES (:id, :code, 'Contra Account', 'liability', 'credit', true, NOW(), :actor_id)
+            """),
+            {"id": str(contra_account_id), "code": contra_code, "actor_id": str(actor_id)},
         )
 
         # Create event
@@ -218,7 +231,7 @@ class TestJournalLineAttackResistance:
             {"id": str(uuid4()), "event_id": str(event_id), "actor_id": str(actor_id)},
         )
 
-        # Create posted entry
+        # Create entry as DRAFT first (triggers block line inserts on posted entries)
         pg_session.execute(
             text("""
                 INSERT INTO journal_entries (id, source_event_id, source_event_type,
@@ -226,7 +239,7 @@ class TestJournalLineAttackResistance:
                                             status, idempotency_key, posting_rule_version,
                                             created_at, created_by_id)
                 VALUES (:id, :event_id, 'test.lines', NOW(), CURRENT_DATE, :actor_id,
-                       'posted', :idempotency_key, 1, NOW(), :actor_id)
+                       'draft', :idempotency_key, 1, NOW(), :actor_id)
             """),
             {
                 "id": str(entry_id),
@@ -236,7 +249,7 @@ class TestJournalLineAttackResistance:
             },
         )
 
-        # Create journal line
+        # Add balanced journal lines while entry is still DRAFT
         pg_session.execute(
             text("""
                 INSERT INTO journal_lines (id, journal_entry_id, account_id, side, amount, currency,
@@ -249,6 +262,25 @@ class TestJournalLineAttackResistance:
                 "account_id": str(account_id),
                 "actor_id": str(actor_id),
             },
+        )
+        pg_session.execute(
+            text("""
+                INSERT INTO journal_lines (id, journal_entry_id, account_id, side, amount, currency,
+                                          line_seq, is_rounding, created_at, created_by_id)
+                VALUES (:id, :entry_id, :account_id, 'credit', 100.00, 'USD', 2, false, NOW(), :actor_id)
+            """),
+            {
+                "id": str(credit_line_id),
+                "entry_id": str(entry_id),
+                "account_id": str(contra_account_id),
+                "actor_id": str(actor_id),
+            },
+        )
+
+        # Transition to POSTED
+        pg_session.execute(
+            text("UPDATE journal_entries SET status = 'posted' WHERE id = :id"),
+            {"id": str(entry_id)},
         )
 
         pg_session.commit()
@@ -318,7 +350,7 @@ class TestAuditEventAttackResistance:
     """
 
     @pytest.fixture
-    def audit_event(self, pg_session, pg_session_factory):
+    def audit_event(self, pg_session):
         """Create an audit event for attack testing."""
         require_triggers(lambda: None)()
 
@@ -466,13 +498,35 @@ class TestDraftEntriesRemainEditable:
     """
 
     @pytest.fixture
-    def draft_entry(self, pg_session, pg_session_factory):
-        """Create a draft journal entry."""
+    def draft_entry(self, pg_session):
+        """Create a draft journal entry with balanced lines (required by R12 trigger to post)."""
         require_triggers(lambda: None)()
 
         actor_id = uuid4()
         event_id = uuid4()
         entry_id = uuid4()
+        account_id = uuid4()
+        contra_account_id = uuid4()
+        unique_code = f"DFT{str(uuid4())[:8]}"
+        contra_code = f"DFC{str(uuid4())[:8]}"
+
+        # Create accounts for balanced lines
+        pg_session.execute(
+            text("""
+                INSERT INTO accounts (id, code, name, account_type, normal_balance,
+                                     is_active, created_at, created_by_id)
+                VALUES (:id, :code, 'Draft Test Account', 'asset', 'debit', true, NOW(), :actor_id)
+            """),
+            {"id": str(account_id), "code": unique_code, "actor_id": str(actor_id)},
+        )
+        pg_session.execute(
+            text("""
+                INSERT INTO accounts (id, code, name, account_type, normal_balance,
+                                     is_active, created_at, created_by_id)
+                VALUES (:id, :code, 'Draft Contra Account', 'liability', 'credit', true, NOW(), :actor_id)
+            """),
+            {"id": str(contra_account_id), "code": contra_code, "actor_id": str(actor_id)},
+        )
 
         pg_session.execute(
             text("""
@@ -501,6 +555,35 @@ class TestDraftEntriesRemainEditable:
                 "idempotency_key": f"test:draft:{entry_id}",
             },
         )
+
+        # Add balanced journal lines (required by enforce_balanced_journal_entry trigger)
+        pg_session.execute(
+            text("""
+                INSERT INTO journal_lines (id, journal_entry_id, account_id, side, amount, currency,
+                                          line_seq, is_rounding, created_at, created_by_id)
+                VALUES (:id, :entry_id, :account_id, 'debit', 100.00, 'USD', 1, false, NOW(), :actor_id)
+            """),
+            {
+                "id": str(uuid4()),
+                "entry_id": str(entry_id),
+                "account_id": str(account_id),
+                "actor_id": str(actor_id),
+            },
+        )
+        pg_session.execute(
+            text("""
+                INSERT INTO journal_lines (id, journal_entry_id, account_id, side, amount, currency,
+                                          line_seq, is_rounding, created_at, created_by_id)
+                VALUES (:id, :entry_id, :account_id, 'credit', 100.00, 'USD', 2, false, NOW(), :actor_id)
+            """),
+            {
+                "id": str(uuid4()),
+                "entry_id": str(entry_id),
+                "account_id": str(contra_account_id),
+                "actor_id": str(actor_id),
+            },
+        )
+
         pg_session.commit()
 
         return entry_id
@@ -522,6 +605,11 @@ class TestDraftEntriesRemainEditable:
 
     def test_draft_can_be_deleted(self, pg_session, draft_entry):
         """Verify draft entries CAN be deleted (normal workflow)."""
+        # Delete child lines first (FK constraint)
+        pg_session.execute(
+            text("DELETE FROM journal_lines WHERE journal_entry_id = :id"),
+            {"id": str(draft_entry)},
+        )
         pg_session.execute(
             text("DELETE FROM journal_entries WHERE id = :id"),
             {"id": str(draft_entry)},

@@ -1,0 +1,109 @@
+policies:
+- name: POEncumbrance
+  version: 1
+  module: procurement
+  description: Purchase order encumbrance recorded
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: procurement.po_encumbered
+  meaning:
+    economic_type: BUDGETARY_ENCUMBRANCE
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: ENCUMBRANCE
+    credit_role: RESERVE_FOR_ENCUMBRANCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Encumbrance amount must be positive
+  line_mappings:
+  - role: ENCUMBRANCE
+    side: debit
+  - role: RESERVE_FOR_ENCUMBRANCE
+    side: credit
+- name: POEncumbranceRelief
+  version: 1
+  module: procurement
+  description: Encumbrance relieved upon receipt/invoice
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: procurement.po_relief
+  meaning:
+    economic_type: BUDGETARY_RELIEF
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: RESERVE_FOR_ENCUMBRANCE
+    credit_role: ENCUMBRANCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Relief amount must be positive
+  line_mappings:
+  - role: RESERVE_FOR_ENCUMBRANCE
+    side: debit
+  - role: ENCUMBRANCE
+    side: credit
+- name: POCommitment
+  version: 1
+  module: procurement
+  description: Purchase commitment recorded (memo)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: procurement.commitment_recorded
+  meaning:
+    economic_type: MEMO_COMMITMENT
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: PURCHASE_COMMITMENT
+    credit_role: COMMITMENT_OFFSET
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Commitment amount must be positive
+  line_mappings:
+  - role: PURCHASE_COMMITMENT
+    side: debit
+  - role: COMMITMENT_OFFSET
+    side: credit
+- name: POCommitmentRelief
+  version: 1
+  module: procurement
+  description: Commitment relieved (memo)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: procurement.commitment_relieved
+  meaning:
+    economic_type: MEMO_RELIEF
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: COMMITMENT_OFFSET
+    credit_role: PURCHASE_COMMITMENT
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Relief amount must be positive
+  line_mappings:
+  - role: COMMITMENT_OFFSET
+    side: debit
+  - role: PURCHASE_COMMITMENT
+    side: credit

@@ -2,7 +2,7 @@
 True concurrency tests using PostgreSQL.
 
 These tests require a running PostgreSQL instance and test actual race conditions
-that cannot be tested with SQLite.
+using real multi-connection parallelism.
 
 Run with:
     docker-compose up -d
@@ -23,7 +23,7 @@ from threading import Barrier, Lock, Event as ThreadEvent
 from uuid import uuid4
 from typing import Callable
 
-from finance_kernel.db.engine import get_session_factory, is_postgres
+from finance_kernel.db.engine import get_session_factory
 from finance_kernel.db.immutability import register_immutability_listeners
 from finance_kernel.services.posting_orchestrator import PostingOrchestrator, PostingStatus
 from finance_kernel.services.sequence_service import SequenceService
@@ -37,20 +37,23 @@ pytestmark = [pytest.mark.postgres, pytest.mark.slow_locks]
 
 
 def cleanup_test_data(session):
-    """Clean up all test data from the database."""
-    from finance_kernel.models.journal import JournalEntry, JournalLine
-    from finance_kernel.models.event import Event
-    from finance_kernel.models.audit_event import AuditEvent
-    from finance_kernel.services.sequence_service import SequenceCounter
+    """Clean up all test data from the database.
 
-    # Delete in order to respect foreign keys
-    session.query(JournalLine).delete()
-    session.query(JournalEntry).delete()
-    session.query(AuditEvent).delete()
-    session.query(Event).delete()
-    session.query(FiscalPeriod).delete()
-    session.query(Account).delete()
-    session.query(SequenceCounter).delete()
+    Uses TRUNCATE CASCADE to bypass immutability triggers that prevent
+    deletion of posted journal entries and audit events.
+    """
+    from sqlalchemy import text
+
+    tables_to_truncate = [
+        "interpretation_outcomes", "economic_events",
+        "journal_lines", "journal_entries", "audit_events", "events",
+        "fiscal_periods", "accounts", "sequence_counters",
+    ]
+    for table in tables_to_truncate:
+        try:
+            session.execute(text(f"TRUNCATE {table} CASCADE"))
+        except Exception:
+            session.rollback()
     session.commit()
 
 
@@ -132,23 +135,17 @@ class TestTrueConcurrentIdempotency:
             effective_date = period.start_date
 
         # Barrier ensures all threads start simultaneously
-        barrier = Barrier(num_threads)
-        results = []
-        results_lock = Lock()
+        barrier = Barrier(num_threads, timeout=30)
 
         def post_event(thread_id: int):
             """Each thread attempts to post the same event."""
-            # Each thread gets its own session
+            barrier.wait()
             session = pg_session_factory()
             try:
                 clock = SystemClock()
                 orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
 
-                # Wait for all threads to be ready
-                barrier.wait()
-
-                # All threads try to post simultaneously
-                result = orchestrator.post_event(
+                return orchestrator.post_event(
                     event_id=event_id,
                     event_type="generic.posting",
                     occurred_at=clock.now(),
@@ -162,38 +159,24 @@ class TestTrueConcurrentIdempotency:
                         ]
                     },
                 )
-
-                with results_lock:
-                    results.append((thread_id, result))
-
-            except Exception as e:
-                with results_lock:
-                    results.append((thread_id, e))
             finally:
                 session.close()
 
-        # Launch threads
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [executor.submit(post_event, i) for i in range(num_threads)]
-            wait(futures)
+            # future.result() re-raises if a thread hit an unexpected exception
+            results = [f.result() for f in futures]
 
-        # Analyze results
-        posted = [r for tid, r in results if hasattr(r, 'status') and r.status == PostingStatus.POSTED]
-        already_posted = [r for tid, r in results if hasattr(r, 'status') and r.status == PostingStatus.ALREADY_POSTED]
-        errors = [r for tid, r in results if isinstance(r, Exception)]
+        posted = [r for r in results if r.status == PostingStatus.POSTED]
+        already_posted = [r for r in results if r.status == PostingStatus.ALREADY_POSTED]
 
-        # Exactly 1 thread should win
-        assert len(posted) == 1, f"Expected exactly 1 POSTED, got {len(posted)}. Errors: {errors}"
+        assert len(posted) == 1, f"Expected exactly 1 POSTED, got {len(posted)}"
+        assert len(already_posted) == num_threads - 1, (
+            f"Expected {num_threads - 1} ALREADY_POSTED, got {len(already_posted)}"
+        )
 
-        # Rest should be ALREADY_POSTED (may include some errors due to race)
-        assert len(already_posted) + len(posted) + len(errors) == num_threads
-
-        # All successful results should reference the same entry
-        entry_ids = set()
-        for tid, r in results:
-            if hasattr(r, 'journal_entry_id') and r.journal_entry_id:
-                entry_ids.add(r.journal_entry_id)
-
+        # All results should reference the same entry
+        entry_ids = {r.journal_entry_id for r in results if r.journal_entry_id}
         assert len(entry_ids) == 1, f"Expected 1 unique entry, got {len(entry_ids)}"
 
     def test_50_threads_same_event_stress(
@@ -216,18 +199,16 @@ class TestTrueConcurrentIdempotency:
             accounts, period = setup_test_data(setup_session, actor_id)
             effective_date = period.start_date
 
-        barrier = Barrier(num_threads)
-        results = []
-        results_lock = Lock()
+        barrier = Barrier(num_threads, timeout=30)
 
         def post_event(thread_id: int):
+            barrier.wait()
             session = pg_session_factory()
             try:
                 clock = SystemClock()
                 orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
-                barrier.wait()
 
-                result = orchestrator.post_event(
+                return orchestrator.post_event(
                     event_id=event_id,
                     event_type="generic.posting",
                     occurred_at=clock.now(),
@@ -241,24 +222,18 @@ class TestTrueConcurrentIdempotency:
                         ]
                     },
                 )
-
-                with results_lock:
-                    results.append((thread_id, result))
-            except Exception as e:
-                with results_lock:
-                    results.append((thread_id, e))
             finally:
                 session.close()
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [executor.submit(post_event, i) for i in range(num_threads)]
-            wait(futures)
+            results = [f.result() for f in futures]
 
-        posted = [r for tid, r in results if hasattr(r, 'status') and r.status == PostingStatus.POSTED]
-        errors = [r for tid, r in results if isinstance(r, Exception)]
+        posted = [r for r in results if r.status == PostingStatus.POSTED]
+        already_posted = [r for r in results if r.status == PostingStatus.ALREADY_POSTED]
 
-        # Exactly 1 winner
-        assert len(posted) == 1, f"Expected 1 POSTED, got {len(posted)}. Errors: {[str(e) for e in errors]}"
+        assert len(posted) == 1, f"Expected 1 POSTED, got {len(posted)}"
+        assert len(already_posted) == num_threads - 1
 
 
 class TestTrueConcurrentSequence:
@@ -277,43 +252,25 @@ class TestTrueConcurrentSequence:
         100 concurrent threads allocate sequence numbers - all must be unique.
         """
         num_threads = 100
-        barrier = Barrier(num_threads)
-        sequences = []
-        sequences_lock = Lock()
+        barrier = Barrier(num_threads, timeout=30)
 
         def allocate_sequence(thread_id: int):
+            barrier.wait()
             session = pg_session_factory()
             try:
                 service = SequenceService(session)
-                barrier.wait()
-
                 seq = service.next_value(SequenceService.JOURNAL_ENTRY)
                 session.commit()
-
-                with sequences_lock:
-                    sequences.append(seq)
-            except Exception as e:
-                with sequences_lock:
-                    sequences.append(f"ERROR:{e}")
+                return seq
             finally:
                 session.close()
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [executor.submit(allocate_sequence, i) for i in range(num_threads)]
-            wait(futures)
+            sequences = [f.result() for f in futures]
 
-        # Filter out errors
-        valid_sequences = [s for s in sequences if isinstance(s, int)]
-        errors = [s for s in sequences if isinstance(s, str)]
-
-        # All sequences must be unique
-        assert len(valid_sequences) == len(set(valid_sequences)), (
-            f"Duplicate sequences detected! Got {len(valid_sequences)} sequences "
-            f"but only {len(set(valid_sequences))} unique. Errors: {errors}"
-        )
-
-        # Should have gotten all sequences successfully
-        assert len(errors) == 0, f"Sequence allocation errors: {errors}"
+        assert len(sequences) == num_threads
+        assert len(sequences) == len(set(sequences)), "Duplicate sequences detected!"
 
     def test_sequence_monotonicity_under_concurrency(
         self,
@@ -325,28 +282,30 @@ class TestTrueConcurrentSequence:
         """
         num_threads = 50
         iterations_per_thread = 10
-        all_sequences = []
-        sequences_lock = Lock()
+        expected_total = num_threads * iterations_per_thread
 
         def allocate_many(thread_id: int):
             session = pg_session_factory()
-            thread_sequences = []
             try:
                 service = SequenceService(session)
-
+                thread_sequences = []
                 for _ in range(iterations_per_thread):
                     seq = service.next_value(SequenceService.JOURNAL_ENTRY)
                     session.commit()
                     thread_sequences.append(seq)
-
-                with sequences_lock:
-                    all_sequences.extend(thread_sequences)
+                return thread_sequences
             finally:
                 session.close()
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [executor.submit(allocate_many, i) for i in range(num_threads)]
-            wait(futures)
+            all_sequences = []
+            for f in futures:
+                all_sequences.extend(f.result())
+
+        assert len(all_sequences) == expected_total, (
+            f"Expected {expected_total} sequences, got {len(all_sequences)}"
+        )
 
         # Sort and verify uniqueness
         sorted_seqs = sorted(all_sequences)
@@ -375,26 +334,22 @@ class TestTrueConcurrentPosting:
         actor_id = uuid4()
         num_threads = 100
 
-        # Setup (clean first)
         with pg_session_factory() as setup_session:
             cleanup_test_data(setup_session)
             accounts, period = setup_test_data(setup_session, actor_id)
             effective_date = period.start_date
 
-        barrier = Barrier(num_threads)
-        results = []
-        results_lock = Lock()
+        barrier = Barrier(num_threads, timeout=30)
 
         def post_distinct_event(thread_id: int):
+            barrier.wait()
             session = pg_session_factory()
             try:
                 clock = SystemClock()
                 orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
-                barrier.wait()
 
-                event_id = uuid4()  # Each thread has unique event
-                result = orchestrator.post_event(
-                    event_id=event_id,
+                return orchestrator.post_event(
+                    event_id=uuid4(),
                     event_type="generic.posting",
                     occurred_at=clock.now(),
                     effective_date=effective_date,
@@ -407,30 +362,20 @@ class TestTrueConcurrentPosting:
                         ]
                     },
                 )
-
-                with results_lock:
-                    results.append((thread_id, result))
-            except Exception as e:
-                with results_lock:
-                    results.append((thread_id, e))
             finally:
                 session.close()
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [executor.submit(post_distinct_event, i) for i in range(num_threads)]
-            wait(futures)
+            results = [f.result() for f in futures]
 
-        posted = [r for tid, r in results if hasattr(r, 'status') and r.status == PostingStatus.POSTED]
-        errors = [r for tid, r in results if isinstance(r, Exception)]
-
-        # All should succeed
-        assert len(posted) == num_threads, (
-            f"Expected {num_threads} POSTED, got {len(posted)}. "
-            f"Errors: {[str(e) for e in errors]}"
+        # All should be POSTED
+        assert all(r.status == PostingStatus.POSTED for r in results), (
+            f"Not all POSTED: {[r.status for r in results if r.status != PostingStatus.POSTED]}"
         )
 
         # All entry IDs should be unique
-        entry_ids = [r.journal_entry_id for tid, r in results if hasattr(r, 'journal_entry_id')]
+        entry_ids = [r.journal_entry_id for r in results]
         assert len(entry_ids) == len(set(entry_ids)), "Duplicate entry IDs!"
 
     def test_balance_integrity_under_concurrent_posting(
@@ -444,38 +389,32 @@ class TestTrueConcurrentPosting:
         actor_id = uuid4()
         num_threads = 50
 
-        # Setup (clean first)
         with pg_session_factory() as setup_session:
             cleanup_test_data(setup_session)
             accounts, period = setup_test_data(setup_session, actor_id)
             effective_date = period.start_date
 
-        barrier = Barrier(num_threads)
-        posted_count = [0]
-        count_lock = Lock()
+        barrier = Barrier(num_threads, timeout=30)
 
         def post_balanced_entry(thread_id: int):
+            barrier.wait()
             session = pg_session_factory()
             try:
                 clock = SystemClock()
                 orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
-                barrier.wait()
 
-                # Alternate between two patterns
                 if thread_id % 2 == 0:
-                    # Cash -> Revenue
                     lines = [
                         {"account_code": "1000", "side": "debit", "amount": "100.00", "currency": "USD"},
                         {"account_code": "4000", "side": "credit", "amount": "100.00", "currency": "USD"},
                     ]
                 else:
-                    # COGS -> Inventory
                     lines = [
                         {"account_code": "5000", "side": "debit", "amount": "60.00", "currency": "USD"},
                         {"account_code": "1200", "side": "credit", "amount": "60.00", "currency": "USD"},
                     ]
 
-                result = orchestrator.post_event(
+                return orchestrator.post_event(
                     event_id=uuid4(),
                     event_type="generic.posting",
                     occurred_at=clock.now(),
@@ -484,16 +423,14 @@ class TestTrueConcurrentPosting:
                     producer="balance_test",
                     payload={"lines": lines},
                 )
-
-                if result.status == PostingStatus.POSTED:
-                    with count_lock:
-                        posted_count[0] += 1
             finally:
                 session.close()
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [executor.submit(post_balanced_entry, i) for i in range(num_threads)]
-            wait(futures)
+            results = [f.result() for f in futures]
+
+        assert all(r.status == PostingStatus.POSTED for r in results)
 
         # Verify trial balance
         from finance_kernel.selectors.ledger_selector import LedgerSelector
@@ -506,8 +443,7 @@ class TestTrueConcurrentPosting:
             total_credits = sum(row.credit_total for row in trial_balance)
 
             assert total_debits == total_credits, (
-                f"Trial balance not balanced after concurrent posting! "
-                f"Debits: {total_debits}, Credits: {total_credits}"
+                f"Trial balance not balanced! Debits: {total_debits}, Credits: {total_credits}"
             )
 
 
@@ -527,22 +463,21 @@ class TestConcurrentAuditChain:
         actor_id = uuid4()
         num_threads = 30
 
-        # Setup (clean first)
         with pg_session_factory() as setup_session:
             cleanup_test_data(setup_session)
             accounts, period = setup_test_data(setup_session, actor_id)
             effective_date = period.start_date
 
-        barrier = Barrier(num_threads)
+        barrier = Barrier(num_threads, timeout=30)
 
         def post_event(thread_id: int):
+            barrier.wait()
             session = pg_session_factory()
             try:
                 clock = SystemClock()
                 orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
-                barrier.wait()
 
-                orchestrator.post_event(
+                return orchestrator.post_event(
                     event_id=uuid4(),
                     event_type="generic.posting",
                     occurred_at=clock.now(),
@@ -561,14 +496,14 @@ class TestConcurrentAuditChain:
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = [executor.submit(post_event, i) for i in range(num_threads)]
-            wait(futures)
+            results = [f.result() for f in futures]
+
+        assert all(r.status == PostingStatus.POSTED for r in results)
 
         # Verify chain integrity
         with pg_session_factory() as verify_session:
             clock = SystemClock()
             orchestrator = PostingOrchestrator(verify_session, clock, auto_commit=False)
-
-            # The validate_chain method checks hash chain integrity
             assert orchestrator.validate_chain() is True, (
                 "Audit chain corrupted after concurrent posting!"
             )

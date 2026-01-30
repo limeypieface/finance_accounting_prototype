@@ -17,6 +17,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from finance_kernel.domain.clock import Clock, SystemClock
@@ -24,7 +25,10 @@ from finance_kernel.domain.dtos import EventEnvelope, ValidationResult
 from finance_kernel.domain.event_validator import validate_event
 from finance_kernel.models.event import Event
 from finance_kernel.services.auditor_service import AuditorService
+from finance_kernel.logging_config import get_logger
 from finance_kernel.utils.hashing import hash_payload
+
+logger = get_logger("services.ingestor")
 
 
 class IngestStatus(str, Enum):
@@ -131,6 +135,10 @@ class IngestorService:
                     reason="; ".join(e.message for e in validation.errors),
                     actor_id=actor_id,
                 )
+            logger.warning(
+                "event_rejected_validation",
+                extra={"error_count": len(validation.errors)},
+            )
             return IngestResult(
                 status=IngestStatus.REJECTED,
                 event_id=event_id,
@@ -153,6 +161,7 @@ class IngestorService:
                         reason=f"Payload mismatch: expected {existing.payload_hash}, got {payload_hash}",
                         actor_id=actor_id,
                     )
+                logger.warning("event_rejected_hash_mismatch")
                 return IngestResult(
                     status=IngestStatus.REJECTED,
                     event_id=event_id,
@@ -161,6 +170,10 @@ class IngestorService:
 
             # Idempotent success - return existing
             envelope = self._to_envelope(existing)
+            logger.info(
+                "event_duplicate",
+                extra={"event_type": event_type},
+            )
             return IngestResult(
                 status=IngestStatus.DUPLICATE,
                 event_id=event_id,
@@ -183,7 +196,29 @@ class IngestorService:
         )
 
         self._session.add(event)
-        self._session.flush()
+        try:
+            self._session.flush()
+        except IntegrityError:
+            # Concurrent insert — another thread inserted the same event_id
+            self._session.rollback()
+            logger.warning(
+                "concurrent_event_insert_conflict",
+                extra={"event_id": str(event_id)},
+            )
+            existing = self._get_existing_event(event_id)
+            if existing is not None:
+                envelope = self._to_envelope(existing)
+                return IngestResult(
+                    status=IngestStatus.DUPLICATE,
+                    event_id=event_id,
+                    event_envelope=envelope,
+                    message="Event already ingested (concurrent)",
+                )
+            return IngestResult(
+                status=IngestStatus.REJECTED,
+                event_id=event_id,
+                message="Concurrent insert conflict — event not found after retry",
+            )
 
         # 5. Record audit event
         if self._auditor:
@@ -196,6 +231,10 @@ class IngestorService:
 
         # 6. Return success
         envelope = self._to_envelope(event)
+        logger.info(
+            "event_ingested",
+            extra={"event_type": event_type, "payload_hash": payload_hash},
+        )
         return IngestResult(
             status=IngestStatus.ACCEPTED,
             event_id=event_id,

@@ -53,6 +53,8 @@ TRIGGER_FILES = [
     "06_rounding.sql",
     "07_dimension.sql",
     "08_exchange_rate.sql",
+    "09_event_immutability.sql",
+    "10_balance_enforcement.sql",
 ]
 
 # File containing drop statements for all triggers
@@ -88,6 +90,12 @@ ALL_TRIGGER_NAMES = [
     "trg_exchange_rate_immutability",
     "trg_exchange_rate_delete",
     "trg_exchange_rate_arbitrage",
+    # Event (09)
+    "trg_event_immutability_update",
+    "trg_event_immutability_delete",
+    # Balance Enforcement (10)
+    "trg_journal_entry_balance_check",
+    "trg_journal_line_no_insert_posted",
 ]
 
 
@@ -152,14 +160,7 @@ def install_immutability_triggers(engine: Engine) -> None:
     Args:
         engine: SQLAlchemy engine connected to PostgreSQL.
 
-    Note:
-        Triggers are PostgreSQL-specific and will be skipped for SQLite.
-        SQLite-only deployments rely on ORM-level immutability (immutability.py).
     """
-    if engine.dialect.name != "postgresql":
-        # Triggers are PostgreSQL-specific; skip for SQLite
-        return
-
     sql_content = _load_all_trigger_sql()
 
     with engine.connect() as conn:
@@ -177,9 +178,6 @@ def uninstall_immutability_triggers(engine: Engine) -> None:
     Args:
         engine: SQLAlchemy engine connected to PostgreSQL.
     """
-    if engine.dialect.name != "postgresql":
-        return
-
     sql_content = _load_drop_sql()
 
     with engine.connect() as conn:
@@ -197,9 +195,6 @@ def triggers_installed(engine: Engine) -> bool:
     Returns:
         True if all triggers are installed, False otherwise.
     """
-    if engine.dialect.name != "postgresql":
-        return False
-
     # Build the check query dynamically from ALL_TRIGGER_NAMES
     trigger_list = ", ".join(f"'{name}'" for name in ALL_TRIGGER_NAMES)
     check_sql = f"""
@@ -224,9 +219,6 @@ def get_installed_triggers(engine: Engine) -> list[str]:
     Returns:
         List of installed trigger names.
     """
-    if engine.dialect.name != "postgresql":
-        return []
-
     trigger_list = ", ".join(f"'{name}'" for name in ALL_TRIGGER_NAMES)
     check_sql = f"""
     SELECT tgname FROM pg_trigger
@@ -274,9 +266,6 @@ def install_trigger_file(engine: Engine, filename: str) -> None:
     Raises:
         FileNotFoundError: If the file doesn't exist.
     """
-    if engine.dialect.name != "postgresql":
-        return
-
     sql_content = _load_sql_file(filename)
 
     with engine.connect() as conn:

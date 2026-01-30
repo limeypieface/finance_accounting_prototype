@@ -6,91 +6,118 @@ This guide explains how to build new modules (AP, AR, Inventory, WIP) on top of 
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Your Module (AP, AR, Inventory, etc.)         │
+│            Your Module (AP, AR, Inventory, etc.)                 │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
-│  │  Event Schemas  │  │   Strategies    │  │    Services     │  │
-│  │  (your events)  │  │ (or Profiles)   │  │  (your logic)   │  │
+│  │  Event Schemas  │  │ AccountingPolicy│  │  Module Service  │  │
+│  │  (your events)  │  │  Definitions    │  │  (orchestrator)  │  │
 │  └────────┬────────┘  └────────┬────────┘  └───────┬─────────┘  │
 └───────────┼────────────────────┼───────────────────┼────────────┘
             │                    │                   │
             ▼                    ▼                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                         finance_engines                          │
-│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌──────────────┐  │
-│  │ Variance   │ │ Matching   │ │   Aging    │ │  Allocation  │  │
-│  │ Calculator │ │  Engine    │ │ Calculator │ │   Engine     │  │
-│  └────────────┘ └────────────┘ └────────────┘ └──────────────┘  │
-│  ┌────────────┐ ┌────────────┐                                  │
-│  │ Subledger  │ │    Tax     │   (Pure functions, no I/O)       │
-│  │  Service   │ │ Calculator │                                  │
-│  └────────────┘ └────────────┘                                  │
+│                       finance_config                             │
+│  AccountingConfigurationSet → CompiledPolicyPack                │
+│  get_active_config() — the ONLY configuration entrypoint         │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
                                   ▼
+┌──────────────────────────────────┬──────────────────────────────┐
+│      finance_engines             │     finance_services          │
+│  (Pure — no I/O, no session)    │  (Stateful — session, I/O)   │
+│  VarianceCalculator              │  ValuationService             │
+│  AllocationEngine                │  ReconciliationService        │
+│  AllocationCascade               │  CorrectionService            │
+│  MatchingEngine                  │  SubledgerService             │
+│  AgingCalculator                 │                               │
+│  TaxCalculator                   │                               │
+│  BillingEngine                   │                               │
+│  ICEEngine                       │                               │
+└──────────────────────────────────┴──────────────────────────────┘
+                                  │
+                                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                         finance_kernel                           │
-│  ┌──────────────┐  ┌───────────────┐  ┌──────────────────────┐  │
-│  │ Value Objects│  │   Economic    │  │ PostingOrchestrator  │  │
-│  │ Money, etc.  │  │   Profiles    │  │ InterpretationCoord. │  │
-│  └──────────────┘  └───────────────┘  └──────────────────────┘  │
-│  ┌──────────────┐  ┌───────────────┐  ┌──────────────────────┐  │
-│  │  Bookkeeper  │  │ MeaningBuilder│  │  JournalWriter       │  │
-│  │  (pure)      │  │    (pure)     │  │  OutcomeRecorder     │  │
-│  └──────────────┘  └───────────────┘  └──────────────────────┘  │
+│                       finance_kernel                             │
+│  Value Objects │ AccountingPolicy │ InterpretationCoordinator    │
+│  Bookkeeper    │ MeaningBuilder   │ JournalWriter                │
+│  (pure)        │   (pure)         │ OutcomeRecorder              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Your module provides**: Event schemas, posting strategies OR profiles, business logic
-**finance_engines provides**: Shared calculation engines (variance, matching, aging, etc.)
-**finance_kernel provides**: Value objects, validation, posting, audit trail, profiles
+**Your module provides**: Event schemas, accounting policy definitions, module service (orchestrator)
+**finance_config provides**: `AccountingConfigurationSet` compiled into `CompiledPolicyPack` via `get_active_config()`
+**finance_engines provides**: Pure calculation engines (variance, matching, aging, allocation, tax)
+**finance_services provides**: Stateful services (valuation, reconciliation, correction, subledger)
+**finance_kernel provides**: Value objects, validation, posting, audit trail, accounting policies
 
 ---
 
-## ⚠️ Engine Readiness Status
+## Engine Readiness Status
 
-**DO NOT start building business modules (AP, AR, Inventory, WIP, T&E, Cash) until the required engines are complete.** Building modules without these engines leads to duplicated logic, inconsistent behavior, and significant rework.
+All engines and services are now complete. Business modules can be built using the full suite.
 
-### Engine Status
+### Pure Engines (finance_engines)
 
 | Engine | Status | Location | What It Provides |
 |--------|--------|----------|------------------|
-| **EconomicLink** | ✅ Complete | `finance_kernel.domain.economic_link` | First-class artifact relationships (PO→Receipt→Invoice). Knowledge graph replacing brittle foreign keys. |
-| **LinkGraphService** | ✅ Complete | `finance_kernel.services.link_graph_service` | Graph traversal, cycle detection (L3), unconsumed value calculation, reversal detection. |
-| **ReconciliationManager** | 🔴 Not Started | TBD | Open/Matched state tracking, partial payment application, 3-way match state machine. |
-| **ValuationLayer** | 🔴 Not Started | TBD | FIFO/LIFO/Weighted Average costing, cost lot tracking, layer consumption. |
-| **CorrectionEngine** | 🔴 Not Started | TBD | Recursive reversals using EconomicLink graph, cascade unwind logic. |
-| **AccumulatorEngine** | 🔴 Not Started | TBD | WIP cost accumulation, burden application, job relief calculation. |
+| **VarianceCalculator** | Complete | `finance_engines.variance` | PPV, quantity, FX variance analysis. |
+| **AllocationEngine** | Complete | `finance_engines.allocation` | Payment application, cost allocation. |
+| **AllocationCascade** | Complete | `finance_engines.allocation_cascade` | DCAA indirect cost allocation (fringe, overhead, G&A). |
+| **MatchingEngine** | Complete | `finance_engines.matching` | 3-way match, 2-way match, bank reconciliation. |
+| **AgingCalculator** | Complete | `finance_engines.aging` | AP/AR aging buckets, slow-moving inventory. |
+| **TaxCalculator** | Complete | `finance_engines.tax` | VAT, GST, WHT, compound tax calculations. |
 
-### Module Dependencies
+### Stateful Services (finance_services)
 
-| Module | Required Engines | Can Start? |
-|--------|------------------|------------|
-| **AP (Accounts Payable)** | EconomicLink ✅, ReconciliationManager 🔴, CorrectionEngine 🔴 | ❌ No |
-| **AR (Accounts Receivable)** | EconomicLink ✅, ReconciliationManager 🔴, CorrectionEngine 🔴 | ❌ No |
-| **Inventory** | EconomicLink ✅, ValuationLayer 🔴, CorrectionEngine 🔴 | ❌ No |
-| **WIP** | EconomicLink ✅, ValuationLayer 🔴, AccumulatorEngine 🔴 | ❌ No |
-| **T&E (Travel & Expense)** | EconomicLink ✅, ReconciliationManager 🔴 | ❌ No |
-| **Cash** | EconomicLink ✅, ReconciliationManager 🔴 | ❌ No |
+| Service | Status | Location | What It Provides |
+|---------|--------|----------|------------------|
+| **ValuationLayer** | Complete | `finance_services.valuation_service` | FIFO/LIFO/Weighted Average/Standard costing, cost lot tracking, layer consumption. |
+| **ReconciliationManager** | Complete | `finance_services.reconciliation_service` | Open/Matched state tracking, partial payment application, document matching, settlement. |
+| **CorrectionEngine** | Complete | `finance_services.correction_service` | Recursive reversals using EconomicLink graph, cascade unwind logic. |
+| **SubledgerService** | Complete | `finance_services.subledger_service` | Open item tracking, reconciliation. |
 
-### Why Wait?
+> **Note:** BillingEngine and ICEEngine are pure engines in `finance_engines/`, not stateful services.
 
-Building modules without these engines means:
+### Kernel Primitives
 
-1. **Duplicated Logic** - Each module builds its own matching/reconciliation/costing code
-2. **Inconsistent Behavior** - AP matching works differently than AR matching
-3. **Rework** - When engines are built, modules need refactoring to use them
-4. **Bug Multiplication** - Same bug in 6 places instead of 1
-5. **Audit Complexity** - Auditors learn 6 different patterns instead of 1
+| Primitive | Status | Location | What It Provides |
+|-----------|--------|----------|------------------|
+| **EconomicLink** | Complete | `finance_kernel.domain.economic_link` | First-class artifact relationships (PO->Receipt->Invoice). Knowledge graph replacing brittle foreign keys. |
+| **LinkGraphService** | Complete | `finance_kernel.services.link_graph_service` | Graph traversal, cycle detection (L3), unconsumed value calculation, reversal detection. |
 
-**Estimated effort savings with engines: 30-40% per module** (see `finance_kernel/README.md` for detailed analysis).
+### Module Dependencies (All Engines Ready)
 
-### Build Order
+| Module | Required Engines / Services | Can Start? |
+|--------|----------------------------|------------|
+| **AP (Accounts Payable)** | EconomicLink, ReconciliationManager, CorrectionEngine | Yes |
+| **AR (Accounts Receivable)** | EconomicLink, ReconciliationManager, CorrectionEngine | Yes |
+| **Inventory** | EconomicLink, ValuationLayer, CorrectionEngine | Yes |
+| **WIP** | EconomicLink, ValuationLayer, AllocationEngine | Yes |
+| **T&E (Travel & Expense)** | EconomicLink, ReconciliationManager | Yes |
+| **Cash** | EconomicLink, ReconciliationManager | Yes |
+| **Assets** | EconomicLink | Yes |
+| **Payroll** | EconomicLink, AllocationEngine | Yes |
+| **Tax** | TaxCalculator | Yes |
+| **Procurement** | EconomicLink, MatchingEngine | Yes |
+| **GL** | All kernel services | Yes |
 
-1. ✅ **EconomicLink** - Foundation for all relationship tracking (DONE)
-2. 🎯 **ReconciliationManager** - Unlocks AP, AR, T&E, Cash
-3. 🎯 **ValuationLayer** - Unlocks Inventory, WIP
-4. ⏳ **CorrectionEngine** - Unlocks safe reversals across all modules
-5. ⏳ **AccumulatorEngine** - Only needed for WIP
+### ERP Modules (All Implemented)
+
+All 12 ERP modules are implemented in `finance_modules/`:
+
+| Module | Directory | Contents |
+|--------|-----------|----------|
+| AP | `finance_modules/ap/` | `config.py`, `models.py`, `profiles.py`, `service.py`, `workflows.py` |
+| AR | `finance_modules/ar/` | `config.py`, `models.py`, `profiles.py`, `service.py`, `workflows.py` |
+| Assets | `finance_modules/assets/` | `config.py`, `models.py`, `profiles.py`, `service.py`, `workflows.py` |
+| Cash | `finance_modules/cash/` | `config.py`, `models.py`, `profiles.py`, `service.py`, `workflows.py` |
+| Contracts | `finance_modules/contracts/` | `config.py`, `profiles.py`, `service.py`, `workflows.py` |
+| Expense | `finance_modules/expense/` | `config.py`, `models.py`, `profiles.py`, `service.py`, `workflows.py` |
+| GL | `finance_modules/gl/` | `config.py`, `models.py`, `profiles.py`, `service.py`, `workflows.py` |
+| Inventory | `finance_modules/inventory/` | `config.py`, `models.py`, `profiles.py`, `service.py`, `workflows.py` |
+| Payroll | `finance_modules/payroll/` | `config.py`, `models.py`, `profiles.py`, `service.py`, `workflows.py` |
+| Procurement | `finance_modules/procurement/` | `config.py`, `models.py`, `profiles.py`, `service.py`, `workflows.py` |
+| Tax | `finance_modules/tax/` | `config.py`, `models.py`, `profiles.py`, `service.py`, `workflows.py` |
+| WIP | `finance_modules/wip/` | `config.py`, `models.py`, `profiles.py`, `service.py`, `workflows.py` |
 
 ---
 
@@ -182,7 +209,7 @@ rate = ExchangeRate(
     rate=Decimal("1.10")
 )
 usd_amount = rate.convert(eur_money)
-inverse = rate.inverse()  # USD → EUR
+inverse = rate.inverse()  # USD -> EUR
 ```
 
 ---
@@ -250,7 +277,7 @@ class VendorInvoiceStrategy(BasePostingStrategy):
 You only implement `_compute_line_specs()`. The base class handles:
 
 - Currency validation (ISO 4217)
-- Account code → ID resolution
+- Account code -> ID resolution
 - Account active status checking
 - Required dimensions validation
 - Entry balance checking (debits = credits per currency)
@@ -285,7 +312,7 @@ These primitives are complete and should be used by all modules.
 
 ### EconomicLink - Artifact Relationships
 
-Use `EconomicLink` to connect artifacts (PO→Receipt→Invoice, Invoice→Payment, etc.). This replaces foreign keys with a traversable knowledge graph.
+Use `EconomicLink` to connect artifacts (PO->Receipt->Invoice, Invoice->Payment, etc.). This replaces foreign keys with a traversable knowledge graph.
 
 ```python
 from uuid import uuid4
@@ -300,8 +327,8 @@ from finance_kernel.services.link_graph_service import LinkGraphService
 
 # Create artifact references
 po_ref = ArtifactRef.purchase_order(po_id)
-receipt_ref = ArtifactRef.goods_receipt(receipt_id)
-invoice_ref = ArtifactRef.vendor_invoice(invoice_id)
+receipt_ref = ArtifactRef.receipt(receipt_id)
+invoice_ref = ArtifactRef.invoice(invoice_id)
 
 # Establish links (Receipt fulfills PO, Invoice references Receipt)
 link_service = LinkGraphService(session)
@@ -369,22 +396,35 @@ if reversal:
 ```python
 from finance_kernel.domain.economic_link import ArtifactType
 
-# Document types
+# Core kernel artifacts
+ArtifactType.EVENT
+ArtifactType.JOURNAL_ENTRY
+ArtifactType.JOURNAL_LINE
+
+# Document artifacts (subledgers)
 ArtifactType.PURCHASE_ORDER
-ArtifactType.GOODS_RECEIPT
-ArtifactType.VENDOR_INVOICE
-ArtifactType.SALES_ORDER
-ArtifactType.SHIPMENT
-ArtifactType.CUSTOMER_INVOICE
+ArtifactType.RECEIPT
+ArtifactType.INVOICE
 ArtifactType.PAYMENT
 ArtifactType.CREDIT_MEMO
 ArtifactType.DEBIT_MEMO
 
-# Kernel types
-ArtifactType.JOURNAL_ENTRY
-ArtifactType.EVENT
+# Inventory artifacts
 ArtifactType.COST_LOT
-ArtifactType.INVENTORY_LOT
+ArtifactType.SHIPMENT
+ArtifactType.INVENTORY_ADJUSTMENT
+
+# Fixed asset artifacts
+ArtifactType.ASSET
+ArtifactType.DEPRECIATION
+ArtifactType.DISPOSAL
+
+# Banking artifacts
+ArtifactType.BANK_STATEMENT
+ArtifactType.BANK_TRANSACTION
+
+# Intercompany
+ArtifactType.INTERCOMPANY_TRANSACTION
 ```
 
 ### Available LinkTypes
@@ -392,23 +432,29 @@ ArtifactType.INVENTORY_LOT
 ```python
 from finance_kernel.domain.economic_link import LinkType
 
-LinkType.FULFILLED_BY    # PO→Receipt, SO→Shipment (acyclic, no max)
-LinkType.PAID_BY         # Invoice→Payment (acyclic, no max)
-LinkType.REVERSED_BY     # Original→Reversal (acyclic, max 1 child)
-LinkType.CORRECTED_BY    # Original→Correction (acyclic, max 1 child)
-LinkType.DERIVED_FROM    # JournalEntry→Event (acyclic, no max)
-LinkType.CONSUMED_FROM   # Issue→CostLot for FIFO/LIFO (acyclic, no max)
-LinkType.ALLOCATED_TO    # Payment→Multiple Invoices (acyclic, no max)
-LinkType.REFERENCES      # General relationship (NOT acyclic)
+LinkType.FULFILLED_BY    # PO->Receipt, SO->Shipment
+LinkType.PAID_BY         # Invoice->Payment
+LinkType.APPLIED_TO      # Payment->Invoice application
+LinkType.REVERSED_BY     # Original->Reversal (max 1 child)
+LinkType.CORRECTED_BY    # Original->Correction (max 1 child)
+LinkType.CONSUMED_BY     # CostLot->Consumption (NOT CONSUMED_FROM)
+LinkType.SOURCED_FROM    # Derived from source
+LinkType.ALLOCATED_TO    # Cost allocation target
+LinkType.ALLOCATED_FROM  # Cost allocation source
+LinkType.DERIVED_FROM    # JournalEntry->Event
+LinkType.MATCHED_WITH    # Three-way match
+LinkType.ADJUSTED_BY     # Adjustments
 ```
 
 ---
 
-## Using Finance Engines
+## Using Finance Engines and Services
 
-Before building calculation logic, check if a shared engine exists. These are pure function engines in `finance_engines/` that operate on kernel primitives.
+Before building calculation logic, check if a shared engine or service exists. Pure engines live in `finance_engines/` and stateful services live in `finance_services/`.
 
-### Available Engines
+### Pure Engines (from `finance_engines`)
+
+These are pure-function engines with no I/O or session dependencies. They operate on kernel primitives and return results directly.
 
 | Engine | Import | Use Case |
 |--------|--------|----------|
@@ -416,8 +462,21 @@ Before building calculation logic, check if a shared engine exists. These are pu
 | `MatchingEngine` | `from finance_engines import MatchingEngine` | 3-way match, 2-way match, bank recon |
 | `AgingCalculator` | `from finance_engines import AgingCalculator` | AP/AR aging, slow-moving inventory |
 | `AllocationEngine` | `from finance_engines import AllocationEngine` | Payment application, cost allocation |
-| `SubledgerService` | `from finance_engines import SubledgerService` | Open item tracking, reconciliation |
+| `AllocationCascade` | `from finance_engines import AllocationCascade` | DCAA indirect cost allocation cascade |
 | `TaxCalculator` | `from finance_engines import TaxCalculator` | Tax calculations |
+
+### Stateful Services (from `finance_services`)
+
+These services require a database session and/or interact with the kernel's link graph. They manage state and I/O.
+
+| Service | Import | Use Case |
+|---------|--------|----------|
+| `ValuationLayer` | `from finance_services.valuation_service import ValuationLayer` | FIFO/LIFO/weighted avg costing |
+| `ReconciliationManager` | `from finance_services.reconciliation_service import ReconciliationManager` | Document matching, settlement |
+| `CorrectionEngine` | `from finance_services.correction_service import CorrectionEngine` | Reversals, compensating entries |
+| `SubledgerService` | `from finance_services.subledger_service import SubledgerService` | Open item tracking, reconciliation |
+
+> **Note:** BillingEngine and ICEEngine are pure engines in `finance_engines/`, not stateful services. Import them from `finance_engines`.
 
 ### Example: Using the Matching Engine
 
@@ -488,50 +547,51 @@ print(f"Age: {aged_item.age_days} days, Bucket: {aged_item.bucket.name}")
 # Output: Age: 16 days, Bucket: 1-30
 ```
 
-### Engine Rules
+### Engine and Service Rules
 
 | Do | Don't |
 |----|-------|
-| Import from `finance_engines` | Recreate variance/matching/aging logic |
-| Pass data as parameters | Add database access to engines |
+| Import pure engines from `finance_engines` | Recreate variance/matching/aging logic |
+| Import stateful services from `finance_services` | Add database access to pure engines |
+| Pass data as parameters to pure engines | Build parallel implementations |
 | Use `Money` for amounts | Use raw `Decimal` for monetary values |
-| Check for existing engine first | Build parallel implementations |
+| Share the session with stateful services | Create separate sessions per service |
 
 ---
 
-## Economic Profile Layer (Advanced)
+## Accounting Policy Layer (Advanced)
 
-For complex event interpretation, the kernel provides an **Economic Profile** layer. This is a declarative approach where profiles define policies for how events become journal entries.
+For complex event interpretation, the kernel provides the **Accounting Policy** infrastructure (`AccountingPolicy`, `PolicySelector`, `MeaningBuilder`, `PolicyBridge`). Your module defines the actual policies in its `profiles.py` file, and the `PolicyAuthority` governs which policies are active. The `ModulePostingService` orchestrates the full Pipeline B flow: event -> policy lookup -> meaning -> intent -> atomic post.
 
-### When to Use Profiles vs Strategies
+### When to Use Policies vs Strategies
 
 | Use Case | Approach |
 |----------|----------|
-| Simple event → balanced entry | `BasePostingStrategy` (see above) |
-| Complex policy rules, guards, multi-ledger | `EconomicProfile` |
-| Effective date ranges for policies | `EconomicProfile` |
-| Reject/block conditions | `EconomicProfile` |
+| Simple event -> balanced entry | `BasePostingStrategy` (see above) |
+| Complex policy rules, guards, multi-ledger | `AccountingPolicy` |
+| Effective date ranges for policies | `AccountingPolicy` |
+| Reject/block conditions | `AccountingPolicy` |
 
-### Profile Components
+### Policy Components
 
 ```python
-from finance_kernel.domain.economic_profile import (
-    EconomicProfile,
-    ProfileTrigger,
-    ProfileMeaning,
+from finance_kernel.domain.accounting_policy import (
+    AccountingPolicy,
+    PolicyTrigger,
+    PolicyMeaning,
     LedgerEffect,
     GuardCondition,
     GuardType,
 )
 
-profile = EconomicProfile(
+policy = AccountingPolicy(
     name="inventory_receipt_standard",
     version=1,
-    trigger=ProfileTrigger(
+    trigger=PolicyTrigger(
         event_type="inventory.receipt",
         schema_version=1,
     ),
-    meaning=ProfileMeaning(
+    meaning=PolicyMeaning(
         economic_type="InventoryIncrease",
         quantity_field="payload.quantity",
         dimensions=("warehouse_id", "item_id"),
@@ -564,19 +624,19 @@ profile = EconomicProfile(
 
 | Concept | Description |
 |---------|-------------|
-| **Trigger** | Defines which events this profile applies to |
+| **Trigger** | Defines which events this policy applies to |
 | **Meaning** | Extracts economic meaning (type, quantity, dimensions) |
 | **LedgerEffect** | Uses AccountRoles, not COA codes (resolved at posting) |
 | **Guards** | REJECT (terminal) or BLOCK (resumable) conditions |
-| **Precedence** | Resolves conflicts when multiple profiles match |
+| **Precedence** | Resolves conflicts when multiple policies match |
 
 ### Integration Flow
 
 ```
-Event → ProfileRegistry → MeaningBuilder → AccountingIntent → InterpretationCoordinator → Journal
-                ↓                                    ↓
-        EconomicProfile                        JournalWriter
-                ↓                                    ↓
+Event → PolicySelector → MeaningBuilder → AccountingIntent → InterpretationCoordinator → Journal
+               ↓                                    ↓
+       AccountingPolicy                       JournalWriter
+               ↓                                    ↓
            Guards                            OutcomeRecorder
 ```
 
@@ -607,27 +667,122 @@ else:
 
 ---
 
+## Building a Module Service
+
+Each module should have a `service.py` that provides a thin orchestration layer. The module service owns the transaction boundary (R7 compliance), composes pure engines and stateful services, and delegates posting to `ModulePostingService`.
+
+### Standard Pattern
+
+```python
+from sqlalchemy.orm import Session
+from finance_kernel.services.module_posting_service import ModulePostingService
+from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_engines import VarianceCalculator
+from finance_services.reconciliation_service import ReconciliationManager
+
+
+class APService:
+    """Accounts Payable module service -- thin orchestration layer."""
+
+    def __init__(
+        self,
+        session: Session,
+        role_resolver: RoleResolver,
+        clock: Clock | None = None,
+    ):
+        self._session = session
+        self._clock = clock or SystemClock()
+        self._poster = ModulePostingService(
+            session=session,
+            role_resolver=role_resolver,
+            clock=self._clock,
+            auto_commit=False,  # R7: service owns transaction
+        )
+        # Pure engines (no session needed)
+        self._variance = VarianceCalculator()
+        # Stateful services (share session)
+        self._reconciliation = ReconciliationManager(session, LinkGraphService(session))
+
+    def receive_invoice(self, invoice_data: dict) -> PostingResult:
+        """Process a vendor invoice through the full posting pipeline."""
+        try:
+            # 1. Build event envelope from invoice data
+            event = self._build_invoice_event(invoice_data)
+
+            # 2. Post via ModulePostingService (Pipeline B)
+            result = self._poster.post(event)
+
+            # 3. Establish economic links
+            self._link_to_purchase_order(invoice_data, result)
+
+            # 4. Commit on success (R7)
+            self._session.commit()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+```
+
+### Design Principles
+
+- **Services are thin orchestration layers.** They coordinate engines and kernel primitives but contain minimal business logic themselves.
+- **Services own the transaction boundary (R7).** Create `ModulePostingService` with `auto_commit=False`, then explicitly commit on success and rollback on failure.
+- **Pure engines are instantiated without arguments.** They need no session or configuration.
+- **Stateful services share the module service's session.** This ensures all database operations participate in the same transaction.
+- **One service per module.** The service is the single entry point for all module operations.
+
+---
+
+## Configuration-Driven Architecture
+
+The system uses a configuration-driven approach where `finance_config` is the single source of truth for all policy and role binding decisions.
+
+### How It Works
+
+1. **`finance_config.get_active_config()`** returns an `AccountingConfigurationSet` that contains all policy definitions, role bindings, and engine settings.
+2. The configuration set is compiled into a **`CompiledPolicyPack`** which is an optimized, immutable snapshot used at runtime.
+3. **Role bindings come from configuration, not code.** Your module's `profiles.py` defines the policy structure (triggers, meanings, ledger effects), but the actual account role -> COA code mappings are resolved through configuration.
+
+### Usage
+
+```python
+from finance_config import get_active_config
+
+config = get_active_config()
+# config.compiled_pack contains all active policies, role bindings, etc.
+# Pass to ModulePostingService or PolicySelector as needed
+```
+
+This separation means you can change which accounts are debited/credited for a given event type without modifying code -- only configuration changes.
+
+---
+
+## Runtime Tracing
+
+The system provides four structured trace types for diagnosing behavior at each layer of the architecture. Enable them via environment variables or logging configuration.
+
+| Trace Type | Layer | What It Captures |
+|------------|-------|------------------|
+| `FINANCE_CONFIG_TRACE` | finance_config | Configuration loading, policy pack compilation, role binding resolution |
+| `FINANCE_POLICY_TRACE` | Accounting policies | Policy selection, guard evaluation, meaning extraction, trigger matching |
+| `FINANCE_ENGINE_TRACE` | finance_engines / finance_services | Engine inputs/outputs, allocation steps, matching decisions, valuation layer consumption |
+| `FINANCE_KERNEL_TRACE` | finance_kernel | Posting pipeline, journal writes, balance checks, immutability enforcement |
+
+Use these traces to follow an event from ingestion through configuration lookup, policy evaluation, engine processing, and final journal posting.
+
+---
+
 ## Module Directory Structure
 
 ```
-accounts_payable/
-├── __init__.py              # Register strategies, export public API
-├── events/
-│   ├── __init__.py
-│   └── schemas.py           # Event payload schemas/validation
-├── strategies/
-│   ├── __init__.py
-│   ├── vendor_invoice.py    # VendorInvoiceStrategy
-│   ├── vendor_payment.py    # VendorPaymentStrategy
-│   └── payment_void.py      # PaymentVoidStrategy
-├── services/
-│   ├── __init__.py
-│   ├── invoice_service.py   # Business logic, calls Bookkeeper
-│   └── payment_service.py
-├── models/                   # If you need module-specific entities
-│   ├── __init__.py
-│   └── vendor_invoice.py
-└── exceptions.py             # Module-specific exceptions
+finance_modules/ap/
+├── __init__.py
+├── config.py
+├── models.py
+├── profiles.py          # AccountingPolicy definitions
+├── service.py           # APService — orchestrates engines + kernel
+└── workflows.py
 ```
 
 ---
@@ -788,6 +943,18 @@ def get_triggers(trigger_names: list[str]) -> list:
     )
 ```
 
+### 7. Importing Stateful Services from finance_engines
+
+```python
+# WRONG - These moved to finance_services
+from finance_engines.valuation import ValuationLayer
+from finance_engines.reconciliation import ReconciliationManager
+
+# CORRECT - Import from finance_services
+from finance_services.valuation_service import ValuationLayer
+from finance_services.reconciliation_service import ReconciliationManager
+```
+
 ---
 
 ## Testing Your Module
@@ -799,7 +966,8 @@ import pytest
 from decimal import Decimal
 from finance_kernel.domain.values import Money, Currency
 from finance_kernel.domain.dtos import EventEnvelope, LineSide
-from finance_kernel.testing import make_reference_data  # Test helper
+# Test helpers are in tests/conftest.py, not a kernel testing module
+# Use fixtures: standard_accounts, current_period, posting_orchestrator
 
 from accounts_payable.strategies import VendorInvoiceStrategy
 
@@ -899,46 +1067,69 @@ pytest tests/security/ tests/database_security/ tests/adversarial/ -v
 ## Checklist for New Modules
 
 ### Before You Start
-- [ ] **CHECK ENGINE READINESS** - Review the Engine Status table at the top of this document. Do NOT proceed if required engines are 🔴.
-- [ ] Check `finance_engines/` for existing calculation engines (variance, matching, aging, allocation, tax)
-- [ ] Check if `EconomicProfile` is more appropriate than `BasePostingStrategy`
-- [ ] Review `docs/reusable_modules.md` for shared patterns
+- [ ] Check `finance_engines/` for existing pure calculation engines (variance, matching, aging, allocation, tax)
+- [ ] Check `finance_services/` for existing stateful services (valuation, reconciliation, correction, subledger)
+- [ ] Check if `AccountingPolicy` is more appropriate than `BasePostingStrategy`
+- [ ] Check `finance_modules/` for existing ERP modules that may already cover your use case
 - [ ] Plan to use `EconomicLink` for all artifact relationships (not foreign keys)
 
 ### Core Requirements
 - [ ] Import value objects from `finance_kernel.domain.values`
 - [ ] Use `Money` for all monetary fields
 - [ ] Extend `FinanceKernelError` for exceptions
-- [ ] Keep strategies/profiles pure (no I/O, no database, no clock)
+- [ ] Keep strategies/policies pure (no I/O, no database, no clock)
+
+### Module Service
+- [ ] Create a `service.py` in your module following the standard pattern
+- [ ] Service constructor takes (session, role_resolver, clock)
+- [ ] Service creates `ModulePostingService` with `auto_commit=False`
+- [ ] Import pure engines from `finance_engines/`
+- [ ] Import stateful services from `finance_services/`
 
 ### Posting Configuration
-- [ ] Either extend `BasePostingStrategy` OR define `EconomicProfile`
-- [ ] Register strategies with `StrategyRegistry` (or profiles with `ProfileRegistry`)
-- [ ] Document GL effect in strategy/profile docstrings
+- [ ] Either extend `BasePostingStrategy` OR define `AccountingPolicy`
+- [ ] If using policies: define in your module's `profiles.py`
+- [ ] Policy definitions go in configuration YAML, not code
+- [ ] Register strategies with `StrategyRegistry` (or policies via `PolicyBridge`)
+- [ ] Document GL effect in strategy/policy docstrings
 
 ### Testing
 - [ ] Write tests verifying balanced entries
 - [ ] Run architecture tests: `pytest tests/architecture/`
 - [ ] Run security tests: `pytest tests/security/ tests/database_security/`
 - [ ] Run engine tests if using `finance_engines`: `pytest tests/engines/`
+- [ ] Run `pytest tests/modules/test_cross_module_flow.py` to verify structural compliance
 - [ ] Verify no SQL injection vulnerabilities (use parameterized queries only)
 
 ---
 
 ## Cross-Cutting Concerns
 
-Before building complex module features, **use these existing engines** (see `docs/reusable_modules.md`):
+Before building complex module features, **use these existing engines and services**:
+
+### Pure Engines
 
 | Need | Import |
 |------|--------|
 | Calculate variances (price, quantity, FX) | `from finance_engines import VarianceCalculator` |
-| Match documents (PO ↔ Receipt ↔ Invoice) | `from finance_engines import MatchingEngine` |
+| Match documents (PO <-> Receipt <-> Invoice) | `from finance_engines import MatchingEngine` |
 | Allocate amounts across targets | `from finance_engines import AllocationEngine` |
+| DCAA indirect cost allocation cascade | `from finance_engines import AllocationCascade` |
 | Calculate aging buckets | `from finance_engines import AgingCalculator` |
-| Track open items and balances | `from finance_engines import SubledgerService` |
 | Calculate taxes | `from finance_engines import TaxCalculator` |
 
-**Do NOT duplicate this logic in your module.** All engines are pure functions with comprehensive tests.
+### Stateful Services
+
+| Need | Import |
+|------|--------|
+| FIFO/LIFO/weighted average costing | `from finance_services.valuation_service import ValuationLayer` |
+| Document reconciliation and settlement | `from finance_services.reconciliation_service import ReconciliationManager` |
+| Reversals and compensating entries | `from finance_services.correction_service import CorrectionEngine` |
+| Open item tracking and reconciliation | `from finance_services.subledger_service import SubledgerService` |
+
+> **Note:** BillingEngine and ICEEngine are pure engines in `finance_engines/`, not stateful services.
+
+**Do NOT duplicate this logic in your module.** All engines are pure functions with comprehensive tests. All services are tested against the kernel invariants.
 
 ---
 
@@ -975,3 +1166,58 @@ class MyStrategy(BasePostingStrategy):
 # Register it
 StrategyRegistry.register(MyStrategy())
 ```
+
+---
+
+## Reconciliation Manager Reference
+
+### Definition and Role
+
+The Reconciliation Manager is a stateful service that sits on top of the LinkGraphService. While the Graph Service knows that "A is linked to B," the Reconciliation Manager knows "A is 40% settled by B."
+
+**Import:** `from finance_services.reconciliation_service import ReconciliationManager`
+
+### Core Responsibilities
+
+- **Balance Tracking**: Maintaining the "Open Amount" of any artifact (Invoices, Receipts, Payments).
+- **Tolerance Enforcement**: Deciding if a $1.00 difference is a "Price Variance" (Acceptable) or a "Dispute" (Blocked).
+- **Match Lifecycle**: Moving links through states: PROPOSED -> PENDING_APPROVAL -> MATCHED.
+- **Subledger Integrity**: Ensuring that the sum of all matches to an invoice exactly equals the amount posted to the GL.
+
+### Technical Specification
+
+**Inputs (The "Match Proposal")**
+
+To create a match, the module provides a MatchProposal:
+
+- **LeftRef & RightRef**: The two ArtifactRefs being linked (e.g., Invoice and Payment).
+- **MatchAmount**: The Money value being applied.
+- **TolerancePolicy**: (Optional) The rules for handling over/under-payments.
+- **LinkType**: Usually PAID_BY or FULFILLED_BY.
+
+**Outputs (The "Match Result")**
+
+- **LinkID**: The UUID of the newly established EconomicLink.
+- **RemainingBalance**: The UnconsumedValue for both sides.
+- **VarianceEvent**: If the amounts don't match perfectly but are within tolerance, the manager emits a variance fact for the kernel to post to a "Price Variance" or "FX Gain/Loss" account.
+
+### Key Invariants
+
+| ID | Invariant | Description |
+|----|-----------|-------------|
+| R1 | No Over-Settlement | Sum(ChildLinks) <= Parent.TotalAmount. You cannot pay $1,100 on a $1,000 invoice without a specific "Overpayment" event. |
+| R2 | Currency Consistency | Matches must occur in the same currency OR provide an ExchangeRate that results in zero "unexplained" dust. |
+| R3 | Transaction Atomicity | The match state update and the EconomicLink creation must occur in a single DB transaction. |
+
+### How Modules Use the Manager
+
+The Manager transforms how you write module logic. Instead of writing math, you write orchestration:
+
+**AP Module Example (Invoice Payment)**
+
+1. Module: Receives a "Payment applied to Invoice" command.
+2. Module: Calls `ReconciliationManager.propose_match(invoice_ref, payment_ref, amount)`.
+3. Manager: Checks `LinkGraphService.get_unconsumed_value(invoice_ref)`.
+4. Manager: If valid, creates the PAID_BY link.
+5. Manager: Returns the new "Open Balance" of the invoice.
+6. Module: Updates the UI to show the invoice as "Partially Paid."

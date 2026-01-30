@@ -1,0 +1,283 @@
+policies:
+- name: CashDeposit
+  version: 1
+  module: cash
+  description: Records bank deposit, moving funds from undeposited to bank
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: cash.deposit
+  meaning:
+    economic_type: BANK_INCREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: BANK
+    credit_role: UNDEPOSITED_FUNDS
+  - ledger: BANK
+    debit_role: AVAILABLE
+    credit_role: DEPOSIT
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Deposit amount must be positive
+  line_mappings:
+  - role: BANK
+    side: debit
+  - role: UNDEPOSITED_FUNDS
+    side: credit
+  - role: AVAILABLE
+    side: debit
+    ledger: BANK
+  - role: DEPOSIT
+    side: credit
+    ledger: BANK
+- name: CashWithdrawalExpense
+  version: 1
+  module: cash
+  description: Records bank withdrawal for direct expense
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: cash.withdrawal
+    where:
+    - field: payload.destination_type
+      value: EXPENSE
+  meaning:
+    economic_type: BANK_DECREASE
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE
+    credit_role: BANK
+  - ledger: BANK
+    debit_role: WITHDRAWAL
+    credit_role: AVAILABLE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Withdrawal amount must be positive
+  line_mappings:
+  - role: EXPENSE
+    side: debit
+  - role: BANK
+    side: credit
+  - role: WITHDRAWAL
+    side: debit
+    ledger: BANK
+  - role: AVAILABLE
+    side: credit
+    ledger: BANK
+- name: CashWithdrawalSupplier
+  version: 1
+  module: cash
+  description: Records bank withdrawal for supplier payment
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: cash.withdrawal
+    where:
+    - field: payload.destination_type
+      value: SUPPLIER_PAYMENT
+  meaning:
+    economic_type: BANK_DECREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: BANK
+    debit_role: WITHDRAWAL
+    credit_role: AVAILABLE
+  line_mappings:
+  - role: WITHDRAWAL
+    side: debit
+    ledger: BANK
+  - role: AVAILABLE
+    side: credit
+    ledger: BANK
+- name: CashWithdrawalPayroll
+  version: 1
+  module: cash
+  description: Records bank withdrawal for payroll disbursement
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: cash.withdrawal
+    where:
+    - field: payload.destination_type
+      value: PAYROLL
+  meaning:
+    economic_type: BANK_DECREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: PAYROLL_CLEARING
+    credit_role: BANK
+  - ledger: BANK
+    debit_role: WITHDRAWAL
+    credit_role: AVAILABLE
+  line_mappings:
+  - role: PAYROLL_CLEARING
+    side: debit
+  - role: BANK
+    side: credit
+  - role: WITHDRAWAL
+    side: debit
+    ledger: BANK
+  - role: AVAILABLE
+    side: credit
+    ledger: BANK
+- name: CashBankFee
+  version: 1
+  module: cash
+  description: Bank service charge or fee
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: cash.bank_fee
+  meaning:
+    economic_type: BANK_DECREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: BANK_FEE_EXPENSE
+    credit_role: CASH
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Bank fee amount must be positive
+  line_mappings:
+  - role: BANK_FEE_EXPENSE
+    side: debit
+  - role: CASH
+    side: credit
+- name: CashInterestEarned
+  version: 1
+  module: cash
+  description: Interest income on bank balance
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: cash.interest_earned
+  meaning:
+    economic_type: BANK_INCREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: CASH
+    credit_role: INTEREST_INCOME
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Interest amount must be positive
+  line_mappings:
+  - role: CASH
+    side: debit
+  - role: INTEREST_INCOME
+    side: credit
+- name: CashTransfer
+  version: 1
+  module: cash
+  description: Records inter-account bank transfer
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: cash.transfer
+  meaning:
+    economic_type: BANK_TRANSFER
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: BANK_DESTINATION
+    credit_role: BANK_SOURCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Transfer amount must be positive
+  - guard_type: reject
+    expression: payload.from_bank_account_code == payload.to_bank_account_code
+    reason_code: SAME_ACCOUNT
+    message: Cannot transfer to the same account
+  line_mappings:
+  - role: BANK_DESTINATION
+    side: debit
+  - role: BANK_SOURCE
+    side: credit
+- name: CashWireTransferOut
+  version: 1
+  module: cash
+  description: Outbound wire transfer (uses transit account)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: cash.wire_transfer_out
+  meaning:
+    economic_type: BANK_DECREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: CASH_IN_TRANSIT
+    credit_role: CASH
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Wire transfer amount must be positive
+  line_mappings:
+  - role: CASH_IN_TRANSIT
+    side: debit
+  - role: CASH
+    side: credit
+- name: CashWireTransferCleared
+  version: 1
+  module: cash
+  description: Wire transfer confirmed by receiving bank
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: cash.wire_transfer_cleared
+  meaning:
+    economic_type: BANK_INCREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: CASH
+    credit_role: CASH_IN_TRANSIT
+  line_mappings:
+  - role: CASH
+    side: debit
+  - role: CASH_IN_TRANSIT
+    side: credit
+- name: CashReconciliation
+  version: 1
+  module: cash
+  description: Adjustment discovered during bank reconciliation
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: cash.reconciliation
+  meaning:
+    economic_type: RECONCILIATION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: CASH
+    credit_role: RECON_VARIANCE
+  - ledger: BANK
+    debit_role: RECONCILED
+    credit_role: PENDING
+  line_mappings:
+  - role: CASH
+    side: debit
+  - role: RECON_VARIANCE
+    side: credit
+  - role: RECONCILED
+    side: debit
+    ledger: BANK
+  - role: PENDING
+    side: credit
+    ledger: BANK

@@ -14,11 +14,21 @@ from finance_kernel.services.posting_orchestrator import (
     PostingResult,
     PostingStatus,
 )
+from finance_kernel.services.module_posting_service import (
+    ModulePostingService,
+    ModulePostingResult,
+    ModulePostingStatus,
+)
 from finance_kernel.services.reference_data_loader import ReferenceDataLoader
 from finance_kernel.services.sequence_service import SequenceService
+from finance_kernel.services.party_service import PartyService, PartyInfo
+from finance_kernel.services.contract_service import ContractService, ContractInfo, CLINInfo
 
 __all__ = [
     "AuditorService",
+    "CLINInfo",
+    "ContractInfo",
+    "ContractService",
     "IngestorService",
     "IngestResult",
     "IngestStatus",
@@ -26,6 +36,11 @@ __all__ = [
     "LedgerResult",
     "LinkGraphService",
     "LinkEstablishResult",
+    "ModulePostingResult",
+    "ModulePostingService",
+    "ModulePostingStatus",
+    "PartyInfo",
+    "PartyService",
     "PersistResult",
     "PeriodService",
     "PostingOrchestrator",

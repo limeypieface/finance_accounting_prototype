@@ -580,7 +580,7 @@ class TestStrategyPurityWithEdgeCases:
             t.start()
 
         for t in threads:
-            t.join()
+            t.join(timeout=30)
 
         # No errors should have occurred
         assert not errors, f"Thread errors: {errors}"

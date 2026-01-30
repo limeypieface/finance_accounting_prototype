@@ -13,12 +13,10 @@ This module is the FIRST layer of "defense in depth" for data integrity:
 
   Layer 1: THIS FILE (ORM event listeners)
     - Catches modifications through Python/SQLAlchemy code
-    - Works on both SQLite (tests) and PostgreSQL (production)
     - Fires BEFORE the SQL is sent to the database
 
   Layer 2: db/sql/*.sql (PostgreSQL triggers)
     - Catches raw SQL, bulk UPDATE statements, direct psql access
-    - PostgreSQL-only (SQLite has no trigger support)
     - Fires AT the database level, independent of application code
 
 Both layers enforce the SAME rules. An attacker must bypass BOTH to tamper
@@ -111,6 +109,63 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session, UOWTransaction
 
 from finance_kernel.exceptions import ImmutabilityViolationError
+from finance_kernel.logging_config import get_logger
+
+logger = get_logger("db.immutability")
+
+
+def _check_account_deletion_before_flush(session, flush_context, instances):
+    """
+    Check for account deletions and prevent if they have posted journal lines.
+
+    This runs in SessionEvents.before_flush, BEFORE the flush plan is finalized.
+    This is the correct place to prevent deletions because mapper-level events
+    fire after the flush plan is already determined.
+
+    R3 Compliance: Accounts referenced by posted journal entries cannot be deleted.
+    """
+    from finance_kernel.models.account import Account
+    from finance_kernel.exceptions import AccountReferencedError
+    from sqlalchemy import text
+
+    # Check all objects marked for deletion
+    for obj in list(session.deleted):  # Use list() to avoid set modification during iteration
+        if not isinstance(obj, Account):
+            continue
+
+        # Disable autoflush during our query to prevent recursive flush
+        with session.no_autoflush:
+            result = session.execute(
+                text("""
+                    WITH RECURSIVE account_tree AS (
+                        SELECT id FROM accounts WHERE id = :account_id
+                        UNION ALL
+                        SELECT a.id
+                        FROM accounts a
+                        JOIN account_tree t ON a.parent_id = t.id
+                    )
+                    SELECT EXISTS (
+                        SELECT 1 FROM journal_lines jl
+                        JOIN journal_entries je ON jl.journal_entry_id = je.id
+                        WHERE jl.account_id IN (SELECT id FROM account_tree)
+                        AND je.status = 'posted'
+                    )
+                """),
+                {"account_id": str(obj.id)},
+            )
+            has_posted_refs = result.scalar()
+
+        if has_posted_refs:
+            logger.error(
+                "immutability_violation_blocked",
+                extra={
+                    "entity_type": "Account",
+                    "entity_id": str(obj.id),
+                    "operation": "DELETE",
+                    "reason": "account_has_posted_references",
+                },
+            )
+            raise AccountReferencedError(account_id=str(obj.id))
 
 
 def _check_journal_entry_immutability(mapper, connection, target):
@@ -175,6 +230,16 @@ def _check_journal_entry_immutability(mapper, connection, target):
                 continue
             hist = attr.history
             if hist.has_changes():
+                logger.error(
+                    "immutability_violation_blocked",
+                    extra={
+                        "invariant": "R10",
+                        "entity_type": "JournalEntry",
+                        "entity_id": str(target.id),
+                        "operation": "UPDATE",
+                        "field": attr.key,
+                    },
+                )
                 raise ImmutabilityViolationError(
                     entity_type="JournalEntry",
                     entity_id=str(target.id),
@@ -194,6 +259,15 @@ def _check_journal_entry_delete(mapper, connection, target):
         return
 
     if target.status == JournalEntryStatus.POSTED:
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "invariant": "R10",
+                "entity_type": "JournalEntry",
+                "entity_id": str(target.id),
+                "operation": "DELETE",
+            },
+        )
         raise ImmutabilityViolationError(
             entity_type="JournalEntry",
             entity_id=str(target.id),
@@ -214,6 +288,15 @@ def _check_journal_line_immutability(mapper, connection, target):
 
     # Check if parent entry is posted
     if target.entry and target.entry.status == JournalEntryStatus.POSTED:
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "invariant": "R10",
+                "entity_type": "JournalLine",
+                "entity_id": str(target.id),
+                "operation": "UPDATE",
+            },
+        )
         raise ImmutabilityViolationError(
             entity_type="JournalLine",
             entity_id=str(target.id),
@@ -233,6 +316,15 @@ def _check_journal_line_delete(mapper, connection, target):
         return
 
     if target.entry and target.entry.status == JournalEntryStatus.POSTED:
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "invariant": "R10",
+                "entity_type": "JournalLine",
+                "entity_id": str(target.id),
+                "operation": "DELETE",
+            },
+        )
         raise ImmutabilityViolationError(
             entity_type="JournalLine",
             entity_id=str(target.id),
@@ -251,6 +343,15 @@ def _check_audit_event_immutability(mapper, connection, target):
     if not isinstance(target, AuditEvent):
         return
 
+    logger.error(
+        "immutability_violation_blocked",
+        extra={
+            "invariant": "R10",
+            "entity_type": "AuditEvent",
+            "entity_id": str(target.id),
+            "operation": "UPDATE",
+        },
+    )
     raise ImmutabilityViolationError(
         entity_type="AuditEvent",
         entity_id=str(target.id),
@@ -269,6 +370,15 @@ def _check_audit_event_delete(mapper, connection, target):
     if not isinstance(target, AuditEvent):
         return
 
+    logger.error(
+        "immutability_violation_blocked",
+        extra={
+            "invariant": "R10",
+            "entity_type": "AuditEvent",
+            "entity_id": str(target.id),
+            "operation": "DELETE",
+        },
+    )
     raise ImmutabilityViolationError(
         entity_type="AuditEvent",
         entity_id=str(target.id),
@@ -365,6 +475,16 @@ def _check_account_structural_immutability(mapper, connection, target):
 
     # Structural fields changed - check if account has posted references
     if _account_has_posted_references(connection, str(target.id)):
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "invariant": "R10",
+                "entity_type": "Account",
+                "entity_id": str(target.id),
+                "operation": "UPDATE",
+                "fields": changed_structural_fields,
+            },
+        )
         raise ImmutabilityViolationError(
             entity_type="Account",
             entity_id=str(target.id),
@@ -418,22 +538,53 @@ def _is_last_rounding_account(connection, account_id: str, currency: str | None)
 
 def _check_account_delete(mapper, connection, target):
     """
-    Prevent deletion of the last rounding account per currency.
+    Prevent deletion of accounts with posted journal lines or the last rounding account.
 
-    Invariant: At least one rounding account must exist per currency or ledger.
+    R3 Compliance: Accounts referenced by posted journal entries cannot be deleted.
+    This check runs BEFORE cascade delete, so we raise a clear AccountReferencedError
+    rather than letting the cascade trigger ImmutabilityViolationError on journal lines.
+
+    Invariants:
+    1. Accounts with posted journal lines cannot be deleted
+    2. At least one rounding account must exist per currency or ledger
     """
     from finance_kernel.models.account import Account, AccountTag
+    from finance_kernel.exceptions import AccountReferencedError
 
     if not isinstance(target, Account):
         return
 
-    # Check if this is a rounding account
+    # Rule 1: Accounts with posted journal lines cannot be deleted
+    # This check must happen BEFORE cascade delete reaches journal lines
+    if _account_has_posted_references(connection, str(target.id)):
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "entity_type": "Account",
+                "entity_id": str(target.id),
+                "operation": "DELETE",
+                "reason": "account_has_posted_references",
+            },
+        )
+        raise AccountReferencedError(account_id=str(target.id))
+
+    # Rule 2: Check if this is a rounding account
     if target.tags is None or AccountTag.ROUNDING.value not in target.tags:
         return  # Not a rounding account, allow deletion
 
     # This is a rounding account - check if it's the last one for its currency
     if _is_last_rounding_account(connection, str(target.id), target.currency):
         currency_desc = target.currency if target.currency else "multi-currency/global"
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "entity_type": "Account",
+                "entity_id": str(target.id),
+                "operation": "DELETE",
+                "reason": "last_rounding_account",
+                "currency": currency_desc,
+            },
+        )
         raise ImmutabilityViolationError(
             entity_type="Account",
             entity_id=str(target.id),
@@ -516,6 +667,16 @@ def _check_fiscal_period_immutability(mapper, connection, target):
                 continue
             hist = attr.history
             if hist.has_changes():
+                logger.error(
+                    "immutability_violation_blocked",
+                    extra={
+                        "invariant": "R10",
+                        "entity_type": "FiscalPeriod",
+                        "entity_id": str(target.id),
+                        "operation": "UPDATE",
+                        "field": attr.key,
+                    },
+                )
                 raise ImmutabilityViolationError(
                     entity_type="FiscalPeriod",
                     entity_id=str(target.id),
@@ -565,6 +726,16 @@ def _check_fiscal_period_delete(mapper, connection, target):
 
     # Rule 1: Closed periods cannot be deleted
     if target.status == PeriodStatus.CLOSED:
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "invariant": "R10",
+                "entity_type": "FiscalPeriod",
+                "entity_id": str(target.id),
+                "operation": "DELETE",
+                "reason": "period_closed",
+            },
+        )
         raise ImmutabilityViolationError(
             entity_type="FiscalPeriod",
             entity_id=str(target.id),
@@ -573,6 +744,16 @@ def _check_fiscal_period_delete(mapper, connection, target):
 
     # Rule 2: Periods with journal entries cannot be deleted (even if open)
     if _period_has_journal_entries(connection, target.start_date, target.end_date):
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "invariant": "R10",
+                "entity_type": "FiscalPeriod",
+                "entity_id": str(target.id),
+                "operation": "DELETE",
+                "reason": "period_has_journal_entries",
+            },
+        )
         raise ImmutabilityViolationError(
             entity_type="FiscalPeriod",
             entity_id=str(target.id),
@@ -610,6 +791,15 @@ def _check_dimension_value_immutability(mapper, connection, target):
             changed_fields.append(field)
 
     if changed_fields:
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "entity_type": "DimensionValue",
+                "entity_id": str(target.id),
+                "operation": "UPDATE",
+                "fields": changed_fields,
+            },
+        )
         raise ImmutabilityViolationError(
             entity_type="DimensionValue",
             entity_id=str(target.id),
@@ -648,6 +838,15 @@ def _check_dimension_code_immutability(mapper, connection, target):
     has_values = result.scalar()
 
     if has_values:
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "entity_type": "Dimension",
+                "entity_id": str(target.id),
+                "operation": "UPDATE",
+                "field": "code",
+            },
+        )
         raise ImmutabilityViolationError(
             entity_type="Dimension",
             entity_id=str(target.id),
@@ -783,6 +982,17 @@ def _check_exchange_rate_immutability(mapper, connection, target):
     reference_count = _exchange_rate_is_referenced(connection, str(target.id))
 
     if reference_count > 0:
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "entity_type": "ExchangeRate",
+                "entity_id": str(target.id),
+                "operation": "UPDATE",
+                "reference_count": reference_count,
+                "from_currency": target.from_currency,
+                "to_currency": target.to_currency,
+            },
+        )
         raise ExchangeRateImmutableError(
             rate_id=str(target.id),
             from_currency=target.from_currency,
@@ -806,6 +1016,15 @@ def _check_exchange_rate_delete(mapper, connection, target):
     reference_count = _exchange_rate_is_referenced(connection, str(target.id))
 
     if reference_count > 0:
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "entity_type": "ExchangeRate",
+                "entity_id": str(target.id),
+                "operation": "DELETE",
+                "reference_count": reference_count,
+            },
+        )
         raise ExchangeRateReferencedError(
             rate_id=str(target.id),
             reference_count=reference_count,
@@ -829,6 +1048,11 @@ def register_immutability_listeners():
     from finance_kernel.models.dimensions import Dimension, DimensionValue
     from finance_kernel.models.exchange_rate import ExchangeRate
 
+    # Session-level before_flush event for checking deletions before flush plan
+    # This is necessary for Account deletion checks because mapper-level events
+    # fire after the flush plan is finalized (too late to prevent the deletion)
+    event.listen(Session, "before_flush", _check_account_deletion_before_flush)
+
     # JournalEntry listeners
     event.listen(JournalEntry, "before_update", _check_journal_entry_immutability)
     event.listen(JournalEntry, "before_delete", _check_journal_entry_delete)
@@ -843,7 +1067,7 @@ def register_immutability_listeners():
 
     # Account listeners
     event.listen(Account, "before_update", _check_account_structural_immutability)
-    event.listen(Account, "before_delete", _check_account_delete)
+    # Note: Account deletion is now handled in before_flush, not before_delete
 
     # FiscalPeriod listeners
     event.listen(FiscalPeriod, "before_update", _check_fiscal_period_immutability)
@@ -861,6 +1085,17 @@ def register_immutability_listeners():
     event.listen(ExchangeRate, "before_delete", _check_exchange_rate_delete)
 
 
+def _safe_remove_listener(target, event_name, listener_fn):
+    """
+    Safely remove an event listener, ignoring if not registered.
+
+    This prevents errors when unregistering listeners that may not have been
+    registered (e.g., in test scenarios with custom setup/teardown).
+    """
+    if event.contains(target, event_name, listener_fn):
+        event.remove(target, event_name, listener_fn)
+
+
 def unregister_immutability_listeners():
     """
     Remove immutability enforcement event listeners.
@@ -875,33 +1110,36 @@ def unregister_immutability_listeners():
     from finance_kernel.models.dimensions import Dimension, DimensionValue
     from finance_kernel.models.exchange_rate import ExchangeRate
 
+    # Session-level before_flush event
+    _safe_remove_listener(Session, "before_flush", _check_account_deletion_before_flush)
+
     # JournalEntry listeners
-    event.remove(JournalEntry, "before_update", _check_journal_entry_immutability)
-    event.remove(JournalEntry, "before_delete", _check_journal_entry_delete)
+    _safe_remove_listener(JournalEntry, "before_update", _check_journal_entry_immutability)
+    _safe_remove_listener(JournalEntry, "before_delete", _check_journal_entry_delete)
 
     # JournalLine listeners
-    event.remove(JournalLine, "before_update", _check_journal_line_immutability)
-    event.remove(JournalLine, "before_delete", _check_journal_line_delete)
+    _safe_remove_listener(JournalLine, "before_update", _check_journal_line_immutability)
+    _safe_remove_listener(JournalLine, "before_delete", _check_journal_line_delete)
 
     # AuditEvent listeners
-    event.remove(AuditEvent, "before_update", _check_audit_event_immutability)
-    event.remove(AuditEvent, "before_delete", _check_audit_event_delete)
+    _safe_remove_listener(AuditEvent, "before_update", _check_audit_event_immutability)
+    _safe_remove_listener(AuditEvent, "before_delete", _check_audit_event_delete)
 
     # Account listeners
-    event.remove(Account, "before_update", _check_account_structural_immutability)
-    event.remove(Account, "before_delete", _check_account_delete)
+    _safe_remove_listener(Account, "before_update", _check_account_structural_immutability)
+    # Note: Account deletion is now handled in before_flush, not before_delete
 
     # FiscalPeriod listeners
-    event.remove(FiscalPeriod, "before_update", _check_fiscal_period_immutability)
-    event.remove(FiscalPeriod, "before_delete", _check_fiscal_period_delete)
+    _safe_remove_listener(FiscalPeriod, "before_update", _check_fiscal_period_immutability)
+    _safe_remove_listener(FiscalPeriod, "before_delete", _check_fiscal_period_delete)
 
     # Dimension listeners
-    event.remove(Dimension, "before_update", _check_dimension_code_immutability)
+    _safe_remove_listener(Dimension, "before_update", _check_dimension_code_immutability)
 
     # DimensionValue listeners
-    event.remove(DimensionValue, "before_update", _check_dimension_value_immutability)
+    _safe_remove_listener(DimensionValue, "before_update", _check_dimension_value_immutability)
 
     # ExchangeRate listeners
-    event.remove(ExchangeRate, "before_insert", _check_exchange_rate_insert)
-    event.remove(ExchangeRate, "before_update", _check_exchange_rate_immutability)
-    event.remove(ExchangeRate, "before_delete", _check_exchange_rate_delete)
+    _safe_remove_listener(ExchangeRate, "before_insert", _check_exchange_rate_insert)
+    _safe_remove_listener(ExchangeRate, "before_update", _check_exchange_rate_immutability)
+    _safe_remove_listener(ExchangeRate, "before_delete", _check_exchange_rate_delete)

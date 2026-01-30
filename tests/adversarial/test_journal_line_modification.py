@@ -28,48 +28,58 @@ from sqlalchemy import text
 
 from finance_kernel.models.account import Account, AccountType, NormalBalance
 from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator, PostingStatus
-from finance_kernel.domain.strategy import BasePostingStrategy
-from finance_kernel.domain.strategy_registry import StrategyRegistry
-from finance_kernel.domain.dtos import EventEnvelope, LineSpec, LineSide as DomainLineSide, ReferenceData
-from finance_kernel.domain.values import Money
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
+from finance_kernel.domain.accounting_intent import (
+    AccountingIntent,
+    AccountingIntentSnapshot,
+    IntentLine,
+    LedgerIntent,
+)
+from finance_kernel.domain.meaning_builder import EconomicEventData, MeaningBuilderResult
 from finance_kernel.exceptions import ImmutabilityViolationError
+from tests.conftest import make_source_event
 
 
-def _register_test_strategy(event_type: str, amount: Decimal = Decimal("100.00")) -> None:
-    """Register a simple balanced strategy for testing."""
+def _make_meaning_and_intent(session, actor_id, clock, effective_date, amount=Decimal("500.00"), currency="USD"):
+    """Create a MeaningBuilderResult and AccountingIntent for testing."""
+    source_event_id = uuid4()
+    econ_event_id = uuid4()
+    # Create source Event record (FK requirement for JournalEntry)
+    make_source_event(session, source_event_id, actor_id, clock, effective_date)
 
-    class TestStrategy(BasePostingStrategy):
-        def __init__(self, evt_type: str, amt: Decimal):
-            self._event_type = evt_type
-            self._amount = amt
-            self._version = 1
+    econ_data = EconomicEventData(
+        source_event_id=source_event_id,
+        economic_type="test.line.modification",
+        effective_date=effective_date,
+        profile_id="LineModTest",
+        profile_version=1,
+        profile_hash=None,
+        quantity=amount,
+    )
+    meaning_result = MeaningBuilderResult.ok(econ_data)
 
-        @property
-        def event_type(self) -> str:
-            return self._event_type
-
-        @property
-        def version(self) -> int:
-            return self._version
-
-        def _compute_line_specs(
-            self, event: EventEnvelope, ref: ReferenceData
-        ) -> tuple[LineSpec, ...]:
-            return (
-                LineSpec(
-                    account_code="1000",
-                    side=DomainLineSide.DEBIT,
-                    money=Money.of(self._amount, "USD"),
+    intent = AccountingIntent(
+        econ_event_id=econ_event_id,
+        source_event_id=source_event_id,
+        profile_id="LineModTest",
+        profile_version=1,
+        effective_date=effective_date,
+        ledger_intents=(
+            LedgerIntent(
+                ledger_id="GL",
+                lines=(
+                    IntentLine.debit("CashAsset", amount, currency),
+                    IntentLine.credit("SalesRevenue", amount, currency),
                 ),
-                LineSpec(
-                    account_code="4000",
-                    side=DomainLineSide.CREDIT,
-                    money=Money.of(self._amount, "USD"),
-                ),
-            )
+            ),
+        ),
+        snapshot=AccountingIntentSnapshot(
+            coa_version=1,
+            dimension_schema_version=1,
+        ),
+    )
 
-    StrategyRegistry.register(TestStrategy(event_type, amount))
+    return meaning_result, intent
 
 
 class TestJournalLineModificationAfterPosting:
@@ -81,43 +91,38 @@ class TestJournalLineModificationAfterPosting:
     def posted_entry_with_lines(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        interpretation_coordinator: InterpretationCoordinator,
         standard_accounts,
         current_period,
+        role_resolver,
         test_actor_id,
         deterministic_clock,
     ):
         """Create a posted journal entry with lines for testing."""
-        event_type = "test.line.modification"
-        _register_test_strategy(event_type, Decimal("500.00"))
+        today = deterministic_clock.now().date()
+        meaning_result, intent = _make_meaning_and_intent(session, test_actor_id, deterministic_clock, today)
 
-        try:
-            result = posting_orchestrator.post_event(
-                event_id=uuid4(),
-                event_type=event_type,
-                occurred_at=deterministic_clock.now(),
-                effective_date=deterministic_clock.now().date(),
-                actor_id=test_actor_id,
-                producer="test",
-                payload={},
-            )
-            assert result.status == PostingStatus.POSTED
-            session.flush()
+        result = interpretation_coordinator.interpret_and_post(
+            meaning_result=meaning_result,
+            accounting_intent=intent,
+            actor_id=test_actor_id,
+        )
+        assert result.success
+        session.flush()
 
-            # Get the entry and its lines
-            entry = session.get(JournalEntry, result.journal_entry_id)
+        # Get the entry and its lines
+        entry_id = result.journal_result.entries[0].entry_id
+        entry = session.get(JournalEntry, entry_id)
 
-            assert entry is not None
-            assert entry.status == JournalEntryStatus.POSTED
-            assert len(entry.lines) == 2
+        assert entry is not None
+        assert entry.status == JournalEntryStatus.POSTED
+        assert len(entry.lines) == 2
 
-            return {
-                "entry": entry,
-                "debit_line": next(l for l in entry.lines if l.side == LineSide.DEBIT),
-                "credit_line": next(l for l in entry.lines if l.side == LineSide.CREDIT),
-            }
-        finally:
-            StrategyRegistry._strategies.pop(event_type, None)
+        return {
+            "entry": entry,
+            "debit_line": next(l for l in entry.lines if l.side == LineSide.DEBIT),
+            "credit_line": next(l for l in entry.lines if l.side == LineSide.CREDIT),
+        }
 
     def test_change_line_amount_after_posting_orm(
         self,
@@ -286,38 +291,33 @@ class TestJournalLineRawSQLAttack:
     def posted_entry_with_lines(
         self,
         session,
-        posting_orchestrator: PostingOrchestrator,
+        interpretation_coordinator: InterpretationCoordinator,
         standard_accounts,
         current_period,
+        role_resolver,
         test_actor_id,
         deterministic_clock,
     ):
         """Create a posted journal entry with lines for testing."""
-        event_type = "test.line.raw.sql"
-        _register_test_strategy(event_type, Decimal("1000.00"))
+        today = deterministic_clock.now().date()
+        meaning_result, intent = _make_meaning_and_intent(session, test_actor_id, deterministic_clock, today, amount=Decimal("1000.00"))
 
-        try:
-            result = posting_orchestrator.post_event(
-                event_id=uuid4(),
-                event_type=event_type,
-                occurred_at=deterministic_clock.now(),
-                effective_date=deterministic_clock.now().date(),
-                actor_id=test_actor_id,
-                producer="test",
-                payload={},
-            )
-            assert result.status == PostingStatus.POSTED
-            session.flush()
+        result = interpretation_coordinator.interpret_and_post(
+            meaning_result=meaning_result,
+            accounting_intent=intent,
+            actor_id=test_actor_id,
+        )
+        assert result.success
+        session.flush()
 
-            entry = session.get(JournalEntry, result.journal_entry_id)
+        entry_id = result.journal_result.entries[0].entry_id
+        entry = session.get(JournalEntry, entry_id)
 
-            return {
-                "entry": entry,
-                "debit_line": next(l for l in entry.lines if l.side == LineSide.DEBIT),
-                "credit_line": next(l for l in entry.lines if l.side == LineSide.CREDIT),
-            }
-        finally:
-            StrategyRegistry._strategies.pop(event_type, None)
+        return {
+            "entry": entry,
+            "debit_line": next(l for l in entry.lines if l.side == LineSide.DEBIT),
+            "credit_line": next(l for l in entry.lines if l.side == LineSide.CREDIT),
+        }
 
     def test_raw_sql_amount_modification(
         self,

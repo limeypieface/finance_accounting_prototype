@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import Boolean, Index, String, UniqueConstraint
-from sqlalchemy.dialects.sqlite import JSON
+from sqlalchemy import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from finance_kernel.db.base import TrackedBase, UUIDString

@@ -102,8 +102,8 @@ Test **thread safety** and **race condition handling**.
 - Audit chain integrity under concurrency
 
 **Test modes:**
-- `test_race_safety.py` - Threading-based tests (SQLite compatible)
-- `test_true_concurrency.py` - Multi-connection tests (PostgreSQL only)
+- `test_race_safety.py` - Threading-based tests (single connection)
+- `test_true_concurrency.py` - Multi-connection tests (real concurrency)
 - `test_stress.py` - Extended load tests
 
 ```python
@@ -277,27 +277,137 @@ def test_all_exceptions_have_unique_codes():
 
 ### 10. Domain Tests (`tests/domain/`)
 
-Test **domain layer purity** and **integrity constraints**.
+Test **domain layer purity**, **integrity constraints**, and **economic interpretation**.
 
-**What they test:**
+**20 test files covering:**
 - Dimension integrity (FK constraints, immutability)
-- Reference data validation
 - Pure layer isolation
+- Event schema validation
+- Economic profile interpretation
+- Interpretation invariants
+- Policy registry
+- Reference snapshots
+- Subledger control
+- Ledger engine operations
+- Business schemas (AP, AR, inventory, payroll, bank, FX, deferred, asset, contract, DCAA)
+- Business profiles (all registered economic profiles)
+- Contract lifecycle (SO → MO → PO end-to-end)
+- Real-world scenarios (inventory receipt)
+- EconomicLink domain primitive
+- Where-clause matching (`test_where_clause_matching.py`)
 
 ---
 
-### 11. Metamorphic Tests (`tests/metamorphic/`) - TODO
+### 11. Engine Tests (`tests/engines/`)
+
+Test **pure-function calculation engines**.
+
+**12 test files covering:**
+- Variance calculations (PPV, FX, quantity)
+- Allocation engine (cost allocation, payment application)
+- Allocation cascade (DCAA indirect cost allocation)
+- Matching engine (3-way match, bank reconciliation)
+- Aging calculator (AP/AR aging buckets)
+- Subledger operations (open item tracking)
+- Tax calculator
+- Valuation layer (FIFO, LIFO, weighted average, standard cost)
+- Reconciliation manager (document matching, settlement)
+- Correction engine (reversals, compensating entries)
+- Billing engine (government contracts: CPFF, T&M, FFP)
+- ICE engine (DCAA Incurred Cost Electronic submission)
+
+---
+
+### 12. Module Tests (`tests/modules/`)
+
+Test **ERP business modules** (AP, AR, Inventory, WIP, Assets, Expense, Tax, Procurement, Payroll, GL, Cash).
+
+**31 test files covering:**
+- Config schema validation
+- Config fuzzing (Hypothesis property-based testing)
+- Model immutability
+- Profile balance (debits = credits for all profiles)
+- Workflow transitions
+- Boundary conditions
+- Workflow adversarial attacks
+- Model invariants
+- Guard execution
+- Config validation
+- Gap coverage tests (blocked party, asset depreciation, returns, payment terms, invoice status, cost center, landed cost, bank reconciliation, intercompany)
+- Module service tests (`test_ap_service.py`, `test_ar_service.py`, etc.)
+- Cross-module flow test
+
+---
+
+### 13. Integration Tests (`tests/integration/`)
+
+Test end-to-end flows through the full posting pipeline.
+
+**2 test files covering:**
+- Inventory service integration
+- Module posting service integration
+
+---
+
+### 14. Service Tests (`tests/services/`)
+
+Test **service-layer operations** with real database.
+
+**What they test:**
+- LinkGraphService graph traversal
+- Cycle detection (L3 invariant)
+- Unconsumed value calculation
+- Party and contract services
+
+---
+
+### 15. Multi-Currency Tests (`tests/multicurrency/`)
+
+Test **currency conversion** and **arbitrage prevention**.
+
+**What they test:**
+- Triangle conversion consistency (USD → EUR → GBP = USD → GBP)
+- FX gain/loss calculations
+
+---
+
+### 16. Database Security Tests (`tests/database_security/`)
+
+Test **PostgreSQL-level protection** (requires PostgreSQL).
+
+**What they test:**
+- Transaction isolation (no dirty reads)
+- Constraint bypass prevention (raw SQL blocked)
+- Rollback safety (no orphaned records)
+- Audit atomicity
+- Concurrent trigger races
+
+---
+
+### 17. Security Tests (`tests/security/`)
+
+Test **SQL injection prevention** across the codebase.
+
+---
+
+### 18. Demo Tests (`tests/demo/`)
+
+Interactive demonstrations with verbose output showing how the system works.
+
+**What they demonstrate:**
+- Full AP workflow (PO → Receipt → Invoice → Payment graph)
+- Cycle detection (L3 invariant)
+- Max children enforcement (single reversal rule)
+
+---
+
+### 19. Metamorphic Tests (`tests/metamorphic/`)
 
 Test **mathematical equivalences** in the ledger.
 
-**Status:** Placeholder tests created, blocked by missing reversal service.
-
-**What they will test (K1-K2 certification):**
+**What they test:**
 - Post + reverse returns ledger to baseline
 - Split/merge equivalence preserves totals
-- Reversal creates true inverse entries
-
-**Blocking dependency:** `ReversalService` must be implemented first.
 
 ---
 
@@ -326,7 +436,7 @@ Shared fixtures for all tests:
 
 **Running filtered tests:**
 ```bash
-# Skip PostgreSQL tests (for SQLite-only runs)
+# Skip PostgreSQL-specific tests
 pytest -m "not postgres"
 
 # Only slow tests
@@ -559,6 +669,11 @@ Per **R20**, every invariant must have tests in four categories: unit, concurren
 | **R18** | Deterministic errors | `architecture/test_error_handling.py` |
 | **R19** | No silent correction | `architecture/test_error_handling.py` |
 | **R20** | Test class mapping | `architecture/test_r20_test_class_mapping.py` |
+| **R21** | Reference snapshot determinism | `replay/test_rule_version.py` |
+| **R22** | Strategy purity | `domain/test_strategy_purity.py`, `replay/test_rule_version.py` |
+| **R23** | Rounding fraud prevention | `replay/test_rule_version.py` |
+| **R24** | Strategy governance | `replay/test_rule_version.py` |
+| **L1-L5** | Link graph invariants | `domain/test_economic_link.py`, `services/test_link_graph_service.py` |
 
 ### Cross-Cutting Test Coverage
 

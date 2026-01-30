@@ -203,24 +203,22 @@ class TestExchangeRateImmutabilityWhenReferenced:
         session.add(event)
         session.flush()
 
-        # Create posted journal entry
+        # Create journal entry as DRAFT first (triggers block line inserts on posted entries)
         entry = JournalEntry(
             source_event_id=event.event_id,
             source_event_type="test.exchange.rate",
             occurred_at=deterministic_clock.now(),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
-            status=JournalEntryStatus.POSTED,
+            status=JournalEntryStatus.DRAFT,
             idempotency_key=f"test:exchange:{uuid4()}",
             posting_rule_version=1,
-            posted_at=deterministic_clock.now(),
-            seq=99999,
             created_by_id=test_actor_id,
         )
         session.add(entry)
         session.flush()
 
-        # Create journal line that references the rate
+        # Add journal lines while entry is still DRAFT
         cash = standard_accounts["cash"]
         revenue = standard_accounts["revenue"]
 
@@ -244,6 +242,12 @@ class TestExchangeRateImmutabilityWhenReferenced:
             created_by_id=test_actor_id,
         )
         session.add_all([line1, line2])
+        session.flush()
+
+        # Transition to POSTED
+        entry.status = JournalEntryStatus.POSTED
+        entry.posted_at = deterministic_clock.now()
+        entry.seq = 99999
         session.flush()
 
         # THE ATTACK: Try to modify the exchange rate
@@ -298,26 +302,25 @@ class TestExchangeRateDeletionProtection:
         session.add(event)
         session.flush()
 
-        # Create posted journal entry
+        # Create journal entry as DRAFT first (triggers block line inserts on posted entries)
         entry = JournalEntry(
             source_event_id=event.event_id,
             source_event_type="test.exchange.delete",
             occurred_at=deterministic_clock.now(),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
-            status=JournalEntryStatus.POSTED,
+            status=JournalEntryStatus.DRAFT,
             idempotency_key=f"test:exchange:delete:{uuid4()}",
             posting_rule_version=1,
-            posted_at=deterministic_clock.now(),
-            seq=99998,
             created_by_id=test_actor_id,
         )
         session.add(entry)
         session.flush()
 
-        # Create journal line referencing the rate
+        # Add balanced journal lines while entry is still DRAFT
         cash = standard_accounts["cash"]
-        line = JournalLine(
+        revenue = standard_accounts["revenue"]
+        line1 = JournalLine(
             journal_entry_id=entry.id,
             account_id=cash.id,
             side=LineSide.DEBIT,
@@ -327,7 +330,22 @@ class TestExchangeRateDeletionProtection:
             exchange_rate_id=rate_id,
             created_by_id=test_actor_id,
         )
-        session.add(line)
+        line2 = JournalLine(
+            journal_entry_id=entry.id,
+            account_id=revenue.id,
+            side=LineSide.CREDIT,
+            amount=Decimal("100.00"),
+            currency="GBP",
+            line_seq=1,
+            created_by_id=test_actor_id,
+        )
+        session.add_all([line1, line2])
+        session.flush()
+
+        # Transition to POSTED
+        entry.status = JournalEntryStatus.POSTED
+        entry.posted_at = deterministic_clock.now()
+        entry.seq = 99998
         session.flush()
 
         # THE ATTACK: Try to delete the exchange rate
@@ -495,26 +513,25 @@ class TestDatabaseLevelEnforcement:
         session.add(event)
         session.flush()
 
-        # Create posted journal entry
+        # Create journal entry as DRAFT first (triggers block line inserts on posted entries)
         entry = JournalEntry(
             source_event_id=event.event_id,
             source_event_type="test.exchange.sql",
             occurred_at=deterministic_clock.now(),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
-            status=JournalEntryStatus.POSTED,
+            status=JournalEntryStatus.DRAFT,
             idempotency_key=f"test:exchange:sql:{uuid4()}",
             posting_rule_version=1,
-            posted_at=deterministic_clock.now(),
-            seq=99997,
             created_by_id=test_actor_id,
         )
         session.add(entry)
         session.flush()
 
-        # Create journal line referencing the rate
+        # Add balanced journal lines while entry is still DRAFT
         cash = standard_accounts["cash"]
-        line = JournalLine(
+        revenue = standard_accounts["revenue"]
+        line1 = JournalLine(
             journal_entry_id=entry.id,
             account_id=cash.id,
             side=LineSide.DEBIT,
@@ -524,7 +541,22 @@ class TestDatabaseLevelEnforcement:
             exchange_rate_id=rate_id,
             created_by_id=test_actor_id,
         )
-        session.add(line)
+        line2 = JournalLine(
+            journal_entry_id=entry.id,
+            account_id=revenue.id,
+            side=LineSide.CREDIT,
+            amount=Decimal("10000.00"),
+            currency="JPY",
+            line_seq=1,
+            created_by_id=test_actor_id,
+        )
+        session.add_all([line1, line2])
+        session.flush()
+
+        # Transition to POSTED
+        entry.status = JournalEntryStatus.POSTED
+        entry.posted_at = deterministic_clock.now()
+        entry.seq = 99997
         session.flush()
 
         # THE ATTACK: Try raw SQL update

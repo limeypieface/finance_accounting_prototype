@@ -261,6 +261,113 @@ ref_data = loader.load(required_dimensions={"cost_center", "project"})
 
 ---
 
+### LinkGraphService (`link_graph_service.py`)
+
+Manages the **economic link graph** — artifact relationships (PO → Receipt → Invoice → Payment) with graph traversal, cycle detection, and unconsumed value calculation.
+
+**Key responsibilities:**
+1. Establish links between artifacts
+2. Walk graph paths (children/parents, filtered by link type)
+3. Detect cycles (L3 invariant)
+4. Calculate unconsumed value (e.g., open PO balance)
+5. Check reversal status
+
+```python
+from finance_kernel.services.link_graph_service import LinkGraphService
+
+link_service = LinkGraphService(session)
+link_service.establish_link(economic_link)
+paths = link_service.walk_path(query)
+unconsumed = link_service.get_unconsumed_value(parent_ref, original_amount, ...)
+is_reversed = link_service.is_reversed(artifact_ref)
+```
+
+---
+
+### ContractService (`contract_service.py`)
+
+Manages **contract lifecycle** — creation, modification, and billing for government and commercial contracts.
+
+---
+
+### PartyService (`party_service.py`)
+
+Manages **party records** (customers, suppliers, employees) including creation, freezing, credit limits, and blocked-party enforcement.
+
+---
+
+### InterpretationCoordinator (`interpretation_coordinator.py`)
+
+Coordinates the **profile-based interpretation pipeline**. Takes an economic meaning result and accounting intent, writes journal entries, and records the outcome — all within a single transaction (L5 atomicity).
+
+```python
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
+
+coordinator = InterpretationCoordinator(session, journal_writer, outcome_recorder)
+result = coordinator.interpret_and_post(meaning_result, accounting_intent, actor_id)
+```
+
+---
+
+### JournalWriter (`journal_writer.py`)
+
+Writes journal entries to the database, used by the `InterpretationCoordinator` for profile-based posting.
+
+---
+
+### OutcomeRecorder (`outcome_recorder.py`)
+
+Records `InterpretationOutcome` records for audit trail and debugging — tracks whether each event interpretation succeeded, failed, or was rejected by guards.
+
+---
+
+### ReferenceSnapshotService (`reference_snapshot_service.py`)
+
+Captures and retrieves **reference data snapshots** at posting time. Supports replay determinism (R21) by preserving the exact reference data used for each posting.
+
+---
+
+### ModulePostingService (`module_posting_service.py`)
+
+The **Pipeline B orchestrator** for profile-based module posting. While `PostingOrchestrator` handles Pipeline A (strategy-based posting), `ModulePostingService` handles events that flow through the policy/profile interpretation pipeline.
+
+**Key responsibilities:**
+1. Receive an economic event from a finance module
+2. Ingest the event via `IngestorService`
+3. Validate fiscal period via `PeriodService`
+4. Select the matching accounting policy via `PolicySelector`
+5. Build economic meaning via `MeaningBuilder`
+6. Delegate to `InterpretationCoordinator` for journal writing and outcome recording
+
+All steps execute within a single transaction boundary (L5 atomicity).
+
+```python
+from finance_kernel.services.module_posting_service import ModulePostingService
+
+service = ModulePostingService(session, clock)
+result = service.post_module_event(economic_event, actor_id)
+```
+
+---
+
+## Read-Only Query Services (`selectors/`)
+
+Read-only query services are separated into the `selectors/` package to enforce the command/query boundary. These services perform database reads but never mutate state.
+
+| File | Purpose |
+|------|---------|
+| `ledger_selector.py` | Query journal entries, balances, and ledger data |
+| `journal_selector.py` | Query journal lines, entry history, and audit trails |
+
+```python
+from finance_kernel.selectors.ledger_selector import LedgerSelector
+
+selector = LedgerSelector(session)
+balance = selector.get_account_balance(account_code, as_of_date)
+```
+
+---
+
 ## Transaction Management
 
 ### R7: Each Service Owns Its Boundary
@@ -328,6 +435,23 @@ PostingOrchestrator
     └── LedgerService
             ├── SequenceService
             └── AuditorService
+
+ModulePostingService (Pipeline B orchestrator)
+    ├── IngestorService
+    │       └── AuditorService
+    ├── PeriodService
+    ├── PolicySelector (policy lookup with where-clause dispatch)
+    ├── MeaningBuilder (policy → economic meaning)
+    └── InterpretationCoordinator
+            ├── JournalWriter
+            ├── OutcomeRecorder
+            └── ReferenceSnapshotService
+
+LinkGraphService (standalone - session only)
+
+ContractService (standalone - session only)
+
+PartyService (standalone - session only)
 ```
 
 All services receive their dependencies through constructor injection:

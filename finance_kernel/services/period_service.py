@@ -11,6 +11,7 @@ from datetime import date, datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from finance_kernel.domain.clock import Clock, SystemClock
@@ -26,8 +27,11 @@ from finance_kernel.exceptions import (
     PeriodNotFoundError,
     PeriodOverlapError,
 )
+from finance_kernel.logging_config import get_logger
 from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
 from finance_kernel.services.base import BaseService
+
+logger = get_logger("services.period")
 
 
 class PeriodService(BaseService[FiscalPeriod]):
@@ -115,6 +119,15 @@ class PeriodService(BaseService[FiscalPeriod]):
         self.session.add(period)
         self.session.flush()
 
+        logger.info(
+            "period_created",
+            extra={
+                "period_code": period_code,
+                "start_date": str(start_date),
+                "end_date": str(end_date),
+            },
+        )
+
         return self._to_dto(period)
 
     def _validate_no_overlap(
@@ -159,6 +172,11 @@ class PeriodService(BaseService[FiscalPeriod]):
         Once closed, no new postings can be made with effective_dates
         in this period.
 
+        Uses SELECT FOR UPDATE to serialize concurrent close attempts.
+        If a concurrent session already closed the period, the row lock
+        ensures we see the committed status and raise PeriodAlreadyClosedError
+        at the application level rather than hitting the database trigger.
+
         Args:
             period_code: Period to close.
             actor_id: Who is closing the period.
@@ -170,7 +188,7 @@ class PeriodService(BaseService[FiscalPeriod]):
             PeriodNotFoundError: If period doesn't exist.
             PeriodAlreadyClosedError: If period is already closed.
         """
-        period = self._get_period_orm(period_code)
+        period = self._get_period_for_update(period_code)
         if period is None:
             raise PeriodNotFoundError(period_code)
 
@@ -181,7 +199,21 @@ class PeriodService(BaseService[FiscalPeriod]):
         period.closed_at = self._clock.now()  # R5: Use injected clock
         period.closed_by_id = actor_id
 
-        self.session.flush()
+        try:
+            self.session.flush()
+        except IntegrityError:
+            # Defense-in-depth: trigger fired before lock was acquired
+            self.session.rollback()
+            logger.warning(
+                "concurrent_period_close_conflict",
+                extra={"period_code": period_code},
+            )
+            raise PeriodAlreadyClosedError(period_code)
+
+        logger.info(
+            "period_closed",
+            extra={"period_code": period_code},
+        )
 
         return self._to_dto(period)
 
@@ -189,6 +221,14 @@ class PeriodService(BaseService[FiscalPeriod]):
         """Get ORM FiscalPeriod by code (internal use only)."""
         return self.session.execute(
             select(FiscalPeriod).where(FiscalPeriod.period_code == period_code)
+        ).scalar_one_or_none()
+
+    def _get_period_for_update(self, period_code: str) -> FiscalPeriod | None:
+        """Get ORM FiscalPeriod by code with row lock for concurrent mutation."""
+        return self.session.execute(
+            select(FiscalPeriod)
+            .where(FiscalPeriod.period_code == period_code)
+            .with_for_update()
         ).scalar_one_or_none()
 
     def _get_period_for_date_orm(self, effective_date: date) -> FiscalPeriod | None:
@@ -318,10 +358,12 @@ class PeriodService(BaseService[FiscalPeriod]):
             raise PeriodNotFoundError(str(effective_date))
 
         if period.is_closed:
+            logger.warning("period_closed_violation")
             raise ClosedPeriodError(period.period_code, str(effective_date))
 
         # R13: Check adjustment policy
         if is_adjustment and not period.allows_adjustments:
+            logger.warning("adjustments_not_allowed")
             raise AdjustmentsNotAllowedError(period.period_code)
 
     def allows_adjustments(self, effective_date: date) -> bool:

@@ -23,7 +23,10 @@ from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.exceptions import AuditChainBrokenError
 from finance_kernel.models.audit_event import AuditAction, AuditEvent
 from finance_kernel.services.sequence_service import SequenceService
+from finance_kernel.logging_config import get_logger
 from finance_kernel.utils.hashing import hash_audit_event, hash_payload
+
+logger = get_logger("services.auditor")
 
 
 @dataclass(frozen=True)
@@ -160,6 +163,15 @@ class AuditorService:
         self._session.add(audit_event)
         self._session.flush()
 
+        logger.info(
+            "audit_event_created",
+            extra={
+                "entity_type": entity_type,
+                "action": action.value,
+                "seq": seq,
+            },
+        )
+
         return audit_event
 
     # Domain-specific recording methods
@@ -295,6 +307,7 @@ class AuditorService:
 
         # First event should have no prev_hash
         if events[0].prev_hash is not None:
+            logger.critical("audit_chain_broken", exc_info=True)
             raise AuditChainBrokenError(
                 str(events[0].id),
                 "None",
@@ -318,6 +331,7 @@ class AuditorService:
             )
 
             if event.hash != expected_hash:
+                logger.critical("audit_chain_broken", exc_info=True)
                 raise AuditChainBrokenError(
                     str(event.id),
                     expected_hash,
@@ -328,12 +342,17 @@ class AuditorService:
             if i > 0:
                 expected_prev = events[i - 1].hash
                 if event.prev_hash != expected_prev:
+                    logger.critical("audit_chain_broken", exc_info=True)
                     raise AuditChainBrokenError(
                         str(event.id),
                         expected_prev,
                         event.prev_hash or "None",
                     )
 
+        logger.info(
+            "audit_chain_valid",
+            extra={"event_count": len(events)},
+        )
         return True
 
     # Trace and query methods

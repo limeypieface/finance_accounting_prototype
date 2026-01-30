@@ -43,10 +43,13 @@ from finance_kernel.models.journal import (
     JournalLine,
     LineSide,
 )
+from finance_kernel.logging_config import get_logger, LogContext
 from finance_kernel.services.sequence_service import SequenceService
 
 if TYPE_CHECKING:
     from finance_kernel.services.auditor_service import AuditorService
+
+logger = get_logger("services.ledger")
 
 
 class PersistResult(str, Enum):
@@ -164,6 +167,10 @@ class LedgerService:
                 JournalEntryStatus.POSTED,
                 JournalEntryStatus.REVERSED,
             ):
+                logger.info(
+                    "entry_already_exists",
+                    extra={"existing_entry_id": str(existing.id), "seq": existing.seq},
+                )
                 return LedgerResult.already_exists(existing.id, existing.seq)
 
             # Draft exists - complete it (crash recovery)
@@ -175,6 +182,10 @@ class LedgerService:
         except IntegrityError:
             # Concurrent insert - fetch and return
             self._session.rollback()
+            logger.warning(
+                "concurrent_insert_conflict",
+                extra={"idempotency_key": idempotency_key},
+            )
             existing = self._get_existing_entry(idempotency_key)
             if existing:
                 return LedgerResult.already_exists(existing.id, existing.seq)
@@ -235,13 +246,17 @@ class LedgerService:
         journal_lines = []
 
         for i, spec in enumerate(lines):
+            # Convert dimensions from MappingProxyType to dict for JSON serialization
+            # (R2.5 freezes payloads which may contain dimensions)
+            dimensions = dict(spec.dimensions) if spec.dimensions else None
+
             line = JournalLine(
                 journal_entry_id=entry.id,
                 account_id=spec.account_id,
                 side=LineSide(spec.side.value),
                 amount=spec.amount,
                 currency=spec.currency,
-                dimensions=spec.dimensions,
+                dimensions=dimensions,
                 is_rounding=spec.is_rounding,
                 line_memo=spec.memo,
                 exchange_rate_id=spec.exchange_rate_id,
@@ -286,6 +301,14 @@ class LedgerService:
 
         # Invariant 1: At most ONE rounding line
         if len(rounding_lines) > 1:
+            logger.error(
+                "rounding_invariant_violation",
+                extra={
+                    "entry_id": str(entry_id),
+                    "reason": "multiple_rounding_lines",
+                    "rounding_count": len(rounding_lines),
+                },
+            )
             raise MultipleRoundingLinesError(
                 entry_id=str(entry_id),
                 rounding_count=len(rounding_lines),
@@ -303,6 +326,15 @@ class LedgerService:
             )
 
             if rounding_amount > max_allowed:
+                logger.error(
+                    "rounding_invariant_violation",
+                    extra={
+                        "entry_id": str(entry_id),
+                        "reason": "amount_exceeded",
+                        "rounding_amount": str(rounding_amount),
+                        "threshold": str(max_allowed),
+                    },
+                )
                 raise RoundingAmountExceededError(
                     entry_id=str(entry_id),
                     rounding_amount=str(rounding_amount),
@@ -370,6 +402,17 @@ class LedgerService:
                 actor_id=proposed.event_envelope.actor_id,
                 line_count=len(proposed.lines),
             )
+
+        LogContext.set(entry_id=str(entry.id))
+        logger.info(
+            "journal_entry_posted",
+            extra={
+                "entry_id": str(entry.id),
+                "seq": seq,
+                "line_count": len(proposed.lines),
+                "idempotency_key": entry.idempotency_key,
+            },
+        )
 
         # Build result record (R21: Include reference snapshot versions)
         record = JournalEntryRecord(
