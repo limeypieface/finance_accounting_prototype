@@ -30,6 +30,7 @@ from uuid import UUID
 
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
+from finance_engines.tracer import traced_engine
 
 logger = get_logger("engines.allocation")
 
@@ -128,6 +129,7 @@ class AllocationEngine:
         - This ensures total allocated always equals source amount
     """
 
+    @traced_engine("allocation", "1.0", fingerprint_fields=("amount", "method"))
     def allocate(
         self,
         amount: Money,

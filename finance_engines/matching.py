@@ -29,6 +29,7 @@ from uuid import UUID, uuid4
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 
+from finance_engines.tracer import traced_engine
 from finance_engines.variance import VarianceCalculator, VarianceResult
 
 logger = get_logger("engines.matching")
@@ -173,6 +174,7 @@ class MatchingEngine:
     def __init__(self) -> None:
         self._variance_calculator = VarianceCalculator()
 
+    @traced_engine("matching", "1.0", fingerprint_fields=("target", "candidates"))
     def find_matches(
         self,
         target: MatchCandidate,
@@ -218,6 +220,7 @@ class MatchingEngine:
 
         return sorted_suggestions
 
+    @traced_engine("matching", "1.0", fingerprint_fields=("documents", "match_type"))
     def create_match(
         self,
         documents: Sequence[MatchCandidate],

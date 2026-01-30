@@ -25,6 +25,7 @@ from enum import Enum
 
 from finance_kernel.domain.values import Money, Currency
 from finance_kernel.logging_config import get_logger
+from finance_engines.tracer import traced_engine
 
 logger = get_logger("engines.variance")
 
@@ -99,6 +100,7 @@ class VarianceCalculator:
     All reference data passed as parameters.
     """
 
+    @traced_engine("variance", "1.0", fingerprint_fields=("expected_price", "actual_price", "quantity"))
     def price_variance(
         self,
         expected_price: Money,
@@ -164,6 +166,7 @@ class VarianceCalculator:
             description=f"Price variance: {expected_price} → {actual_price} × {quantity}",
         )
 
+    @traced_engine("variance", "1.0", fingerprint_fields=("expected_quantity", "actual_quantity", "standard_price"))
     def quantity_variance(
         self,
         expected_quantity: Decimal,
@@ -217,6 +220,7 @@ class VarianceCalculator:
             ),
         )
 
+    @traced_engine("variance", "1.0", fingerprint_fields=("original_amount", "original_rate", "current_rate"))
     def fx_variance(
         self,
         original_amount: Money,
@@ -286,6 +290,7 @@ class VarianceCalculator:
             ),
         )
 
+    @traced_engine("variance", "1.0", fingerprint_fields=("standard_cost", "actual_cost", "quantity"))
     def standard_cost_variance(
         self,
         standard_cost: Money,

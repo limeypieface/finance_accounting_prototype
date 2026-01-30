@@ -52,6 +52,7 @@ from typing import Sequence
 
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
+from finance_engines.tracer import traced_engine
 
 logger = get_logger("engines.ice")
 
@@ -564,6 +565,7 @@ class ICESubmission:
 # ============================================================================
 
 
+@traced_engine("ice", "1.0", fingerprint_fields=("ice_input",))
 def compile_ice_submission(ice_input: ICEInput) -> ICESubmission:
     """
     Compile a complete ICE submission from input data.

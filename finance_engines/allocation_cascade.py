@@ -45,6 +45,7 @@ from typing import Sequence
 
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
+from finance_engines.tracer import traced_engine
 
 logger = get_logger("engines.allocation_cascade")
 
@@ -111,6 +112,7 @@ class AllocationStepResult:
     cumulative_base: Money
 
 
+@traced_engine("allocation_cascade", "1.0", fingerprint_fields=("steps", "pool_balances", "rates"))
 def execute_cascade(
     steps: Sequence[AllocationStep],
     pool_balances: dict[str, Money],

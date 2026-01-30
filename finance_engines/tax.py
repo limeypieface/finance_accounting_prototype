@@ -40,6 +40,7 @@ from typing import Sequence
 
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
+from finance_engines.tracer import traced_engine
 
 logger = get_logger("engines.tax")
 
@@ -225,6 +226,7 @@ class TaxCalculator:
         - Multiple tax jurisdictions
     """
 
+    @traced_engine("tax", "1.0", fingerprint_fields=("amount", "tax_codes", "is_tax_inclusive"))
     def calculate(
         self,
         amount: Money,

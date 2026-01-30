@@ -19,12 +19,15 @@ R7 Compliance: Manages its own transaction boundary.
 All state-changing operations define their own transaction scope.
 """
 
+from __future__ import annotations
+
 import time
+import warnings
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from uuid import UUID
 from uuid import uuid4 as _uuid4
 
@@ -34,6 +37,7 @@ from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.meaning_builder import MeaningBuilder, MeaningBuilderResult
 from finance_kernel.domain.policy_bridge import build_accounting_intent
 from finance_kernel.domain.policy_selector import PolicyNotFoundError, PolicySelector
+from finance_kernel.exceptions import PartyNotFoundError
 from finance_kernel.logging_config import get_logger, LogContext
 from finance_kernel.services.auditor_service import AuditorService
 from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
@@ -45,6 +49,9 @@ from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
 from finance_kernel.services.outcome_recorder import OutcomeRecorder
 from finance_kernel.services.period_service import PeriodService
 
+if TYPE_CHECKING:
+    from finance_kernel.services.posting_orchestrator import PostingOrchestrator
+
 logger = get_logger("services.module_posting")
 
 
@@ -55,6 +62,8 @@ class ModulePostingStatus(str, Enum):
     ALREADY_POSTED = "already_posted"
     PERIOD_CLOSED = "period_closed"
     ADJUSTMENTS_NOT_ALLOWED = "adjustments_not_allowed"
+    INVALID_ACTOR = "invalid_actor"
+    ACTOR_FROZEN = "actor_frozen"
     INGESTION_FAILED = "ingestion_failed"
     PROFILE_NOT_FOUND = "profile_not_found"
     MEANING_FAILED = "meaning_failed"
@@ -94,25 +103,15 @@ class ModulePostingService:
     - profile_bridge (AccountingIntent construction)
     - InterpretationCoordinator (atomic posting)
 
-    Usage:
+    Preferred usage (via PostingOrchestrator):
+        service = ModulePostingService.from_orchestrator(orchestrator)
+
+    Legacy usage (deprecated — creates services internally):
         service = ModulePostingService(
             session=session,
             role_resolver=resolver,
             clock=clock,
         )
-
-        result = service.post_event(
-            event_type="inventory.receipt",
-            payload={"quantity": "100", "unit_cost": "25.00", ...},
-            effective_date=date(2024, 6, 15),
-            actor_id=actor_uuid,
-            amount=Decimal("2500.00"),
-            currency="USD",
-        )
-
-        if result.is_success:
-            # Journal entries created
-            ...
     """
 
     def __init__(
@@ -122,11 +121,15 @@ class ModulePostingService:
         clock: Clock | None = None,
         auto_commit: bool = True,
     ):
+        """Legacy constructor — creates services internally.
+
+        Prefer ``from_orchestrator`` for new code.
+        """
         self._session = session
         self._clock = clock or SystemClock()
         self._auto_commit = auto_commit
 
-        # Build internal services
+        # Build internal services (legacy path)
         self._auditor = AuditorService(session, clock)
         self._ingestor = IngestorService(session, clock, self._auditor)
         self._period_service = PeriodService(session, clock)
@@ -141,6 +144,28 @@ class ModulePostingService:
             outcome_recorder=self._outcome_recorder,
             clock=clock,
         )
+
+    @classmethod
+    def from_orchestrator(
+        cls,
+        orchestrator: PostingOrchestrator,
+        auto_commit: bool = True,
+    ) -> ModulePostingService:
+        """Create from a PostingOrchestrator (preferred).
+
+        Services are shared singletons from the orchestrator — no
+        duplicate instances, full engine dispatch and policy authority support.
+        """
+        instance = cls.__new__(cls)
+        instance._session = orchestrator.session
+        instance._clock = orchestrator.clock
+        instance._auto_commit = auto_commit
+        instance._ingestor = orchestrator.ingestor
+        instance._period_service = orchestrator.period_service
+        instance._meaning_builder = orchestrator.meaning_builder
+        instance._coordinator = orchestrator.interpretation_coordinator
+        instance._party_service_ref = orchestrator.party_service
+        return instance
 
     def post_event(
         self,
@@ -269,6 +294,23 @@ class ModulePostingService:
         dimension_schema_version: int,
     ) -> ModulePostingResult:
         """Internal posting logic (without transaction management)."""
+
+        # 0. Validate actor (G14: actor authorization at posting boundary)
+        if hasattr(self, '_party_service_ref') and self._party_service_ref is not None:
+            try:
+                actor_party = self._party_service_ref.get_by_id(actor_id)
+                if not actor_party.can_transact:
+                    return ModulePostingResult(
+                        status=ModulePostingStatus.ACTOR_FROZEN,
+                        event_id=event_id,
+                        message=f"Actor {actor_id} is frozen and cannot post",
+                    )
+            except PartyNotFoundError:
+                return ModulePostingResult(
+                    status=ModulePostingStatus.INVALID_ACTOR,
+                    event_id=event_id,
+                    message=f"Actor {actor_id} is not a valid party",
+                )
 
         # 1. Validate period is open
         from finance_kernel.exceptions import AdjustmentsNotAllowedError

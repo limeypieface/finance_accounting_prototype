@@ -54,6 +54,7 @@ from typing import Sequence
 
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
+from finance_engines.tracer import traced_engine
 
 logger = get_logger("engines.billing")
 
@@ -297,6 +298,7 @@ class BillingResult:
 # ============================================================================
 
 
+@traced_engine("billing", "1.0", fingerprint_fields=("billing_input",))
 def calculate_billing(billing_input: BillingInput) -> BillingResult:
     """
     Calculate billing for a government contract period.

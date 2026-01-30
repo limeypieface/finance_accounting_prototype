@@ -29,6 +29,7 @@ from uuid import UUID
 
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
+from finance_engines.tracer import traced_engine
 
 logger = get_logger("engines.aging")
 
@@ -382,6 +383,7 @@ class AgingCalculator:
             dimensions=dimensions or {},
         )
 
+    @traced_engine("aging", "1.0", fingerprint_fields=("items", "as_of_date", "report_type"))
     def generate_report(
         self,
         items: Sequence[AgedItem],
@@ -422,6 +424,7 @@ class AgingCalculator:
             currency=currency,
         )
 
+    @traced_engine("aging", "1.0", fingerprint_fields=("documents", "as_of_date", "report_type"))
     def generate_report_from_documents(
         self,
         documents: Sequence[dict],

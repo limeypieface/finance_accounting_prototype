@@ -56,6 +56,10 @@ from finance_kernel.models.interpretation_outcome import (
     InterpretationOutcome,
     OutcomeStatus,
 )
+from finance_kernel.services.engine_dispatcher import (
+    EngineDispatcher,
+    EngineDispatchResult,
+)
 from finance_kernel.services.journal_writer import (
     JournalWriteResult,
     JournalWriter,
@@ -80,6 +84,7 @@ class InterpretationResult:
     outcome: InterpretationOutcome | None = None
     economic_event: EconomicEvent | None = None
     journal_result: JournalWriteResult | None = None
+    engine_result: EngineDispatchResult | None = None
     error_code: str | None = None
     error_message: str | None = None
 
@@ -89,6 +94,7 @@ class InterpretationResult:
         outcome: InterpretationOutcome,
         economic_event: EconomicEvent,
         journal_result: JournalWriteResult,
+        engine_result: EngineDispatchResult | None = None,
     ) -> "InterpretationResult":
         """Successfully posted."""
         return cls(
@@ -96,6 +102,7 @@ class InterpretationResult:
             outcome=outcome,
             economic_event=economic_event,
             journal_result=journal_result,
+            engine_result=engine_result,
         )
 
     @classmethod
@@ -160,6 +167,7 @@ class InterpretationCoordinator:
         journal_writer: JournalWriter,
         outcome_recorder: OutcomeRecorder,
         clock: Clock | None = None,
+        engine_dispatcher: EngineDispatcher | None = None,
     ):
         """
         Initialize the coordinator.
@@ -169,11 +177,16 @@ class InterpretationCoordinator:
             journal_writer: JournalWriter for creating entries.
             outcome_recorder: OutcomeRecorder for recording outcomes.
             clock: Clock for timestamps.
+            engine_dispatcher: Optional EngineDispatcher for policy-driven
+                engine invocation. When provided along with a compiled_policy
+                in interpret_and_post, engines listed in
+                policy.required_engines will be dispatched before journal write.
         """
         self._session = session
         self._journal_writer = journal_writer
         self._outcome_recorder = outcome_recorder
         self._clock = clock or SystemClock()
+        self._engine_dispatcher = engine_dispatcher
 
     def interpret_and_post(
         self,
@@ -181,6 +194,8 @@ class InterpretationCoordinator:
         accounting_intent: AccountingIntent,
         actor_id: UUID,
         trace_id: UUID | None = None,
+        compiled_policy: Any | None = None,
+        event_payload: dict[str, Any] | None = None,
     ) -> InterpretationResult:
         """
         Interpret an event and post to ledgers atomically.
@@ -193,6 +208,10 @@ class InterpretationCoordinator:
             accounting_intent: Intent to post.
             actor_id: Who is performing the operation.
             trace_id: Optional trace ID.
+            compiled_policy: Optional CompiledPolicy for engine dispatch.
+                When provided with an EngineDispatcher, engines listed in
+                policy.required_engines are invoked before journal write.
+            event_payload: Optional raw event payload for engine dispatch.
 
         Returns:
             InterpretationResult with outcome and artifacts.
@@ -213,6 +232,8 @@ class InterpretationCoordinator:
                         accounting_intent=accounting_intent,
                         actor_id=actor_id,
                         trace_id=trace_id,
+                        compiled_policy=compiled_policy,
+                        event_payload=event_payload,
                     )
                     duration_ms = round((time.monotonic() - t0) * 1000, 2)
                     logger.info(
@@ -247,6 +268,8 @@ class InterpretationCoordinator:
         accounting_intent: AccountingIntent,
         actor_id: UUID,
         trace_id: UUID | None = None,
+        compiled_policy: Any | None = None,
+        event_payload: dict[str, Any] | None = None,
     ) -> InterpretationResult:
         """Internal interpret and post logic (within LogContext)."""
         logger.info(
@@ -275,6 +298,63 @@ class InterpretationCoordinator:
                 "currency_registry_version": snapshot.currency_registry_version if snapshot else None,
             },
         )
+
+        # --- Engine dispatch (before guard checks and journal write) ---
+        engine_result: EngineDispatchResult | None = None
+        if (
+            self._engine_dispatcher is not None
+            and compiled_policy is not None
+            and event_payload is not None
+            and getattr(compiled_policy, "required_engines", None)
+        ):
+            logger.info(
+                "engine_dispatch_started",
+                extra={
+                    "policy_name": getattr(compiled_policy, "name", "unknown"),
+                    "required_engines": list(compiled_policy.required_engines),
+                },
+            )
+            engine_result = self._engine_dispatcher.dispatch(
+                compiled_policy, event_payload,
+            )
+
+            # Log each engine trace record to the decision journal
+            for trace in engine_result.traces:
+                logger.info(
+                    "FINANCE_ENGINE_DISPATCH",
+                    extra={
+                        "trace_type": "FINANCE_ENGINE_DISPATCH",
+                        "engine_name": trace.engine_name,
+                        "engine_version": trace.engine_version,
+                        "input_fingerprint": trace.input_fingerprint,
+                        "duration_ms": trace.duration_ms,
+                        "success": trace.success,
+                        "error": trace.error,
+                        "parameters": trace.parameters_used,
+                    },
+                )
+
+            if not engine_result.all_succeeded:
+                error_msg = "; ".join(engine_result.errors)
+                logger.error(
+                    "engine_dispatch_failed",
+                    extra={
+                        "errors": list(engine_result.errors),
+                        "policy_name": getattr(compiled_policy, "name", "unknown"),
+                    },
+                )
+                return InterpretationResult.failure(
+                    error_code="ENGINE_DISPATCH_FAILED",
+                    error_message=f"Engine dispatch failed: {error_msg}",
+                )
+
+            logger.info(
+                "engine_dispatch_completed",
+                extra={
+                    "engine_count": len(engine_result.engine_outputs),
+                    "engines": list(engine_result.engine_outputs.keys()),
+                },
+            )
 
         # Handle guard results first
         if meaning_result.guard_result and meaning_result.guard_result.rejected:
@@ -384,6 +464,23 @@ class InterpretationCoordinator:
         )
 
         # Emit FINANCE_KERNEL_TRACE
+        engine_trace_summary = None
+        if engine_result is not None:
+            engine_trace_summary = {
+                "engines_invoked": list(engine_result.engine_outputs.keys()),
+                "all_succeeded": engine_result.all_succeeded,
+                "traces": [
+                    {
+                        "engine": t.engine_name,
+                        "version": t.engine_version,
+                        "fingerprint": t.input_fingerprint,
+                        "duration_ms": t.duration_ms,
+                        "success": t.success,
+                    }
+                    for t in engine_result.traces
+                ],
+            }
+
         logger.info(
             "FINANCE_KERNEL_TRACE",
             extra={
@@ -395,6 +492,7 @@ class InterpretationCoordinator:
                 "outcome_status": "POSTED",
                 "input_hash": input_hash,
                 "output_hash": output_hash,
+                "engine_dispatch": engine_trace_summary,
             },
         )
 
@@ -402,6 +500,7 @@ class InterpretationCoordinator:
             outcome=outcome,
             economic_event=economic_event,
             journal_result=journal_result,
+            engine_result=engine_result,
         )
 
     def post_from_intent(
