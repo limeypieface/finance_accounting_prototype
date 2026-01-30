@@ -396,6 +396,25 @@ def show_reports(session, clock):
 # Main loop
 # ---------------------------------------------------------------------------
 
+def _enable_quiet_logging():
+    """Enable logging so LogCapture works, but mute console output."""
+    logging.disable(logging.NOTSET)
+    fk_logger = logging.getLogger("finance_kernel")
+    muted = []
+    for h in fk_logger.handlers:
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+            muted.append((h, h.level))
+            h.setLevel(logging.CRITICAL + 1)
+    return muted
+
+
+def _restore_logging(muted):
+    """Restore muted handlers and re-disable logging."""
+    for h, orig_level in muted:
+        h.setLevel(orig_level)
+    logging.disable(logging.CRITICAL)
+
+
 def main() -> int:
     logging.disable(logging.CRITICAL)
 
@@ -454,10 +473,14 @@ def main() -> int:
             idx = int(choice) - 1
             if 0 <= idx < len(EVENTS):
                 desc, dr, cr, amt, dr_lbl, cr_lbl = EVENTS[idx]
+                muted = _enable_quiet_logging()
                 result = post(dr, cr, amt, desc)
+                _restore_logging(muted)
                 if result.success:
                     session.commit()
+                    evt_id = result.outcome.source_event_id if result.outcome else "?"
                     print(f"\n  Posted: {desc} -- {_fmt(amt)}  (Dr {dr_lbl} / Cr {cr_lbl})")
+                    print(f"    Trace: python3 scripts/trace.py --event-id {evt_id}")
                 else:
                     session.rollback()
                     print(f"\n  FAILED: {result.error_code}: {result.error_message}")

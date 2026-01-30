@@ -6,8 +6,12 @@ Usage:
     python3 scripts/trace.py --event-id <uuid>
     python3 scripts/trace.py --entry-id <uuid>
     python3 scripts/trace.py --event-id <uuid> --json
+    python3 scripts/trace.py --list
 
 Examples:
+    # List all traceable journal entries
+    python3 scripts/trace.py --list
+
     # Trace by source event ID (human-readable)
     python3 scripts/trace.py --event-id a1b2c3d4-e5f6-7890-abcd-ef1234567890
 
@@ -310,12 +314,98 @@ def print_missing_facts(facts) -> None:
 # =============================================================================
 
 
+def list_entries(session) -> int:
+    """List all traceable journal entries in the database."""
+    from finance_kernel.models.journal import JournalEntry, JournalLine
+    from finance_kernel.models.event import Event
+    from finance_kernel.models.account import Account
+    from finance_kernel.models.interpretation_outcome import InterpretationOutcome
+
+    entries = (
+        session.query(JournalEntry)
+        .order_by(JournalEntry.seq)
+        .all()
+    )
+
+    if not entries:
+        print("\n  No journal entries found.\n")
+        return 0
+
+    # Build lookup maps
+    event_map = {}
+    for evt in session.query(Event).all():
+        memo = ""
+        if evt.payload and isinstance(evt.payload, dict):
+            memo = evt.payload.get("memo", "")
+        event_map[evt.event_id] = (evt.event_type, memo)
+
+    acct_map = {a.id: a for a in session.query(Account).all()}
+
+    # Check which entries have decision journals
+    outcomes = (
+        session.query(InterpretationOutcome)
+        .filter(InterpretationOutcome.decision_log.isnot(None))
+        .all()
+    )
+    events_with_journal = {o.source_event_id for o in outcomes}
+
+    banner("TRACEABLE JOURNAL ENTRIES")
+    print()
+    print(f"  {'#':>3}  {'status':<8}  {'date':<12}  "
+          f"{'has_journal':<12}  {'memo'}")
+    print(f"  {'---':>3}  {'------':<8}  {'----':<12}  "
+          f"{'----------':<12}  {'----'}")
+
+    for entry in entries:
+        status_val = entry.status.value if hasattr(entry.status, 'value') else str(entry.status)
+        evt_info = event_map.get(entry.source_event_id, ("?", ""))
+        evt_type, memo = evt_info
+        has_journal = "YES" if entry.source_event_id in events_with_journal else "no"
+        print(f"  {entry.seq:>3}  {status_val:<8}  {entry.effective_date!s:<12}  "
+              f"{has_journal:<12}  {memo}")
+
+    print()
+    print(f"  Total: {len(entries)} journal entries")
+    print()
+
+    # Print IDs grouped by entry
+    section("ENTRY DETAILS (for trace commands)")
+    for entry in entries:
+        evt_info = event_map.get(entry.source_event_id, ("?", ""))
+        _, memo = evt_info
+        has_journal = entry.source_event_id in events_with_journal
+
+        lines = (
+            session.query(JournalLine)
+            .filter(JournalLine.journal_entry_id == entry.id)
+            .order_by(JournalLine.line_seq)
+            .all()
+        )
+
+        print(f"  Entry #{entry.seq}: {memo}")
+        print(f"    entry-id:  {entry.id}")
+        print(f"    event-id:  {entry.source_event_id}")
+        print(f"    journal:   {'DECISION LOG AVAILABLE' if has_journal else 'no decision log (pre-feature)'}")
+
+        for line in lines:
+            acct = acct_map.get(line.account_id)
+            acct_label = f"{acct.code} {acct.name}" if acct else "?"
+            side_val = line.side.value if hasattr(line.side, 'value') else str(line.side)
+            print(f"    {side_val:>7}  {line.amount:>12}  {line.currency}  {acct_label}")
+
+        print(f"    trace:     python3 scripts/trace.py --event-id {entry.source_event_id}")
+        print()
+
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Trace a posted journal entry or event.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
+            "  python3 scripts/trace.py --list\n"
             "  python3 scripts/trace.py --event-id a1b2c3d4-...\n"
             "  python3 scripts/trace.py --entry-id b2c3d4e5-...\n"
             "  python3 scripts/trace.py --event-id a1b2c3d4-... --json\n"
@@ -330,6 +420,10 @@ def main() -> int:
         "--entry-id", type=str,
         help="Journal entry UUID to trace",
     )
+    group.add_argument(
+        "--list", action="store_true",
+        help="List all traceable journal entries",
+    )
     parser.add_argument(
         "--json", action="store_true",
         help="Output full JSON bundle instead of formatted text",
@@ -341,21 +435,10 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    # Parse UUID
-    try:
-        if args.event_id:
-            target_id = UUID(args.event_id)
-        else:
-            target_id = UUID(args.entry_id)
-    except ValueError as exc:
-        print(f"  ERROR: Invalid UUID: {exc}", file=sys.stderr)
-        return 1
-
     # Suppress library logging
     logging.disable(logging.CRITICAL)
 
     from finance_kernel.db.engine import init_engine_from_url, get_session
-    from finance_kernel.selectors.trace_selector import TraceSelector
 
     # Connect
     try:
@@ -367,6 +450,22 @@ def main() -> int:
     session = get_session()
 
     try:
+        # List mode
+        if args.list:
+            return list_entries(session)
+
+        # Parse UUID
+        try:
+            if args.event_id:
+                target_id = UUID(args.event_id)
+            else:
+                target_id = UUID(args.entry_id)
+        except ValueError as exc:
+            print(f"  ERROR: Invalid UUID: {exc}", file=sys.stderr)
+            return 1
+
+        from finance_kernel.selectors.trace_selector import TraceSelector
+
         selector = TraceSelector(session)
 
         if args.event_id:

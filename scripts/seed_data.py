@@ -50,6 +50,25 @@ def _kill_orphaned_connections():
         pass  # best-effort
 
 
+def _enable_quiet_logging():
+    """Enable logging so LogCapture works, but mute console output."""
+    logging.disable(logging.NOTSET)
+    fk_logger = logging.getLogger("finance_kernel")
+    muted = []
+    for h in fk_logger.handlers:
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+            muted.append((h, h.level))
+            h.setLevel(logging.CRITICAL + 1)
+    return muted
+
+
+def _restore_logging(muted):
+    """Restore muted handlers and re-disable logging."""
+    for h, orig_level in muted:
+        h.setLevel(orig_level)
+    logging.disable(logging.CRITICAL)
+
+
 def main() -> int:
     logging.disable(logging.CRITICAL)
 
@@ -162,9 +181,10 @@ def main() -> int:
     session.flush()
 
     # -----------------------------------------------------------------
-    # 4. Posting pipeline
+    # 4. Posting pipeline (logging enabled for decision journal capture)
     # -----------------------------------------------------------------
     print("  [4/5] Posting 8 business transactions...")
+    muted = _enable_quiet_logging()
 
     auditor = AuditorService(session, clock)
     resolver = RoleResolver()
@@ -247,12 +267,18 @@ def main() -> int:
     ]
 
     ok_count = 0
+    posted_events = []  # (event_id, entry_ids, memo)
     for i, (dr, cr, amt, memo) in enumerate(txns, 1):
         result = post(dr, cr, amt, memo)
         status = "OK" if result.success else "FAIL"
         if result.success:
             ok_count += 1
+            entry_ids = list(result.journal_result.entry_ids) if result.journal_result else []
+            event_id = result.outcome.source_event_id if result.outcome else None
+            posted_events.append((event_id, entry_ids, memo))
         print(f"         {i}. [{status}] {memo}")
+
+    _restore_logging(muted)
 
     # -----------------------------------------------------------------
     # 5. Commit
@@ -263,7 +289,25 @@ def main() -> int:
 
     print()
     print(f"  Done. Database seeded with {ok_count} journal entries.")
-    print("  Run:  python3 scripts/view_reports.py")
+    print()
+
+    # -----------------------------------------------------------------
+    # 6. Print traceable IDs
+    # -----------------------------------------------------------------
+    if posted_events:
+        print("  Traceable entries (use with scripts/trace.py):")
+        print()
+        for evt_id, entry_ids, memo in posted_events:
+            print(f"    {memo}")
+            print(f"      event-id: {evt_id}")
+            for eid in entry_ids:
+                print(f"      entry-id: {eid}")
+            print()
+        print("  Quick-start:")
+        first_evt = posted_events[0][0]
+        print(f"    python3 scripts/trace.py --event-id {first_evt}")
+        print(f"    python3 scripts/trace.py --list")
+        print(f"    python3 scripts/demo_trace.py")
     print()
     return 0
 
