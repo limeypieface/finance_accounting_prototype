@@ -321,13 +321,13 @@ class Contract(TrackedBase):
 
     @property
     def available_funding(self) -> Decimal:
-        """
-        Calculate available funding (funded minus incurred).
+        """Return the funded amount for this contract.
 
-        Note: This is a simple property. The actual calculation
-        should query the ledger for incurred costs.
+        This is the total funding allocated to the contract. To calculate
+        funding remaining after incurred costs, use
+        ContractService.validate_funding() which accepts incurred_to_date
+        from the caller (consistent with R3: models don't perform I/O).
         """
-        # TODO: Query ledger for incurred costs by contract_id
         return self.funded_amount
 
     def __repr__(self) -> str:

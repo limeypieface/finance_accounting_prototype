@@ -28,7 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -43,6 +43,9 @@ from finance_kernel.domain.reference_snapshot import (
     SnapshotRequest,
     SnapshotValidationResult,
 )
+
+if TYPE_CHECKING:
+    from finance_config.compiler import CompiledPolicyPack
 
 
 class ReferenceSnapshotService:
@@ -59,6 +62,7 @@ class ReferenceSnapshotService:
         self,
         session: Session,
         clock: Clock | None = None,
+        compiled_pack: "CompiledPolicyPack | None" = None,
     ):
         """
         Initialize the service.
@@ -66,9 +70,11 @@ class ReferenceSnapshotService:
         Args:
             session: SQLAlchemy session for database access.
             clock: Clock for timestamps. Defaults to SystemClock.
+            compiled_pack: Compiled policy pack for policy/role snapshots.
         """
         self._session = session
         self._clock = clock or SystemClock()
+        self._compiled_pack = compiled_pack
         self._snapshot_cache: dict[UUID, ReferenceSnapshot] = {}
 
     def capture(self, request: SnapshotRequest) -> ReferenceSnapshot:
@@ -269,49 +275,141 @@ class ReferenceSnapshotService:
         )
 
     def _capture_tax_rules(self, as_of: datetime) -> ComponentVersion:
-        """Capture tax rules state."""
-        # Tax rules not yet implemented - return placeholder
+        """Capture tax rules from compiled policy pack.
+
+        Tax rules are expressed as YAML policies compiled into the pack.
+        Captures all tax-trigger policies deterministically.
+        """
+        if self._compiled_pack is None:
+            return ComponentVersion(
+                component_type=SnapshotComponentType.TAX_RULES,
+                version=1,
+                content_hash=self._compute_hash({"rules": []}),
+                effective_from=as_of,
+            )
+
+        tax_policies = [
+            {
+                "name": p.name,
+                "version": p.version,
+                "trigger_event_type": p.trigger.event_type if p.trigger else None,
+                "scope": p.scope,
+                "module": p.module,
+                "required_engines": list(p.required_engines),
+            }
+            for p in self._compiled_pack.policies
+            if p.module == "tax"
+        ]
+
         return ComponentVersion(
             component_type=SnapshotComponentType.TAX_RULES,
-            version=1,
-            content_hash=self._compute_hash({"rules": []}),
+            version=self._compiled_pack.config_version,
+            content_hash=self._compute_hash({"rules": tax_policies}),
             effective_from=as_of,
         )
 
     def _capture_policy_registry(self, as_of: datetime) -> ComponentVersion:
-        """Capture policy registry state."""
-        # Policy registry not yet implemented - return placeholder
+        """Capture the full compiled policy registry.
+
+        Serializes all policies from the CompiledPolicyPack deterministically
+        so that any policy change produces a different content hash.
+        """
+        if self._compiled_pack is None:
+            return ComponentVersion(
+                component_type=SnapshotComponentType.POLICY_REGISTRY,
+                version=1,
+                content_hash=self._compute_hash({"policies": []}),
+                effective_from=as_of,
+            )
+
+        policy_state = [
+            {
+                "name": p.name,
+                "version": p.version,
+                "trigger_event_type": p.trigger.event_type if p.trigger else None,
+                "scope": p.scope,
+                "module": p.module,
+                "required_engines": list(p.required_engines),
+                "capability_tags": list(p.capability_tags),
+                "description": p.description,
+            }
+            for p in self._compiled_pack.policies
+        ]
+
         return ComponentVersion(
             component_type=SnapshotComponentType.POLICY_REGISTRY,
-            version=1,
-            content_hash=self._compute_hash({"policies": []}),
+            version=self._compiled_pack.config_version,
+            content_hash=self._compute_hash({"policies": policy_state}),
             effective_from=as_of,
         )
 
     def _capture_account_roles(self, as_of: datetime) -> ComponentVersion:
-        """Capture account role mappings state."""
-        # Account roles not yet implemented - return placeholder
+        """Capture account role bindings from the compiled policy pack.
+
+        Role bindings map abstract roles (CASH, INVENTORY, REVENUE) to
+        concrete account codes per ledger. Any binding change produces a
+        different content hash.
+        """
+        if self._compiled_pack is None:
+            return ComponentVersion(
+                component_type=SnapshotComponentType.ACCOUNT_ROLES,
+                version=1,
+                content_hash=self._compute_hash({"roles": []}),
+                effective_from=as_of,
+            )
+
+        role_state = [
+            {
+                "role": rb.role,
+                "ledger": rb.ledger,
+                "account_code": rb.account_code,
+                "effective_from": str(rb.effective_from),
+                "effective_to": str(rb.effective_to) if rb.effective_to else None,
+            }
+            for rb in self._compiled_pack.role_bindings
+        ]
+
         return ComponentVersion(
             component_type=SnapshotComponentType.ACCOUNT_ROLES,
-            version=1,
-            content_hash=self._compute_hash({"roles": []}),
+            version=self._compiled_pack.config_version,
+            content_hash=self._compute_hash({"roles": role_state}),
             effective_from=as_of,
         )
 
     def _get_coa_version(self) -> int:
-        """Get current COA version."""
-        # TODO: Read from version tracking table when implemented
-        return 1
+        """Get current COA version from record count.
+
+        Uses active account count as a proxy for schema version.
+        Any account addition/removal changes the version.
+        Content hash provides the true integrity check.
+        """
+        from finance_kernel.models.account import Account
+        from sqlalchemy import func
+
+        count = self._session.execute(
+            select(func.count()).select_from(Account)
+        ).scalar_one()
+        return max(1, count)
 
     def _get_dimension_schema_version(self) -> int:
-        """Get current dimension schema version."""
-        # TODO: Read from version tracking table when implemented
-        return 1
+        """Get current dimension schema version from record count."""
+        from finance_kernel.models.dimensions import Dimension
+        from sqlalchemy import func
+
+        count = self._session.execute(
+            select(func.count()).select_from(Dimension)
+        ).scalar_one()
+        return max(1, count)
 
     def _get_fx_rates_version(self) -> int:
-        """Get current FX rates version."""
-        # TODO: Read from version tracking table when implemented
-        return 1
+        """Get current FX rates version from record count."""
+        from finance_kernel.models.exchange_rate import ExchangeRate
+        from sqlalchemy import func
+
+        count = self._session.execute(
+            select(func.count()).select_from(ExchangeRate)
+        ).scalar_one()
+        return max(1, count)
 
     def _compute_hash(self, data: Any) -> str:
         """

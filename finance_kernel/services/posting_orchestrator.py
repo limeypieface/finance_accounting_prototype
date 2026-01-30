@@ -40,6 +40,7 @@ from finance_kernel.services.engine_dispatcher import EngineDispatcher
 from finance_kernel.services.ingestor_service import IngestorService
 from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
 from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
+from finance_kernel.services.ledger_service import LedgerService
 from finance_kernel.services.link_graph_service import LinkGraphService
 from finance_kernel.services.outcome_recorder import OutcomeRecorder
 from finance_kernel.services.party_service import PartyService
@@ -77,9 +78,14 @@ class PostingOrchestrator:
         self.auditor = AuditorService(session, self._clock)
         self.period_service = PeriodService(session, self._clock)
         self.link_graph = LinkGraphService(session)
-        self.snapshot_service = ReferenceSnapshotService(session, self._clock)
+        self.snapshot_service = ReferenceSnapshotService(
+            session, self._clock, compiled_pack=compiled_pack,
+        )
         self.party_service = PartyService(session)
         self.contract_service = ContractService(session)
+
+        # Ledger persistence (depends on auditor)
+        self.ledger_service = LedgerService(session, self._clock, self.auditor)
 
         # Ingestion (depends on auditor)
         self.ingestor = IngestorService(session, self._clock, self.auditor)

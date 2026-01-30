@@ -68,6 +68,7 @@ def _make_policy(
         line_mappings=(),
         required_engines=required_engines,
         engine_parameters_ref=engine_parameters_ref,
+        variance_disposition=None,
         capability_tags=(),
         description="Test policy",
         module="test",

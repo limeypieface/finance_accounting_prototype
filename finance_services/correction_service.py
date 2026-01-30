@@ -407,13 +407,69 @@ class CorrectionEngine:
         artifact_ref: ArtifactRef,
     ) -> list[tuple[UUID, list[tuple[str, Money, bool, UUID]]]]:
         """
-        Default GL lookup that returns empty list.
+        Default GL lookup — queries journal entries for an artifact.
 
-        In production, this would query the journal_entries table
-        for entries associated with this artifact.
+        For JOURNAL_ENTRY artifacts, looks up the entry directly by ID.
+        For EVENT artifacts, looks up all entries posted for that event.
+        Returns (entry_id, [(account_code, amount, is_debit, line_id)]).
         """
-        # This is a placeholder - real implementation would query DB
-        return []
+        from finance_kernel.models.journal import JournalEntry, JournalLine, LineSide
+
+        results: list[tuple[UUID, list[tuple[str, Money, bool, UUID]]]] = []
+
+        if artifact_ref.artifact_type == ArtifactType.JOURNAL_ENTRY:
+            try:
+                entry_id = UUID(str(artifact_ref.artifact_id))
+            except (ValueError, TypeError):
+                return []
+
+            entry = self.session.execute(
+                select(JournalEntry).where(JournalEntry.id == entry_id)
+            ).scalar_one_or_none()
+
+            if entry is not None:
+                lines = self.session.execute(
+                    select(JournalLine).where(JournalLine.entry_id == entry.id)
+                ).scalars().all()
+
+                line_tuples = [
+                    (
+                        line.account_code,
+                        Money(line.amount, line.currency),
+                        line.side == LineSide.DEBIT if isinstance(line.side, LineSide) else line.side == "debit",
+                        line.id,
+                    )
+                    for line in lines
+                ]
+                results.append((entry.id, line_tuples))
+
+        elif artifact_ref.artifact_type == ArtifactType.EVENT:
+            try:
+                event_id = UUID(str(artifact_ref.artifact_id))
+            except (ValueError, TypeError):
+                return []
+
+            entries = self.session.execute(
+                select(JournalEntry).where(JournalEntry.event_id == event_id)
+            ).scalars().all()
+
+            for entry in entries:
+                lines = self.session.execute(
+                    select(JournalLine).where(JournalLine.entry_id == entry.id)
+                ).scalars().all()
+
+                line_tuples = [
+                    (
+                        line.account_code,
+                        Money(line.amount, line.currency),
+                        line.side == LineSide.DEBIT if isinstance(line.side, LineSide) else line.side == "debit",
+                        line.id,
+                    )
+                    for line in lines
+                ]
+                results.append((entry.id, line_tuples))
+
+        return results
 
     # =========================================================================
     # Entry Generation
