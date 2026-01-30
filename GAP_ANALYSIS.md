@@ -1,6 +1,6 @@
 # Comprehensive ERP Gap Analysis
 
-**Date:** 2026-01-29
+**Date:** 2026-01-30 (revised)
 **Scope:** Full system assessment against world-class ERP requirements
 **Benchmark:** SAP S/4HANA, Oracle Cloud Financials, Workday Financials, Deltek Costpoint (GovCon)
 
@@ -17,7 +17,11 @@ The remaining work falls into two categories:
 1. **Modules (~85% of remaining work):** New and deepened `finance_modules/` using existing kernel primitives, existing engines, and new YAML policies. Each new capability is expressed as new event types + new policies + module-level service orchestration.
 2. **Infrastructure (~15% of remaining work):** Three platform concerns that cannot be modules: API layer, workflow runtime, and job scheduling.
 
-**Current State:** ~37,000 LOC across 5 layers, 12 modules, 12 engines, 24 invariants, 1000+ tests.
+**Current State:** ~68,000 LOC across 5 layers, 13 modules (including reporting), 12 engines, 24 invariants, 2,367 tests. An additional ~59,000 LOC in test code and ~5,500 LOC in YAML/SQL configuration.
+
+**Recent Progress:**
+- **GAP-04 (Financial Reporting) — CLOSED.** Full reporting module shipped: 6 report types, 16 frozen DTOs, 19 pure transformation functions, comparative period support, segment reporting, 108 tests (1,977 LOC). All 5 financial statements verified against accounting invariants (A=L+E, DR=CR, NI reconciliation, cash flow reconciliation).
+- **Interactive demo tooling shipped.** `scripts/interactive.py` provides a menu-driven CLI that posts real events through the interpretation pipeline and renders live financial statements. `scripts/seed_data.py`, `scripts/view_reports.py`, and `scripts/view_journal.py` provide persistent data seeding and read-only report viewing.
 
 **Maturity Assessment:**
 
@@ -26,7 +30,7 @@ The remaining work falls into two categories:
 | finance_kernel | **Production-grade** | Done. Minor DI refactor in backlog. |
 | finance_engines | **Production-grade** | Done. 12 engines cover all needed computation. |
 | finance_config | **Production-grade** | Add IFRS policy set when needed. |
-| finance_modules | **Scaffold-grade** | Primary work area. Deepen 12 existing + add 7 new. |
+| finance_modules | **Scaffold-to-production** | Deepen 12 existing + add 6 new. Reporting is complete. |
 | finance_services | **Foundation-grade** | Add workflow_service.py. Existing 4 are sufficient. |
 | **Infrastructure** | **Not started** | API layer, auth, job scheduler. |
 
@@ -82,15 +86,25 @@ These are genuine competitive advantages over SAP/Oracle:
 - Lifecycle management (DRAFT -> REVIEWED -> APPROVED -> PUBLISHED)
 - Engine parameter contracts with JSON schema validation
 
-### 1.6 Test Infrastructure (Exceptional)
-- 1000+ tests across 17 categories
+### 1.6 Financial Reporting (Operational)
+- **6 report types:** Trial Balance, Balance Sheet (classified), Income Statement (single/multi-step), Cash Flow Statement (indirect method, ASC 230), Statement of Changes in Equity, Segment Report (dimension-based)
+- **Comparative periods:** TB, BS, IS all support prior-period comparison
+- **19 pure transformation functions** -- zero I/O, deterministic, fully testable
+- **16 frozen dataclass DTOs** -- immutable report models with JSON serialization
+- **Configurable classification** -- COA prefix-based current/non-current, revenue/COGS/OpEx
+- **Accounting invariants verified on every report:** A=L+E, DR=CR, NI=Revenue-Expenses, equity reconciles, cash flow reconciles
+- **Interactive demo tooling** -- CLI for posting events and viewing live report updates
+
+### 1.7 Test Infrastructure (Exceptional)
+- 2,367 tests across 20 categories
 - Adversarial tests (attack vector simulation)
 - Concurrency tests (real PostgreSQL, 200 threads)
 - Metamorphic tests (post-reverse equivalence)
 - Property-based fuzzing (Hypothesis)
 - Architecture enforcement tests (import boundary verification)
+- 108 dedicated reporting tests (pure function + integration + invariant)
 
-### 1.7 Engine Coverage (Complete)
+### 1.8 Engine Coverage (Complete)
 The 12 existing engines provide all needed computational primitives:
 
 | Engine | Capabilities | Used By |
@@ -130,7 +144,7 @@ Each gap is classified as:
 
 #### GAP-01: REST/GraphQL API Layer [P0] [INFRASTRUCTURE]
 
-**Current State:** No external API. System is only accessible via Python imports.
+**Current State:** No external API. System is only accessible via Python imports and CLI scripts.
 
 **Why this can't be a module:** It's an external interface layer that sits above all modules.
 
@@ -200,34 +214,29 @@ finance_modules/*/workflows.py         # Already exists (definitions only)
 
 ---
 
-### NEW MODULE GAPS (7 new modules)
+### NEW MODULE GAPS (6 new modules -- GAP-04 CLOSED)
 
-#### GAP-04: Financial Reporting Module [P0] [MODULE]
+#### ~~GAP-04: Financial Reporting Module [P0] [MODULE]~~ — CLOSED
 
-**Current State:** `ledger_selector.py` computes trial balance. That's the only reporting capability.
+**Status: COMPLETE.** Shipped 2026-01-29. Full implementation:
 
-**Why it's a module:** Financial statements are transformations of trial balance data grouped by account type. The BS/IS are queries + formatting. The cash flow statement (indirect method) is the most complex piece -- it derives cash flows from accrual-basis entries -- but this is still a query transformation, not new computation.
+| Delivered | Detail |
+|-----------|--------|
+| 6 report types | Trial Balance, Balance Sheet (classified), Income Statement (single/multi-step), Cash Flow (indirect, ASC 230), Equity Changes, Segment |
+| 19 pure functions | `statements.py` (911 LOC) — zero I/O, deterministic |
+| 16 frozen DTOs | `models.py` (313 LOC) — immutable report models |
+| Configurable classification | `config.py` (110 LOC) — COA prefix-based rules |
+| Service orchestration | `service.py` (546 LOC) — read-only, no posting |
+| Comparative periods | TB, BS, IS all support prior-period comparison |
+| JSON serialization | `render_to_dict()` handles all DTO types |
+| 108 tests | 1,977 LOC across 8 test files |
+| Interactive tooling | `scripts/interactive.py` — live posting + report viewing |
+| Accounting invariants | A=L+E, DR=CR, NI formula, equity reconciliation, cash flow reconciliation |
 
-| Component | Description | Existing Primitive Used |
-|-----------|-------------|------------------------|
-| Trial Balance Report | Formatted output with comparative periods | `ledger_selector.py` |
-| Balance Sheet | ASC 210 / IAS 1 classified balance sheet | Trial balance + account type grouping |
-| Income Statement | Single-step and multi-step formats | Trial balance + account type grouping |
-| Cash Flow Statement | Direct and indirect methods (ASC 230 / IAS 7) | Journal line queries + classification |
-| Statement of Changes in Equity | Period-over-period equity movements | Equity account queries |
-| Segment Reporting | ASC 280 / IFRS 8 operating segments | Dimension-based filtering |
-| Report Renderer | PDF, Excel, CSV, XBRL output | Standard formatting library |
-| Consolidation | Multi-entity roll-up with eliminations | Queries per entity + elimination entries via kernel |
-
-**Architecture:**
-```
-finance_modules/reporting/
-    service.py          # Report generation orchestration
-    models.py           # ReportDefinition, ReportOutput
-    formatters.py       # PDF, Excel, CSV, XBRL renderers
-    statements.py       # Pure functions: trial_balance → BS/IS/CF
-    config.py           # Report layouts, classification rules
-```
+**Not yet implemented (deferred, lower priority):**
+- PDF/Excel/CSV/XBRL export renderers (GAP-04a)
+- Multi-entity consolidation with elimination entries (GAP-04b)
+- Direct method cash flow statement (GAP-04c)
 
 ---
 
@@ -391,7 +400,7 @@ These modules have the right structure (models, profiles, config, workflows) but
 
 **Current State:** `multicurrency` capability is disabled. Exchange rate model, FX gain/loss tests exist. Multi-currency journal lines supported by kernel.
 
-**Why it's module work:** Currency translation = balances × rate. Revaluation = new event type + policy. The kernel already supports multi-currency journal lines and exchange rates. The module just needs to orchestrate: "for each foreign account, get balance, apply rate, post translation entry."
+**Why it's module work:** Currency translation = balances x rate. Revaluation = new event type + policy. The kernel already supports multi-currency journal lines and exchange rates. The module just needs to orchestrate: "for each foreign account, get balance, apply rate, post translation entry."
 
 | Component | Description | Existing Primitive Used |
 |-----------|-------------|------------------------|
@@ -624,6 +633,7 @@ The UI is a separate application that consumes the API (GAP-01). It has no impac
 
 | Module | Models | Profiles | Service LOC | Engine Integration | Completeness | Key Remaining Work |
 |--------|--------|----------|------------|-------------------|-------------|-------------------|
+| **Reporting** | 16 DTOs | N/A (read-only) | 1,976 | `ledger_selector` | **95%** | PDF/Excel export, consolidation |
 | **GL** | 5 types | Defined | Thin | N/A | 40% | Period close, recurring entries, ret. earnings |
 | **AP** | 5 types | 10 policies | 784 | Allocation, Matching, Aging | 55% | Payment run, auto-match, vendor mgmt |
 | **AR** | 6 types | 14 policies | 805 | Allocation, Aging | 50% | Dunning, cash application, credit mgmt |
@@ -639,15 +649,15 @@ The UI is a separate application that consumes the API (GAP-01). It has no impac
 
 ### New Modules Needed
 
-| Module | Purpose | Primary Engine Dependencies |
-|--------|---------|---------------------------|
-| **reporting** | Financial statements (BS, IS, CF, equity) | `ledger_selector` queries |
-| **revenue** | ASC 606 / IFRS 15 five-step model | `AllocationEngine` |
-| **lease** | ASC 842 / IFRS 16 lease accounting | None (pure functions inside module) |
-| **budget** | Budgeting, encumbrance, forecasting | None (queries + arithmetic) |
-| **intercompany** | IC transactions, elimination, consolidation | `ReconciliationManager`, `MatchingEngine` |
-| **project** | Project accounting, WBS, EVM | `BillingEngine` |
-| **credit_loss** | ASC 326 / CECL expected credit loss | None (statistical functions inside module) |
+| Module | Purpose | Primary Engine Dependencies | Status |
+|--------|---------|---------------------------|--------|
+| ~~**reporting**~~ | ~~Financial statements~~ | ~~`ledger_selector` queries~~ | **COMPLETE** |
+| **revenue** | ASC 606 / IFRS 15 five-step model | `AllocationEngine` | Not started |
+| **lease** | ASC 842 / IFRS 16 lease accounting | None (pure functions inside module) | Not started |
+| **budget** | Budgeting, encumbrance, forecasting | None (queries + arithmetic) | Not started |
+| **intercompany** | IC transactions, elimination, consolidation | `ReconciliationManager`, `MatchingEngine` | Not started |
+| **project** | Project accounting, WBS, EVM | `BillingEngine` | Not started |
+| **credit_loss** | ASC 326 / CECL expected credit loss | None (statistical functions inside module) | Not started |
 
 ---
 
@@ -657,12 +667,12 @@ The UI is a separate application that consumes the API (GAP-01). It has no impac
 
 **Goal:** Make the system deployable and usable.
 
-| # | Item | Type | Depends On |
-|---|------|------|-----------|
-| 1 | REST API Layer + Auth/RBAC | INFRASTRUCTURE | -- |
-| 2 | Workflow Execution Runtime | INFRASTRUCTURE | -- |
-| 3 | Financial Reporting Module | MODULE (new) | -- |
-| 4 | Data Import/Export Utilities | UTILITY | -- |
+| # | Item | Type | Status |
+|---|------|------|--------|
+| 1 | REST API Layer + Auth/RBAC | INFRASTRUCTURE | Not started |
+| 2 | Workflow Execution Runtime | INFRASTRUCTURE | Not started |
+| ~~3~~ | ~~Financial Reporting Module~~ | ~~MODULE (new)~~ | **COMPLETE** |
+| 4 | Data Import/Export Utilities | UTILITY | Not started |
 
 ### Phase 2: Core Financial Completeness [P1]
 
@@ -719,12 +729,14 @@ finance_config/       # DONE. Add new policy sets as needed.
 
 ```
 finance_modules/
+    # COMPLETE
+    reporting/      # DONE: 6 report types, 108 tests, production-grade
+
     # DEEPEN existing 12 modules (service.py implementations)
     ap/  ar/  inventory/  cash/  gl/  payroll/
     tax/  wip/  assets/  expense/  procurement/  contracts/
 
-    # ADD 7 new modules (same 6-file pattern)
-    reporting/      # NEW: Financial statements
+    # ADD 6 new modules (same 6-file pattern)
     revenue/        # NEW: ASC 606
     lease/          # NEW: ASC 842
     budget/         # NEW: Budgeting & encumbrance
@@ -754,13 +766,14 @@ finance_services/
 
 | Category | Count | % of Remaining Work |
 |----------|-------|-------------------|
-| New modules | 7 | ~35% |
+| New modules | 6 | ~30% |
 | Deepened existing modules | 12 | ~35% |
 | API layer + auth | 1 | ~15% |
 | Workflow runtime | 1 | ~5% |
 | Job scheduler | 1 | ~3% |
 | Utilities (import/export, docs, notifications) | 3 | ~5% |
 | IFRS config set | 1 | ~2% |
+| Reporting deferred items (export, consolidation) | -- | ~5% |
 | **No new engines** | **0** | **0%** |
 
 ---
@@ -778,17 +791,16 @@ finance_services/
 | **Revenue Recognition** | None | RAR (ASC 606) | Critical | New module |
 | **Lease Accounting** | None | RE-FX | Critical | New module |
 | **Treasury** | Basic cash mgmt | Full TRM | Large | Deepen module |
-| **Financial Reporting** | Trial balance only | BW/Fiori | Critical | New module |
+| **Financial Reporting** | **Complete (6 reports, verified)** | BW/Fiori | **Closed** | -- |
 | **Consolidation** | None | Group Reporting | Critical | New intercompany module |
 | **Tax** | Transaction tax only | Vertex | Large | Deepen module |
 | **Budget** | None | BPC / SAC | Critical | New module |
 | **Multi-Currency** | Foundation only | Complete | Large | Deepen module + enable config |
 | **Multi-Entity** | Config scope only | Complete | Large | New intercompany module |
 | **Workflow** | Declarative only | SAP WF | Critical | New service (1 file) |
-| **API** | None | OData, BAPIs | Critical | New layer |
+| **API** | CLI scripts only | OData, BAPIs | Critical | New layer |
 | **Security** | Actor ID only | Full RBAC | Critical | Part of API layer |
 | **Batch Processing** | None | Background jobs | Large | Job scheduler |
-| **Reporting** | None | Fiori Analytics | Critical | New module |
 | | | | | |
 | **Architecture Quality** | **Superior** | Legacy monolith | **Advantage** | -- |
 | **Audit Trail** | **Superior** | Change documents | **Advantage** | -- |
@@ -796,7 +808,7 @@ finance_services/
 | **Gov Contracting** | **Competitive** | Requires Deltek | **Advantage** | -- |
 | **Event Sourcing** | **Yes** | No | **Advantage** | -- |
 | **Replay Determinism** | **Yes** | No | **Advantage** | -- |
-| **Test Quality** | **Exceptional** | Proprietary | **Advantage** | -- |
+| **Test Quality** | **Exceptional (2,367 tests)** | Proprietary | **Advantage** | -- |
 
 ---
 
@@ -822,17 +834,22 @@ finance_services/
 
 ---
 
-## Appendix A: Lines of Code by Layer
+## Appendix A: Lines of Code by Layer (Actual, January 2026)
 
-| Layer | Files | LOC | % of Total | Status |
+| Layer | Files | LOC | % of Source | Status |
 |-------|-------|-----|-----------|--------|
-| finance_kernel | ~50 | ~12,000 | 32% | **Done** |
-| finance_engines | ~18 | ~12,500 | 34% | **Done** |
-| finance_modules | ~84 | ~8,500 | 23% | Primary work area |
-| finance_services | ~5 | ~2,550 | 7% | +1 file (workflow) |
-| finance_config | ~10 | ~2,100 | 6% | +IFRS set when needed |
-| **Total** | **~167** | **~37,650** | **100%** | |
-| tests | ~103 | ~15,000+ | (excluded) | |
+| finance_kernel | 85 | 28,820 | 42% | **Done** |
+| finance_engines | 18 | 7,506 | 11% | **Done** |
+| finance_modules | 79 | 20,573 | 30% | Primary work area (reporting complete) |
+| finance_services | 5 | 2,552 | 4% | +1 file (workflow) |
+| finance_config | 27 | 6,533 | 10% | +IFRS set when needed |
+| scripts | 10 | 2,646 | 4% | Demo + tooling |
+| **Total Source** | **224** | **68,630** | **100%** | |
+| | | | | |
+| tests | 142 | 59,253 | -- | 2,367 test functions, 20 categories |
+| SQL triggers | 12 | 1,069 | -- | 26 PostgreSQL triggers |
+| YAML config | 17 | 4,432 | -- | US-GAAP policy set |
+| **Grand Total** | **395** | **133,384** | | |
 
 ## Appendix B: Invariant Coverage Matrix
 
@@ -863,6 +880,31 @@ finance_services/
 | R23 | Yes | N/A | N/A | Yes | N/A | N/A |
 | R24 | Yes | N/A | N/A | Yes | N/A | N/A |
 
+## Appendix C: Reporting Module Delivery Summary
+
+Delivered 2026-01-29. First module to reach production-grade completeness.
+
+| Artifact | Detail |
+|----------|--------|
+| `finance_modules/reporting/statements.py` | 911 LOC — 19 pure functions, zero I/O |
+| `finance_modules/reporting/service.py` | 546 LOC — read-only orchestration |
+| `finance_modules/reporting/models.py` | 313 LOC — 16 frozen dataclass DTOs |
+| `finance_modules/reporting/config.py` | 110 LOC — classification rules |
+| `finance_modules/reporting/__init__.py` | 64 LOC — public exports |
+| `tests/reporting/` | 1,977 LOC — 108 tests (pure + integration + invariant) |
+| `scripts/interactive.py` | 470 LOC — menu-driven CLI, live posting + reports |
+| `scripts/demo_reports.py` | 511 LOC — self-contained demo (rollback) |
+| `scripts/seed_data.py` | 215 LOC — persistent data seeding |
+| `scripts/view_reports.py` | 110 LOC — read-only report viewer |
+| `scripts/view_journal.py` | 108 LOC — journal entry viewer |
+
+**Accounting invariants verified on every report generation:**
+- Trial Balance: Debits = Credits
+- Balance Sheet: Assets = Liabilities + Equity
+- Income Statement: Net Income = Revenue - Expenses
+- Equity Changes: Beginning + Movements = Ending
+- Cash Flow: Beginning Cash + Net Change = Ending Cash
+
 ---
 
-*This analysis was generated from a complete codebase review of all 167+ source files, 103 test files, and all configuration artifacts. Revised to reflect that the kernel and engine layers are complete, and remaining work is primarily module-level.*
+*This analysis was generated from a complete codebase review of all 224+ source files, 142 test files, and all configuration artifacts. Revised 2026-01-30 to reflect GAP-04 (Financial Reporting) closure, updated LOC metrics, and accurate test counts.*
