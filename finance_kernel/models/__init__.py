@@ -16,6 +16,13 @@ from finance_kernel.models.contract import (
     ContractType,
     ICEReportingFrequency,
 )
+from finance_kernel.models.cost_lot import CostLotModel
+from finance_kernel.models.interpretation_outcome import (
+    FailureType,
+    InterpretationOutcome,
+    OutcomeStatus,
+    VALID_TRANSITIONS,
+)
 
 __all__ = [
     "Account",
@@ -41,4 +48,9 @@ __all__ = [
     "ContractStatus",
     "ContractType",
     "ICEReportingFrequency",
+    "CostLotModel",
+    "FailureType",
+    "InterpretationOutcome",
+    "OutcomeStatus",
+    "VALID_TRANSITIONS",
 ]
