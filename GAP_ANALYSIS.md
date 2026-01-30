@@ -17,9 +17,10 @@ The remaining work falls into two categories:
 1. **Modules (~85% of remaining work):** New and deepened `finance_modules/` using existing kernel primitives, existing engines, and new YAML policies. Each new capability is expressed as new event types + new policies + module-level service orchestration.
 2. **Infrastructure (~15% of remaining work):** Three platform concerns that cannot be modules: API layer, workflow runtime, and job scheduling.
 
-**Current State:** ~68,000 LOC across 5 layers, 13 modules (including reporting), 12 engines, 24 invariants, 2,367 tests. An additional ~59,000 LOC in test code and ~5,500 LOC in YAML/SQL configuration.
+**Current State:** ~70,600 LOC across 5 layers, 13 modules (including reporting), 12 engines, 24 invariants, ~4,740 tests. An additional ~63,600 LOC in test code and ~5,600 LOC in YAML/SQL configuration.
 
 **Recent Progress:**
+- **Wiring Completion Plan (9 phases) — COMPLETE.** All 16 architecture gaps (G1–G16) closed. EngineDispatcher provides traced, contract-validated engine invocation. PostingOrchestrator centralizes service lifecycle. Mandatory guards enforce PolicyAuthority, CompilationReceipt, and actor validation. Runtime enforcement points wire subledger reconciliation, snapshot freshness, link acyclicity, and correction period lock. Financial exception lifecycle makes every failed posting a durable, retriable artifact with work queue support. Architecture tests prevent bypass regression. 165+ new architecture/wiring tests.
 - **GAP-04 (Financial Reporting) — CLOSED.** Full reporting module shipped: 6 report types, 16 frozen DTOs, 19 pure transformation functions, comparative period support, segment reporting, 108 tests (1,977 LOC). All 5 financial statements verified against accounting invariants (A=L+E, DR=CR, NI reconciliation, cash flow reconciliation).
 - **Interactive demo tooling shipped.** `scripts/interactive.py` provides a menu-driven CLI that posts real events through the interpretation pipeline and renders live financial statements. `scripts/seed_data.py`, `scripts/view_reports.py`, and `scripts/view_journal.py` provide persistent data seeding and read-only report viewing.
 
@@ -27,11 +28,11 @@ The remaining work falls into two categories:
 
 | Layer | Maturity | Remaining Work |
 |-------|----------|----------------|
-| finance_kernel | **Production-grade** | Done. Minor DI refactor in backlog. |
-| finance_engines | **Production-grade** | Done. 12 engines cover all needed computation. |
-| finance_config | **Production-grade** | Add IFRS policy set when needed. |
+| finance_kernel | **Production-grade — fully wired** | Done. All 16 architecture gaps closed. EngineDispatcher, PostingOrchestrator, mandatory guards, runtime enforcement, financial exception lifecycle all operational. |
+| finance_engines | **Production-grade — traced & dispatched** | Done. 12 engines with @traced_engine, EngineDispatcher invocation, contract validation. |
+| finance_config | **Production-grade** | Done. Config authoring guide shipped. Add IFRS policy set when needed. |
 | finance_modules | **Scaffold-to-production** | Deepen 12 existing + add 6 new. Reporting is complete. |
-| finance_services | **Foundation-grade** | Add workflow_service.py. Existing 4 are sufficient. |
+| finance_services | **Operational** | RetryService and PostingOrchestrator shipped. Add workflow_service.py. |
 | **Infrastructure** | **Not started** | API layer, auth, job scheduler. |
 
 ### Why Modules Are Sufficient
@@ -58,6 +59,9 @@ These are genuine competitive advantages over SAP/Oracle:
 - **Defense-in-depth immutability** -- ORM listeners + 26 PostgreSQL triggers; SAP relies on application-level only
 - **Deterministic replay** -- Can reconstruct any ledger state from events alone (R6); SAP stores balances
 - **Typed exceptions with machine-readable codes** (R18) -- SAP uses string matching
+- **Provably wired architecture** -- EngineDispatcher, PostingOrchestrator, and mandatory guards ensure no component exists without a runtime consumer. Architecture tests prevent bypass regression. Dead scaffolding audit confirms every compiled field is consumed or explicitly documented as pending.
+- **Centralized service lifecycle** -- PostingOrchestrator owns all kernel service singletons; no duplicate instances, no ad hoc construction. Modules receive services via dependency injection.
+- **Mandatory guard chain** -- PolicyAuthority, CompilationReceipt, and actor validation are required at every posting boundary. No posting without authority verification.
 
 ### 1.2 Concurrency Model (Better Than Most)
 - Row-level locking for idempotency (R8)
@@ -96,15 +100,26 @@ These are genuine competitive advantages over SAP/Oracle:
 - **Interactive demo tooling** -- CLI for posting events and viewing live report updates
 
 ### 1.7 Test Infrastructure (Exceptional)
-- 2,367 tests across 20 categories
+- ~4,740 tests across 25+ categories
 - Adversarial tests (attack vector simulation)
 - Concurrency tests (real PostgreSQL, 200 threads)
 - Metamorphic tests (post-reverse equivalence)
 - Property-based fuzzing (Hypothesis)
-- Architecture enforcement tests (import boundary verification)
+- Architecture enforcement tests (import boundary, no-workaround, dead scaffolding)
 - 108 dedicated reporting tests (pure function + integration + invariant)
+- 165+ wiring/architecture tests (engine dispatch, mandatory guards, runtime enforcement, module rewiring, financial exception lifecycle)
+- Architecture tests verified to exercise real architecture, not workaround patterns
 
-### 1.8 Engine Coverage (Complete)
+### 1.8 Financial Exception Lifecycle (Novel)
+- Every failed posting becomes a durable, inspectable, retriable financial case
+- `FailureType` enum classifies failures (GUARD, ENGINE, RECONCILIATION, SNAPSHOT, AUTHORITY, CONTRACT, SYSTEM) for work queue routing
+- State machine with explicit transitions: FAILED → RETRYING → POSTED/FAILED, FAILED → ABANDONED (terminal)
+- `VALID_TRANSITIONS` truth table enforced at service layer — no invalid state transitions possible
+- `RetryService` with MAX_RETRIES safety limit, immutable original payload/actor across retries
+- Work queue queries: filter by failure type, profile, actor; surface actionable cases
+- Every accepted event has exactly one `InterpretationOutcome` (invariant P15) — no failure disappears into logs
+
+### 1.9 Engine Coverage (Complete)
 The 12 existing engines provide all needed computational primitives:
 
 | Engine | Capabilities | Used By |
@@ -717,12 +732,15 @@ The UI is a separate application that consumes the API (GAP-01). It has no impac
 
 ## Part 5: Architecture -- What Changes, What Doesn't
 
-### Unchanged (Done)
+### Unchanged (Done — Fully Wired)
 
 ```
-finance_kernel/       # DONE. No changes needed.
-finance_engines/      # DONE. 12 engines cover all computation.
-finance_config/       # DONE. Add new policy sets as needed.
+finance_kernel/       # DONE. Fully wired: EngineDispatcher, PostingOrchestrator,
+                      # mandatory guards, runtime enforcement, financial exception
+                      # lifecycle. 16 architecture gaps (G1-G16) closed.
+finance_engines/      # DONE. 12 engines, all @traced_engine, dispatched via
+                      # EngineDispatcher with contract validation.
+finance_config/       # DONE. Add new policy sets as needed. Authoring guide shipped.
 ```
 
 ### Primary Work Area
@@ -757,9 +775,11 @@ finance_api/                        # NEW: REST API + Auth
 
 finance_services/
     workflow_service.py             # NEW: Workflow runtime
-    # Existing 4 services unchanged:
+    # Existing services:
     # correction_service.py, reconciliation_service.py,
-    # subledger_service.py, valuation_service.py
+    # subledger_service.py, valuation_service.py (DB-persisted cost lots)
+    # NEW: retry_service.py, posting_orchestrator.py, engine_dispatcher.py
+    #       (in finance_kernel/services/)
 ```
 
 ### Summary: What Gets Built
@@ -808,7 +828,8 @@ finance_services/
 | **Gov Contracting** | **Competitive** | Requires Deltek | **Advantage** | -- |
 | **Event Sourcing** | **Yes** | No | **Advantage** | -- |
 | **Replay Determinism** | **Yes** | No | **Advantage** | -- |
-| **Test Quality** | **Exceptional (2,367 tests)** | Proprietary | **Advantage** | -- |
+| **Test Quality** | **Exceptional (~4,740 tests)** | Proprietary | **Advantage** | -- |
+| **Exception Lifecycle** | **Yes (FAILED→RETRY→POSTED)** | Manual correction | **Advantage** | -- |
 
 ---
 
@@ -838,18 +859,18 @@ finance_services/
 
 | Layer | Files | LOC | % of Source | Status |
 |-------|-------|-----|-----------|--------|
-| finance_kernel | 85 | 28,820 | 42% | **Done** |
-| finance_engines | 18 | 7,506 | 11% | **Done** |
-| finance_modules | 79 | 20,573 | 30% | Primary work area (reporting complete) |
-| finance_services | 5 | 2,552 | 4% | +1 file (workflow) |
-| finance_config | 27 | 6,533 | 10% | +IFRS set when needed |
-| scripts | 10 | 2,646 | 4% | Demo + tooling |
-| **Total Source** | **224** | **68,630** | **100%** | |
+| finance_kernel | 103 | 30,330 | 43% | **Done — fully wired** |
+| finance_engines | 30 | 7,819 | 11% | **Done — traced & dispatched** |
+| finance_modules | 139 | 20,573 | 29% | Primary work area (reporting complete) |
+| finance_services | 10 | 2,670 | 4% | +1 file (workflow) |
+| finance_config | 37 | 6,563 | 9% | **Done** — +IFRS set when needed |
+| scripts | 20 | 2,646 | 4% | Demo + tooling |
+| **Total Source** | **339** | **70,601** | **100%** | |
 | | | | | |
-| tests | 142 | 59,253 | -- | 2,367 test functions, 20 categories |
-| SQL triggers | 12 | 1,069 | -- | 26 PostgreSQL triggers |
-| YAML config | 17 | 4,432 | -- | US-GAAP policy set |
-| **Grand Total** | **395** | **133,384** | | |
+| tests | 260 | 63,569 | -- | ~4,740 test functions, 25+ categories |
+| SQL triggers/DDL | 16 | 1,186 | -- | 26 PostgreSQL triggers + DDL |
+| YAML config | 17 | 4,458 | -- | US-GAAP policy set |
+| **Grand Total** | **632** | **139,814** | | |
 
 ## Appendix B: Invariant Coverage Matrix
 
@@ -907,4 +928,47 @@ Delivered 2026-01-29. First module to reach production-grade completeness.
 
 ---
 
-*This analysis was generated from a complete codebase review of all 224+ source files, 142 test files, and all configuration artifacts. Revised 2026-01-30 to reflect GAP-04 (Financial Reporting) closure, updated LOC metrics, and accurate test counts.*
+## Appendix D: Wiring Completion Summary
+
+Delivered 2026-01-30. All 16 architecture gaps (G1–G16) closed across 9 phases.
+
+| Phase | Deliverable | Gaps Closed | New Tests |
+|-------|-------------|-------------|-----------|
+| 1 | EngineDispatcher — traced, contract-validated engine invocation | G1, G2, G3, G4, G5 | 23 |
+| 2 | PostingOrchestrator — centralized service lifecycle, DI | G7 | 4 |
+| 3 | Mandatory Guards — PolicyAuthority, CompilationReceipt, actor validation | G8, G14, G15 | 26 |
+| 4 | Runtime Enforcement — subledger recon, snapshot freshness, link acyclicity, correction period lock | G9, G10, G11, G12 | 26 |
+| 5 | Module Rewiring — required_engines in YAML, variance_disposition wired | G6, G16 | 28 |
+| 6 | Persistence — CostLotModel ORM, ValuationLayer DB mode | G13 | 14 |
+| 7 | Architecture Tests — no-workaround guards | All | 13 |
+| 8 | Dead Scaffolding — compiled field consumption audit | All | 9 |
+| 9 | Financial Exception Lifecycle — FAILED/RETRYING/ABANDONED states, RetryService, work queues | Failure durability | 46 |
+| **Total** | | **G1–G16** | **189** |
+
+**Key artifacts:**
+
+| File | Purpose |
+|------|---------|
+| `finance_kernel/services/engine_dispatcher.py` | Runtime engine dispatch with trace records |
+| `finance_kernel/services/posting_orchestrator.py` | Central factory for all kernel service singletons |
+| `finance_kernel/services/retry_service.py` | Retry lifecycle: FAILED → RETRYING → POSTED/FAILED |
+| `finance_engines/invokers.py` | Standard invoker registrations for all 8 engines |
+| `finance_kernel/models/cost_lot.py` | Persistent cost lot ORM model |
+| `finance_kernel/db/sql/12_cost_lot.sql` | Cost lot DDL with CHECK constraints |
+| `finance_kernel/db/sql/13_outcome_exception_lifecycle.sql` | Exception lifecycle DDL |
+| `finance_config/CONFIG_AUTHORING_GUIDE.md` | 1,020-line comprehensive config authoring guide |
+| `docs/WIRING_COMPLETION_PLAN.md` | Full plan with all 9 phases documented |
+
+**Success criteria met:**
+1. Every engine invocation during posting flows through EngineDispatcher
+2. Every kernel service is created by PostingOrchestrator
+3. Every guard check is mandatory (PolicyAuthority, CompilationReceipt, actor)
+4. Every domain invariant enforced at runtime (subledger, snapshot, links, periods)
+5. Every engine-using policy declares `required_engines` in YAML
+6. Architecture tests prevent regression
+7. No dead scaffolding (pending items explicitly documented)
+8. Every failed posting becomes a financial case
+
+---
+
+*This analysis was generated from a complete codebase review of all 339 source files, 260 test files, and all configuration artifacts. Revised 2026-01-30 to reflect wiring completion (9 phases, G1–G16 closed), GAP-04 (Financial Reporting) closure, updated LOC metrics, and accurate test counts.*
