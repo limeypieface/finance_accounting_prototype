@@ -259,16 +259,19 @@ class MeaningBuilder:
 
     def __init__(
         self,
-        policy_registry: "PolicyAuthority | None" = None,
+        policy_authority: "PolicyAuthority | None" = None,
     ) -> None:
         """
         Initialize the MeaningBuilder.
 
         Args:
-            policy_registry: Optional policy registry for economic authority validation.
-                            If provided, build() can validate against policies.
+            policy_authority: PolicyAuthority for economic authority validation.
+                Strongly recommended. When provided and build() receives
+                module_type + target_ledgers, the builder validates that the
+                module is authorized for the economic action. A future version
+                will make this parameter strictly required.
         """
-        self._policy_registry = policy_registry
+        self._policy_registry = policy_authority
 
     def build(
         self,
@@ -635,7 +638,7 @@ class MeaningBuilder:
                     code="POLICY_VIOLATION",
                     message=violation.message,
                     field="economic_type",
-                    context={
+                    details={
                         "policy_type": violation.policy_type,
                         "economic_type": economic_type,
                         "target_ledgers": list(target_ledgers),

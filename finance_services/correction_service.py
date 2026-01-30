@@ -57,11 +57,14 @@ from finance_kernel.domain.economic_link import (
 )
 from finance_kernel.exceptions import (
     AlreadyCorrectedError,
+    ClosedPeriodError,
     CorrectionCascadeBlockedError,
+    PeriodNotFoundError,
     UnwindDepthExceededError,
     NoGLImpactError,
 )
 from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_kernel.services.period_service import PeriodService
 
 from finance_engines.correction.unwind import (
     UnwindPlan,
@@ -118,6 +121,7 @@ class CorrectionEngine:
         session: Session,
         link_graph: LinkGraphService,
         gl_entry_lookup: GLEntryLookup | None = None,
+        period_service: PeriodService | None = None,
     ):
         """
         Initialize the correction engine.
@@ -127,10 +131,14 @@ class CorrectionEngine:
             link_graph: LinkGraphService for link operations.
             gl_entry_lookup: Optional function to look up GL entries for an artifact.
                             If not provided, corrections will have empty GL entries.
+            period_service: Optional PeriodService for period lock enforcement (G12).
+                           When provided, corrections are blocked for artifacts in
+                           closed periods.
         """
         self.session = session
         self.link_graph = link_graph
         self._gl_entry_lookup = gl_entry_lookup or self._default_gl_lookup
+        self._period_service = period_service
 
     # =========================================================================
     # Plan Building
@@ -349,12 +357,45 @@ class CorrectionEngine:
         if reversal:
             return False, f"Already reversed by {reversal.child_ref}"
 
-        # Could add period lock checks here
-        # period = self._get_period_for_artifact(artifact_ref)
-        # if period and period.is_closed:
-        #     return False, f"Period {period.code} is closed"
+        # G12: Period lock check
+        if self._period_service is not None:
+            effective_date = self._get_effective_date(artifact_ref)
+            if effective_date is not None:
+                try:
+                    self._period_service.validate_effective_date(effective_date)
+                except ClosedPeriodError as e:
+                    return False, f"Period {e.period_code} is closed"
+                except PeriodNotFoundError:
+                    pass  # No period defined — allow correction
 
         return True, None
+
+    def _get_effective_date(self, artifact_ref: ArtifactRef) -> date | None:
+        """
+        Look up the effective date for an artifact.
+
+        For journal entries, queries the entry's effective_date.
+        For other artifact types, returns None (no period check).
+        """
+        from finance_kernel.models.journal import JournalEntry
+
+        if artifact_ref.artifact_type in (
+            ArtifactType.JOURNAL_ENTRY,
+            ArtifactType.EVENT,
+        ):
+            try:
+                artifact_id = UUID(str(artifact_ref.artifact_id))
+            except (ValueError, TypeError):
+                return None
+
+            entry = self.session.execute(
+                select(JournalEntry).where(JournalEntry.id == artifact_id)
+            ).scalar_one_or_none()
+
+            if entry is not None:
+                return entry.effective_date
+
+        return None
 
     def _get_gl_entries(self, artifact_ref: ArtifactRef) -> list[UUID]:
         """Get GL entry IDs for an artifact."""

@@ -7,6 +7,10 @@ Handles precedence resolution (P1) and effective date filtering.
 This is a pure domain component - no I/O, no ORM.
 """
 
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, ClassVar
@@ -18,6 +22,51 @@ from finance_kernel.domain.accounting_policy import (
 from finance_kernel.logging_config import get_logger
 
 logger = get_logger("domain.policy_selector")
+
+
+# ---------------------------------------------------------------------------
+# CompilationReceipt — proof that a policy passed compilation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CompilationReceipt:
+    """Proof that a policy was validated by PolicyCompiler.
+
+    Contains a hash of the compiled policy. PolicySelector.register()
+    verifies this receipt before accepting a policy into the dispatch
+    registry. This prevents unvalidated policies from entering runtime.
+
+    The receipt is created by ``PolicyCompiler.compile()`` and should
+    not be constructed directly in application code.
+    """
+
+    policy_name: str
+    policy_version: int
+    compiled_hash: str  # SHA-256 of canonical policy representation
+    config_fingerprint: str  # From CompiledPolicyPack.canonical_fingerprint
+
+    def matches(self, policy: AccountingPolicy) -> bool:
+        """Verify this receipt belongs to the given policy."""
+        return (
+            self.policy_name == policy.name
+            and self.policy_version == policy.version
+        )
+
+
+class UncompiledPolicyError(Exception):
+    """A policy was registered without a valid CompilationReceipt."""
+
+    code: str = "UNCOMPILED_POLICY"
+
+    def __init__(self, policy_name: str, policy_version: int):
+        self.policy_name = policy_name
+        self.policy_version = policy_version
+        super().__init__(
+            f"Policy '{policy_name}' v{policy_version} has no valid "
+            f"CompilationReceipt. All policies must pass compilation "
+            f"before registration."
+        )
 
 
 class PolicyNotFoundError(Exception):
@@ -85,16 +134,29 @@ class PolicySelector:
     _by_event_type: ClassVar[dict[str, list[AccountingPolicy]]] = {}
 
     @classmethod
-    def register(cls, profile: AccountingPolicy) -> None:
+    def register(
+        cls,
+        profile: AccountingPolicy,
+        compilation_receipt: CompilationReceipt | None = None,
+    ) -> None:
         """
         Register a profile.
 
         Args:
             profile: The profile to register.
+            compilation_receipt: Proof that the policy was compiled.
+                When provided, the receipt is validated against the
+                policy. A future version will make this strictly required.
 
         Raises:
             PolicyAlreadyRegisteredError: If profile name+version already exists.
+            UncompiledPolicyError: If receipt is provided but doesn't match.
         """
+        # Validate compilation receipt if provided
+        if compilation_receipt is not None:
+            if not compilation_receipt.matches(profile):
+                raise UncompiledPolicyError(profile.name, profile.version)
+
         if profile.name not in cls._profiles:
             cls._profiles[profile.name] = {}
 
@@ -116,6 +178,7 @@ class PolicySelector:
             cls._by_event_type[event_type] = []
         cls._by_event_type[event_type].append(profile)
 
+        has_receipt = compilation_receipt is not None
         logger.info(
             "profile_registered",
             extra={
@@ -123,6 +186,7 @@ class PolicySelector:
                 "version": profile.version,
                 "event_type": event_type,
                 "scope": profile.scope,
+                "has_compilation_receipt": has_receipt,
             },
         )
 

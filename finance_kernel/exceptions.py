@@ -118,10 +118,14 @@ All exceptions inherit from FinanceKernelError:
     |   +-- StandardCostNotFoundError
     |
     +-- CorrectionError
-        +-- AlreadyCorrectedError
-        +-- CorrectionCascadeBlockedError
-        +-- UnwindDepthExceededError
-        +-- NoGLImpactError
+    |   +-- AlreadyCorrectedError
+    |   +-- CorrectionCascadeBlockedError
+    |   +-- UnwindDepthExceededError
+    |   +-- NoGLImpactError
+    |
+    +-- ActorError
+        +-- InvalidActorError
+        +-- ActorFrozenError
 
 ===============================================================================
 ERROR CODES - QUICK REFERENCE
@@ -880,6 +884,31 @@ class MissingReferenceSnapshotError(ReferenceSnapshotError):
         )
 
 
+class StaleReferenceSnapshotError(ReferenceSnapshotError):
+    """
+    Reference snapshot is stale — current data has changed since capture.
+
+    G10 Compliance: At posting time, the intent's reference snapshot must
+    match the current state of reference data. If any component has changed,
+    the posting is rejected to prevent decisions based on outdated data.
+    """
+
+    code: str = "STALE_REFERENCE_SNAPSHOT"
+
+    def __init__(
+        self,
+        entry_id: str,
+        stale_components: list[str],
+    ):
+        self.entry_id = entry_id
+        self.stale_components = stale_components
+        super().__init__(
+            f"Reference snapshot for entry {entry_id} is stale. "
+            f"Changed components: {', '.join(stale_components)}. "
+            "Re-capture the snapshot and retry."
+        )
+
+
 # Strategy lifecycle related exceptions
 
 
@@ -1289,6 +1318,31 @@ class BankReconciliationError(ReconciliationError):
         self.reason = reason
         super().__init__(
             f"Bank reconciliation error for line {statement_line_id}: {reason}"
+        )
+
+
+class SubledgerReconciliationError(ReconciliationError):
+    """
+    Subledger/GL control account reconciliation failed at posting time.
+
+    G9 Compliance: When a SubledgerControlContract with enforce_on_post=True
+    exists for a ledger, the posting must maintain subledger–GL balance
+    within the configured tolerance. If the post would cause the subledger
+    to drift from its GL control account, the posting is rejected.
+    """
+
+    code: str = "SUBLEDGER_RECONCILIATION_FAILED"
+
+    def __init__(
+        self,
+        ledger_id: str,
+        violations: list[str],
+    ):
+        self.ledger_id = ledger_id
+        self.violations = violations
+        super().__init__(
+            f"Subledger reconciliation failed for ledger '{ledger_id}': "
+            + "; ".join(violations)
         )
 
 
@@ -1768,4 +1822,50 @@ class UnallowableCostToContractError(ContractError):
         super().__init__(
             f"Unallowable {cost_type} cost{reason_text} cannot be charged "
             f"to contract {contract_number}"
+        )
+
+
+# Actor-related exceptions
+
+
+class ActorError(FinanceKernelError):
+    """Base exception for actor validation errors."""
+
+    code: str = "ACTOR_ERROR"
+
+
+class InvalidActorError(ActorError):
+    """
+    Actor ID does not reference a valid, active party.
+
+    Every posting must be performed by a known actor. This guard
+    prevents phantom actor IDs from entering the audit trail.
+    """
+
+    code: str = "INVALID_ACTOR"
+
+    def __init__(self, actor_id: str):
+        self.actor_id = actor_id
+        super().__init__(
+            f"Actor {actor_id} is not a valid, active party"
+        )
+
+
+class ActorFrozenError(ActorError):
+    """
+    Actor is frozen and cannot perform postings.
+
+    A frozen actor cannot initiate new financial transactions.
+    This may be due to administrative hold, compliance review,
+    or termination.
+    """
+
+    code: str = "ACTOR_FROZEN"
+
+    def __init__(self, actor_id: str, reason: str | None = None):
+        self.actor_id = actor_id
+        self.reason = reason
+        reason_text = f": {reason}" if reason else ""
+        super().__init__(
+            f"Actor {actor_id} is frozen and cannot post{reason_text}"
         )
