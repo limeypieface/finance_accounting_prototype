@@ -63,6 +63,12 @@ class TestGeneralLedgerServiceStructure:
             "compute_budget_variance",
             "record_intercompany_transfer",
             "record_dividend_declared",
+            "recognize_deferred_revenue",
+            "recognize_deferred_expense",
+            "record_fx_unrealized_gain",
+            "record_fx_unrealized_loss",
+            "record_fx_realized_gain",
+            "record_fx_realized_loss",
         ]
         for method_name in expected:
             assert hasattr(GeneralLedgerService, method_name), (
@@ -197,3 +203,95 @@ class TestGLServiceIntegration:
         # Actual < budget = favorable
         assert variance_result.variance.amount == Decimal("-1500.00")
         assert variance_result.is_favorable
+
+    def test_recognize_deferred_revenue_posts(
+        self, gl_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Recognize deferred revenue through the real pipeline."""
+        result = gl_service.recognize_deferred_revenue(
+            recognition_id=uuid4(),
+            amount=Decimal("5000.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+            remaining_deferred=Decimal("15000.00"),
+        )
+
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
+
+    def test_recognize_deferred_expense_posts(
+        self, gl_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Recognize prepaid expense through the real pipeline."""
+        result = gl_service.recognize_deferred_expense(
+            recognition_id=uuid4(),
+            amount=Decimal("2000.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+            remaining_deferred=Decimal("10000.00"),
+        )
+
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
+
+    def test_record_fx_unrealized_gain_posts(
+        self, gl_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Record unrealized FX gain through the real pipeline."""
+        result = gl_service.record_fx_unrealized_gain(
+            amount=Decimal("1200.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+            original_currency="EUR",
+        )
+
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
+
+    def test_record_fx_unrealized_loss_posts(
+        self, gl_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Record unrealized FX loss through the real pipeline."""
+        result = gl_service.record_fx_unrealized_loss(
+            amount=Decimal("800.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+            original_currency="GBP",
+        )
+
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
+
+    def test_record_fx_realized_gain_posts(
+        self, gl_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Record realized FX gain through the real pipeline."""
+        result = gl_service.record_fx_realized_gain(
+            amount=Decimal("500.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+            original_currency="JPY",
+        )
+
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
+
+    def test_record_fx_realized_loss_posts(
+        self, gl_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Record realized FX loss through the real pipeline."""
+        result = gl_service.record_fx_realized_loss(
+            amount=Decimal("350.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+            original_currency="CHF",
+        )
+
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0

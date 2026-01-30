@@ -239,6 +239,25 @@ role_bindings:
 - role: INCOME_SUMMARY
   account_code: '3200'
   ledger: GL
+# --- GL Module: Missing roles ---
+- role: DIVIDENDS
+  account_code: '3300'
+  ledger: GL
+- role: DEFERRED_REVENUE
+  account_code: '2380'
+  ledger: GL
+- role: INTERCOMPANY_DUE_FROM
+  account_code: '1800'
+  ledger: GL
+- role: INTERCOMPANY_DUE_TO
+  account_code: '2550'
+  ledger: GL
+- role: FOREIGN_EXCHANGE_GAIN_LOSS
+  account_code: '6970'
+  ledger: GL
+- role: ROUNDING
+  account_code: '6998'
+  ledger: GL
 - role: CONTRACT_RECEIVABLE
   account_code: '1120'
   ledger: GL

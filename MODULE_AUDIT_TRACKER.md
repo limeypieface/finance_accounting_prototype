@@ -2,6 +2,25 @@
 
 Systematic audit of all finance modules for correctness, completeness, and test coverage.
 
+## AUDIT COMPLETE — All 12 Modules Audited
+
+| Module | Status | Issues Found | Issues Fixed | Tests Added |
+|--------|--------|-------------|--------------|-------------|
+| AR | DONE | from_context bugs, missing methods | All | — |
+| AP | DONE | UNBALANCED_INTENT, missing role | All | — |
+| Assets | DONE | 3 unbalanced profiles, 1 orphaned, duplicate LedgerEffects | All | +1 |
+| Cash | DONE | 8 from_context bugs, 5 orphaned profiles | All | +5 |
+| Procurement | DONE | 2 orphaned profiles, chart role mismatch | All | +2 |
+| Inventory | DONE | None (clean) | N/A | — |
+| WIP | DONE | 2 orphaned, 1 unbalanced, wrong ArtifactType | All | +2 |
+| Payroll | DONE | Accrual unbalanced, scope unreachable, 5 orphaned | All | +5 |
+| Expense | DONE | 3 orphaned, 4 missing chart roles, payload bug | All | +3 |
+| Tax | DONE | VAT settlement unbalanced, missing method, 4 missing chart roles | All | +4 |
+| Contracts | DONE | Billing duplicate LedgerEffect, missing profile, 3 orphaned | 5 of 6 | +1 |
+| GL | DONE | 6 missing chart roles, 7 orphaned profiles | 6 of 7 (2 accepted) | +6 |
+
+**Final regression: 1143 passed, 0 failures** (up from 1119 pre-audit baseline, +24 tests added)
+
 ## Audit Checklist (per module)
 
 Each module is audited against these 7 checks:
@@ -195,24 +214,51 @@ Each module is audited against these 7 checks:
 - [x] Update this tracker
 
 ### 3. GL (General Ledger)
-- **Status:** NOT STARTED
-- **Priority:** Low — likely thin (period close, year-end), but foundational
-- **Files to audit:**
-  - `finance_modules/gl/profiles.py`
-  - `finance_modules/gl/service.py`
-  - `finance_config/sets/US-GAAP-2026-v1/policies/gl.yaml`
-  - `tests/modules/test_gl_service.py`
-- **Audit steps:**
-  - [ ] Read profiles.py
-  - [ ] Read YAML
-  - [ ] Read service.py
-  - [ ] Read test file
-  - [ ] Check chart roles
-  - [ ] Check conftest roles
-  - [ ] Fix all issues
-  - [ ] Run tests
-  - [ ] Log verify
-  - [ ] Update this tracker
+- **Status:** DONE
+- **Scope:** 10 profiles (4 core GL + 2 deferred + 4 FX), 12 service methods (6 original + 6 new), 16 tests (3 structural + 13 integration)
+- **Files modified:**
+  - `finance_modules/gl/service.py` — Added 6 service methods (deferred revenue/expense recognition, 4 FX gain/loss)
+  - `finance_config/sets/US-GAAP-2026-v1/chart_of_accounts.yaml` — Added 6 missing roles
+  - `tests/modules/test_gl_service.py` — Added 6 integration tests, updated structural test
+
+#### Issues Found and Fixed (5)
+
+**Issue 1: 6 missing chart_of_accounts.yaml roles — FIXED**
+- Added: DIVIDENDS (3300), DEFERRED_REVENUE (2380), INTERCOMPANY_DUE_FROM (1800), INTERCOMPANY_DUE_TO (2550), FOREIGN_EXCHANGE_GAIN_LOSS (6970), ROUNDING (6998)
+
+**Issue 2: 7 orphaned profiles with no service methods — FIXED (6 of 7)**
+- Added 6 service methods: `recognize_deferred_revenue()`, `recognize_deferred_expense()`, `record_fx_unrealized_gain()`, `record_fx_unrealized_loss()`, `record_fx_realized_gain()`, `record_fx_realized_loss()`
+- FXRevaluation profile (`gl.fx_revaluation`) left orphaned — **redundant** (same role on debit/credit sides, superseded by the 4 specific FX gain/loss profiles)
+
+**Issue 3: FXRevaluation profile structurally questionable — ACCEPTED**
+- Same role (FOREIGN_EXCHANGE_GAIN_LOSS) on both debit and credit sides → self-canceling entry
+- Only 1 mapping line (debit only) — credit mapping missing
+- Redundant: all real FX posting handled by FXUnrealizedGain/Loss, FXRealizedGain/Loss profiles
+- No service method added (would produce a no-op journal entry)
+
+**Issue 4: 2 service methods with no profile (known gaps) — ACCEPTED**
+- `record_journal_entry()` → `gl.journal_entry` — returns PROFILE_NOT_FOUND
+- `record_adjustment()` → `gl.adjustment` — returns PROFILE_NOT_FOUND
+- Tests document this as known TODO. Manual journal entries don't fit the fixed debit/credit profile pattern — would need a "pass-through" or "foreach" profile design.
+
+**Issue 5: YAML parity — CLEAN**
+- All 10 YAML policies match profiles.py exactly (roles, mappings, guards)
+- Conftest bindings: all 16 GL roles bound correctly
+
+#### Audit Checklist
+- [x] Read profiles.py (10 profiles analyzed)
+- [x] Read YAML (10 policies, matches profiles)
+- [x] Read service.py (12 methods — 6 original + 6 new)
+- [x] Read test file (16 tests — 10 original + 6 new)
+- [x] Check chart roles (6 missing → added)
+- [x] Check conftest roles (all 16 roles bound)
+- [x] Fix Issue 1: Chart roles — DONE
+- [x] Fix Issue 2: Add 6 service methods — DONE
+- [x] Add 6 integration tests + update structural test — DONE
+- [x] Run tests: 16/16 passed
+- [x] Log verify: 4 sample new tests show `status: "posted"`
+- [x] Regression run: 1143 passed, 0 failures
+- [x] Update this tracker
 
 ---
 
@@ -236,4 +282,4 @@ pytest tests/modules/ -v
 | After Expense audit | 1132 | 0 | 2026-01-29 |
 | After Tax audit | 1136 | 0 | 2026-01-29 |
 | After Contracts audit | 1137 | 0 | 2026-01-29 |
-| After GL audit | — | — | — |
+| After GL audit | 1143 | 0 | 2026-01-29 |

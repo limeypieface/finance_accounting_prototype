@@ -377,3 +377,306 @@ class GeneralLedgerService:
         except Exception:
             self._session.rollback()
             raise
+
+    # =========================================================================
+    # Deferred Revenue Recognition
+    # =========================================================================
+
+    def recognize_deferred_revenue(
+        self,
+        recognition_id: UUID,
+        amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        remaining_deferred: Decimal,
+        currency: str = "USD",
+        org_unit: str | None = None,
+        cost_center: str | None = None,
+        project: str | None = None,
+        description: str | None = None,
+    ) -> ModulePostingResult:
+        """
+        Recognize deferred revenue over service period.
+
+        Profile: deferred.revenue_recognition -> DeferredRevenueRecognition
+        Guards: amount > 0, remaining_deferred >= 0
+        """
+        payload: dict[str, Any] = {
+            "amount": str(amount),
+            "remaining_deferred": str(remaining_deferred),
+        }
+        if org_unit:
+            payload["org_unit"] = org_unit
+        if cost_center:
+            payload["cost_center"] = cost_center
+        if project:
+            payload["project"] = project
+
+        logger.info("gl_deferred_revenue_recognition", extra={
+            "recognition_id": str(recognition_id),
+            "amount": str(amount),
+            "remaining_deferred": str(remaining_deferred),
+        })
+
+        try:
+            result = self._poster.post_event(
+                event_type="deferred.revenue_recognition",
+                payload=payload,
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                description=description,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Deferred Expense Recognition (Prepaid)
+    # =========================================================================
+
+    def recognize_deferred_expense(
+        self,
+        recognition_id: UUID,
+        amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        remaining_deferred: Decimal,
+        currency: str = "USD",
+        org_unit: str | None = None,
+        cost_center: str | None = None,
+        description: str | None = None,
+    ) -> ModulePostingResult:
+        """
+        Recognize prepaid expense over benefit period.
+
+        Profile: deferred.expense_recognition -> DeferredExpenseRecognition
+        Guards: amount > 0, remaining_deferred >= 0
+        """
+        payload: dict[str, Any] = {
+            "amount": str(amount),
+            "remaining_deferred": str(remaining_deferred),
+        }
+        if org_unit:
+            payload["org_unit"] = org_unit
+        if cost_center:
+            payload["cost_center"] = cost_center
+
+        logger.info("gl_deferred_expense_recognition", extra={
+            "recognition_id": str(recognition_id),
+            "amount": str(amount),
+            "remaining_deferred": str(remaining_deferred),
+        })
+
+        try:
+            result = self._poster.post_event(
+                event_type="deferred.expense_recognition",
+                payload=payload,
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                description=description,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # FX — Unrealized Gain/Loss
+    # =========================================================================
+
+    def record_fx_unrealized_gain(
+        self,
+        amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+        original_currency: str | None = None,
+        description: str | None = None,
+    ) -> ModulePostingResult:
+        """
+        Record unrealized FX gain from period-end revaluation.
+
+        Profile: fx.unrealized_gain -> FXUnrealizedGain
+        """
+        payload: dict[str, Any] = {"amount": str(amount)}
+        if original_currency:
+            payload["original_currency"] = original_currency
+
+        logger.info("gl_fx_unrealized_gain", extra={
+            "amount": str(amount),
+            "original_currency": original_currency,
+        })
+
+        try:
+            result = self._poster.post_event(
+                event_type="fx.unrealized_gain",
+                payload=payload,
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                description=description,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    def record_fx_unrealized_loss(
+        self,
+        amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+        original_currency: str | None = None,
+        description: str | None = None,
+    ) -> ModulePostingResult:
+        """
+        Record unrealized FX loss from period-end revaluation.
+
+        Profile: fx.unrealized_loss -> FXUnrealizedLoss
+        """
+        payload: dict[str, Any] = {"amount": str(amount)}
+        if original_currency:
+            payload["original_currency"] = original_currency
+
+        logger.info("gl_fx_unrealized_loss", extra={
+            "amount": str(amount),
+            "original_currency": original_currency,
+        })
+
+        try:
+            result = self._poster.post_event(
+                event_type="fx.unrealized_loss",
+                payload=payload,
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                description=description,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # FX — Realized Gain/Loss
+    # =========================================================================
+
+    def record_fx_realized_gain(
+        self,
+        amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+        original_currency: str | None = None,
+        description: str | None = None,
+    ) -> ModulePostingResult:
+        """
+        Record realized FX gain from settled transaction.
+
+        Profile: fx.realized_gain -> FXRealizedGain
+        """
+        payload: dict[str, Any] = {"amount": str(amount)}
+        if original_currency:
+            payload["original_currency"] = original_currency
+
+        logger.info("gl_fx_realized_gain", extra={
+            "amount": str(amount),
+            "original_currency": original_currency,
+        })
+
+        try:
+            result = self._poster.post_event(
+                event_type="fx.realized_gain",
+                payload=payload,
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                description=description,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    def record_fx_realized_loss(
+        self,
+        amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+        original_currency: str | None = None,
+        description: str | None = None,
+    ) -> ModulePostingResult:
+        """
+        Record realized FX loss from settled transaction.
+
+        Profile: fx.realized_loss -> FXRealizedLoss
+        """
+        payload: dict[str, Any] = {"amount": str(amount)}
+        if original_currency:
+            payload["original_currency"] = original_currency
+
+        logger.info("gl_fx_realized_loss", extra={
+            "amount": str(amount),
+            "original_currency": original_currency,
+        })
+
+        try:
+            result = self._poster.post_event(
+                event_type="fx.realized_loss",
+                payload=payload,
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                description=description,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
