@@ -21,11 +21,11 @@ We took a different approach. Every business event enters the system exactly onc
 
 ### Key Learnings
 
-**Immutability simplifies everything.** When records cannot be changed, there are no race conditions on balances, no "last write wins" bugs, no reconciliation drift. Corrections are explicit reversal entries that tell their own story.
+**Immutability.** When records cannot be changed, there are no race conditions on balances, no "last write wins" bugs, no reconciliation drift. Corrections are explicit reversal entries that tell their own story.
 
-**Declarative policy beats imperative code.** Moving posting rules into YAML policy definitions — rather than embedding them in code — means accountants and auditors can review, version, and approve the rules that govern financial recording without reading Python.
+**Declarative policy.** Moving posting rules into YAML policy definitions — rather than embedding them in code — means accountants and auditors can review, version, and approve the rules that govern financial recording without reading Python.
 
-**The decision journal is the audit trail.** Structured logs captured during every posting are persisted alongside the outcome. This means any journal entry can be traced back to the exact policy, configuration version, role resolution, balance check, and sequence allocation that produced it. An LLM reading this trail can explain in plain language why a specific dollar amount landed in a specific account.
+**Audit trail.** Structured logs captured during every posting are persisted alongside the outcome. This means any journal entry can be traced back to the exact policy, configuration version, role resolution, balance check, and sequence allocation that produced it. An LLM reading this trail can explain in plain language why a specific dollar amount landed in a specific account.
 
 **Pure functions and clock injection make replay deterministic.** Because the domain core has zero side effects and all timestamps are injected, the same event processed with the same configuration will always produce the same journal entry — a property that underpins audit replay and regulatory compliance.
 
