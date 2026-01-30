@@ -167,6 +167,9 @@ policies:
   module: wip
   description: Labor efficiency variance at close
   effective_from: '2024-01-01'
+  required_engines: ["variance"]
+  engine_parameters_ref: variance
+  variance_disposition: post
   trigger:
     event_type: wip.labor_variance
   meaning:
@@ -190,6 +193,9 @@ policies:
   module: wip
   description: Material usage variance at close
   effective_from: '2024-01-01'
+  required_engines: ["variance"]
+  engine_parameters_ref: variance
+  variance_disposition: post
   trigger:
     event_type: wip.material_variance
   meaning:
@@ -213,6 +219,9 @@ policies:
   module: wip
   description: Overhead over/under applied variance
   effective_from: '2024-01-01'
+  required_engines: ["variance"]
+  engine_parameters_ref: variance
+  variance_disposition: post
   trigger:
     event_type: wip.overhead_variance
   meaning:

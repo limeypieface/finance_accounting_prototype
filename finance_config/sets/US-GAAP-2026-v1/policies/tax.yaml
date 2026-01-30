@@ -4,6 +4,7 @@ policies:
   module: tax
   description: Sales tax collected from customer
   effective_from: '2024-01-01'
+  required_engines: ["tax"]
   trigger:
     event_type: tax.sales_tax_collected
   meaning:
@@ -29,6 +30,7 @@ policies:
   module: tax
   description: Use tax self-assessed on purchase
   effective_from: '2024-01-01'
+  required_engines: ["tax"]
   trigger:
     event_type: tax.use_tax_accrued
   meaning:
@@ -79,6 +81,7 @@ policies:
   module: tax
   description: VAT paid on purchase (input credit)
   effective_from: '2024-01-01'
+  required_engines: ["tax"]
   trigger:
     event_type: tax.vat_input
   meaning:
@@ -104,6 +107,7 @@ policies:
   module: tax
   description: VAT collected on sale (output)
   effective_from: '2024-01-01'
+  required_engines: ["tax"]
   trigger:
     event_type: tax.vat_output
   meaning:

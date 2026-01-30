@@ -40,6 +40,9 @@ policies:
   module: inventory
   description: Receipt at actual cost differs from standard — records PPV
   effective_from: '2024-01-01'
+  required_engines: ["variance"]
+  engine_parameters_ref: variance
+  variance_disposition: post
   trigger:
     event_type: inventory.receipt
     where:

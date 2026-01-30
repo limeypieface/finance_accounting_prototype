@@ -62,6 +62,7 @@ from finance_kernel.exceptions import (
     LotDepletedError,
     StandardCostNotFoundError,
 )
+from finance_kernel.models.cost_lot import CostLotModel
 from finance_kernel.services.link_graph_service import LinkGraphService
 from finance_kernel.logging_config import get_logger
 
@@ -112,17 +113,18 @@ class ValuationLayer:
             session: SQLAlchemy session for database operations.
             link_graph: LinkGraphService for link operations.
             lots_by_item: Optional in-memory lot storage (for testing).
-                         In production, lots would be stored in a table.
+                         When None, lots are persisted to the cost_lots table.
         """
         self.session = session
         self.link_graph = link_graph
         self.allocation = AllocationEngine()
 
-        # In-memory storage for lots (in production, would be database table)
-        # Key: item_id, Value: list of CostLot
-        self._lots: dict[str, list[CostLot]] = lots_by_item or {}
+        # If lots_by_item is provided, use in-memory mode (for tests that
+        # don't have the cost_lots table). Otherwise, use DB persistence.
+        self._in_memory_lots: dict[str, list[CostLot]] | None = lots_by_item
 
-        # Standard costs (item_id -> Money)
+        # Standard costs (item_id -> Money) — in-memory is acceptable here
+        # as standard costs are configuration data reloaded per session.
         self._standard_costs: dict[str, Money] = {}
 
     # =========================================================================
@@ -189,10 +191,8 @@ class ValuationLayer:
             metadata=metadata,
         )
 
-        # Store the lot
-        if item_id not in self._lots:
-            self._lots[item_id] = []
-        self._lots[item_id].append(lot)
+        # Persist the lot
+        self._store_lot(lot, creating_event_id)
 
         # Create SOURCED_FROM link: source -> lot
         link = EconomicLink.create(
@@ -221,11 +221,13 @@ class ValuationLayer:
 
     def get_lot(self, lot_id: UUID) -> CostLot | None:
         """Get a lot by ID."""
-        for lots in self._lots.values():
-            for lot in lots:
-                if lot.lot_id == lot_id:
-                    return lot
-        return None
+        if self._in_memory_lots is not None:
+            for lots in self._in_memory_lots.values():
+                for lot in lots:
+                    if lot.lot_id == lot_id:
+                        return lot
+            return None
+        return self._load_lot_by_id(lot_id)
 
     def get_lot_by_item(
         self,
@@ -233,11 +235,13 @@ class ValuationLayer:
         lot_id: UUID,
     ) -> CostLot | None:
         """Get a specific lot for an item."""
-        lots = self._lots.get(item_id, [])
-        for lot in lots:
-            if lot.lot_id == lot_id:
-                return lot
-        return None
+        if self._in_memory_lots is not None:
+            lots = self._in_memory_lots.get(item_id, [])
+            for lot in lots:
+                if lot.lot_id == lot_id:
+                    return lot
+            return None
+        return self._load_lot_by_id(lot_id)
 
     # =========================================================================
     # Layer Queries
@@ -269,7 +273,7 @@ class ValuationLayer:
             "as_of_date": as_of_date.isoformat() if as_of_date else None,
         })
 
-        lots = self._lots.get(item_id, [])
+        lots = self._load_lots_for_item(item_id)
         layers: list[CostLayer] = []
 
         for lot in lots:
@@ -624,6 +628,79 @@ class ValuationLayer:
     def get_standard_cost(self, item_id: str) -> Money | None:
         """Get the standard cost for an item."""
         return self._standard_costs.get(item_id)
+
+    # =========================================================================
+    # Persistence Helpers (G13: DB-backed lot storage)
+    # =========================================================================
+
+    def _store_lot(self, lot: CostLot, creating_event_id: UUID) -> None:
+        """Persist a CostLot — to DB or in-memory depending on mode."""
+        if self._in_memory_lots is not None:
+            if lot.item_id not in self._in_memory_lots:
+                self._in_memory_lots[lot.item_id] = []
+            self._in_memory_lots[lot.item_id].append(lot)
+            return
+
+        model = CostLotModel(
+            id=lot.lot_id,
+            item_id=lot.item_id,
+            location_id=lot.location_id,
+            lot_date=lot.lot_date,
+            original_quantity=lot.original_quantity.value,
+            quantity_unit=lot.original_quantity.unit,
+            original_cost=lot.original_cost.amount,
+            currency=lot.original_cost.currency.code,
+            cost_method=lot.cost_method.value,
+            source_event_id=creating_event_id,
+            source_artifact_type=lot.source_ref.artifact_type.value,
+            source_artifact_id=lot.source_ref.artifact_id,
+            created_at=datetime.now(timezone.utc),
+            lot_metadata=dict(lot.metadata) if lot.metadata else None,
+        )
+        self.session.add(model)
+        self.session.flush()
+
+    def _load_lot_by_id(self, lot_id: UUID) -> CostLot | None:
+        """Load a single CostLot from the database by ID."""
+        stmt = select(CostLotModel).where(CostLotModel.id == lot_id)
+        model = self.session.execute(stmt).scalars().first()
+        if model is None:
+            return None
+        return self._model_to_domain(model)
+
+    def _load_lots_for_item(self, item_id: str) -> list[CostLot]:
+        """Load all CostLots for an item from DB or in-memory storage."""
+        if self._in_memory_lots is not None:
+            return self._in_memory_lots.get(item_id, [])
+
+        stmt = (
+            select(CostLotModel)
+            .where(CostLotModel.item_id == item_id)
+            .order_by(CostLotModel.lot_date)
+        )
+        models = self.session.execute(stmt).scalars().all()
+        return [self._model_to_domain(m) for m in models]
+
+    @staticmethod
+    def _model_to_domain(model: CostLotModel) -> CostLot:
+        """Convert a CostLotModel ORM row to a CostLot domain object."""
+        return CostLot(
+            lot_id=model.id,
+            item_id=model.item_id,
+            location_id=model.location_id,
+            lot_date=model.lot_date,
+            original_quantity=Quantity(
+                value=model.original_quantity,
+                unit=model.quantity_unit,
+            ),
+            original_cost=Money.of(model.original_cost, model.currency),
+            cost_method=CostMethod(model.cost_method),
+            source_ref=ArtifactRef(
+                artifact_type=ArtifactType(model.source_artifact_type),
+                artifact_id=model.source_artifact_id,
+            ),
+            metadata=model.lot_metadata,
+        )
 
     # =========================================================================
     # Internal Methods

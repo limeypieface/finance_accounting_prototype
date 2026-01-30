@@ -281,6 +281,7 @@ policies:
   module: contracts
   description: Records provisional billing for cost-reimbursement contract
   effective_from: '2024-01-01'
+  required_engines: ["billing"]
   trigger:
     event_type: contract.billing_provisional
     where:
@@ -323,6 +324,7 @@ policies:
   module: contracts
   description: Records provisional billing for T&M contract
   effective_from: '2024-01-01'
+  required_engines: ["billing"]
   trigger:
     event_type: contract.billing_provisional
     where:
@@ -356,6 +358,7 @@ policies:
   module: contracts
   description: Records provisional billing for labor-hour contract
   effective_from: '2024-01-01'
+  required_engines: ["billing"]
   trigger:
     event_type: contract.billing_provisional
     where:
@@ -467,6 +470,7 @@ policies:
   module: contracts
   description: Allocates fringe costs to contract
   effective_from: '2024-01-01'
+  required_engines: ["allocation"]
   trigger:
     event_type: contract.indirect_allocation
     where:
@@ -491,6 +495,7 @@ policies:
   module: contracts
   description: Allocates overhead costs to contract
   effective_from: '2024-01-01'
+  required_engines: ["allocation"]
   trigger:
     event_type: contract.indirect_allocation
     where:
@@ -515,6 +520,7 @@ policies:
   module: contracts
   description: Allocates G&A costs to contract
   effective_from: '2024-01-01'
+  required_engines: ["allocation"]
   trigger:
     event_type: contract.indirect_allocation
     where:

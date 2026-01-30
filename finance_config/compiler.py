@@ -74,6 +74,7 @@ class CompiledPolicy:
     line_mappings: tuple[LineMappingDef, ...]
     required_engines: tuple[str, ...]
     engine_parameters_ref: str | None
+    variance_disposition: str | None
     capability_tags: tuple[str, ...]
     description: str
     module: str
@@ -253,6 +254,7 @@ def compile_policy_pack(
                 line_mappings=policy_def.line_mappings,
                 required_engines=policy_def.required_engines,
                 engine_parameters_ref=policy_def.engine_parameters_ref,
+                variance_disposition=policy_def.variance_disposition,
                 capability_tags=policy_def.capability_tags,
                 description=policy_def.description,
                 module=policy_def.module,

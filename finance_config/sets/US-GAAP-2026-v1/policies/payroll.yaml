@@ -221,6 +221,7 @@ policies:
   module: payroll
   description: Records direct labor cost distribution to WIP
   effective_from: '2024-01-01'
+  required_engines: ["allocation"]
   trigger:
     event_type: labor.distribution_direct
     where:
@@ -251,6 +252,7 @@ policies:
   module: payroll
   description: Records indirect labor cost distribution to overhead pool
   effective_from: '2024-01-01'
+  required_engines: ["allocation"]
   trigger:
     event_type: labor.distribution_indirect
     where:
@@ -275,6 +277,7 @@ policies:
   module: payroll
   description: Records overhead labor cost allocation
   effective_from: '2024-01-01'
+  required_engines: ["allocation"]
   trigger:
     event_type: labor.distribution_overhead
     where:

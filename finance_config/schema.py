@@ -123,6 +123,7 @@ class PolicyDefinition:
     # Engine binding
     required_engines: tuple[str, ...] = ()
     engine_parameters_ref: str | None = None  # Key in engine_configs
+    variance_disposition: str | None = None  # "post", "capitalize", "allocate", "write_off"
 
     # Capability tagging
     capability_tags: tuple[str, ...] = ()  # e.g., ("DCAA",), ("IFRS",)

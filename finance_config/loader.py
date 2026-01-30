@@ -137,6 +137,7 @@ def parse_policy(data: dict[str, Any]) -> PolicyDefinition:
         line_mappings=line_mappings,
         required_engines=tuple(data.get("required_engines", ())),
         engine_parameters_ref=data.get("engine_parameters_ref"),
+        variance_disposition=data.get("variance_disposition"),
         capability_tags=tuple(data.get("capability_tags", ())),
         description=data.get("description", ""),
         module=data.get("module", ""),

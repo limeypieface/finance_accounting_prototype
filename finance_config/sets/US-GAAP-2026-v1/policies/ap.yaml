@@ -51,6 +51,7 @@ policies:
   module: ap
   description: Records AP invoice matched to purchase order, clearing GRNI
   effective_from: '2024-01-01'
+  required_engines: ["matching"]
   trigger:
     event_type: ap.invoice_received
   meaning:
