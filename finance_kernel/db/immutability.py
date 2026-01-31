@@ -52,16 +52,18 @@ is aborted. The database is never modified.
 PROTECTED ENTITIES
 ===============================================================================
 
-Entity          | When Immutable                    | Why
-----------------|-----------------------------------|----------------------------------
-JournalEntry    | After status = POSTED             | Posted = finalized, auditable
-JournalLine     | When parent entry is POSTED       | Lines are part of the entry
-AuditEvent      | ALWAYS (from creation)            | Audit trail is sacred
-Account         | Structural fields when referenced | Changing type would corrupt reports
-FiscalPeriod    | After status = CLOSED             | Closed = year-end finalized
-Dimension       | Code when values exist            | Code is FK target
-DimensionValue  | Code/name always                  | Referenced in journal dimensions
-ExchangeRate    | When referenced by journal lines  | Changing rate alters history
+Entity                      | When Immutable                    | Why
+----------------------------|-----------------------------------|----------------------------------
+JournalEntry                | After status = POSTED             | Posted = finalized, auditable
+JournalLine                 | When parent entry is POSTED       | Lines are part of the entry
+AuditEvent                  | ALWAYS (from creation)            | Audit trail is sacred
+Account                     | Structural fields when referenced | Changing type would corrupt reports
+FiscalPeriod                | After status = CLOSED             | Closed = year-end finalized
+Dimension                   | Code when values exist            | Code is FK target
+DimensionValue              | Code/name always                  | Referenced in journal dimensions
+ExchangeRate                | When referenced by journal lines  | Changing rate alters history
+SubledgerEntry              | After posted_at is set            | Financial fields frozen; recon fields mutable
+ReconciliationFailureReport | ALWAYS (from creation)            | Audit artifact (SL-G6) is sacred
 
 ===============================================================================
 DESIGN DECISIONS
@@ -1031,6 +1033,170 @@ def _check_exchange_rate_delete(mapper, connection, target):
         )
 
 
+# =============================================================================
+# Subledger Entry Immutability
+# =============================================================================
+#
+# Once a subledger entry is posted (posted_at is set), its financial fields
+# are immutable. This mirrors the JournalEntry pattern: financial truth is
+# frozen, corrections happen via reversal entries.
+#
+# Reconciliation fields (reconciliation_status, reconciled_amount) are
+# ALLOWED to change even after posting — reconciliation is a post-posting
+# lifecycle event, not a financial mutation.
+#
+# ReconciliationFailureReportModel is always immutable (append-only audit
+# artifact, like AuditEvent).
+# =============================================================================
+
+# Fields that may be updated on posted subledger entries (reconciliation lifecycle)
+SUBLEDGER_ENTRY_MUTABLE_AFTER_POST = frozenset({
+    "reconciliation_status",
+    "reconciled_amount",
+    "updated_at",
+    "updated_by_id",
+})
+
+
+def _check_subledger_entry_immutability(mapper, connection, target):
+    """
+    Prevent updates to financial fields on posted SubledgerEntryModel records.
+
+    R10 Compliance: Posted subledger entries are immutable except for
+    reconciliation lifecycle fields.
+
+    A subledger entry is considered "posted" when posted_at is not None.
+    After posting, only reconciliation_status and reconciled_amount may change.
+    """
+    from finance_kernel.models.subledger import SubledgerEntryModel
+    from sqlalchemy.orm.attributes import get_history
+
+    if not isinstance(target, SubledgerEntryModel):
+        return
+
+    # Check if the entry was already posted before this update
+    posted_at_history = get_history(target, "posted_at")
+
+    was_posted_before = False
+    if posted_at_history.deleted:
+        # posted_at is changing — if old value was not None, it was already posted
+        was_posted_before = posted_at_history.deleted[0] is not None
+    elif not posted_at_history.added:
+        # posted_at is NOT changing — check current value
+        was_posted_before = target.posted_at is not None
+
+    if not was_posted_before:
+        return  # Entry not yet posted, all changes allowed
+
+    # Entry was already posted — only reconciliation fields may change
+    from sqlalchemy import inspect
+
+    insp = inspect(target)
+    for attr in insp.attrs:
+        if attr.key in SUBLEDGER_ENTRY_MUTABLE_AFTER_POST:
+            continue
+        hist = attr.history
+        if hist.has_changes():
+            logger.error(
+                "immutability_violation_blocked",
+                extra={
+                    "invariant": "R10",
+                    "entity_type": "SubledgerEntry",
+                    "entity_id": str(target.id),
+                    "operation": "UPDATE",
+                    "field": attr.key,
+                },
+            )
+            raise ImmutabilityViolationError(
+                entity_type="SubledgerEntry",
+                entity_id=str(target.id),
+                reason=f"Cannot modify field '{attr.key}' on posted subledger entry",
+            )
+
+
+def _check_subledger_entry_delete(mapper, connection, target):
+    """
+    Prevent deletion of posted SubledgerEntryModel records.
+
+    R10 Compliance: Posted subledger entries cannot be deleted.
+    """
+    from finance_kernel.models.subledger import SubledgerEntryModel
+
+    if not isinstance(target, SubledgerEntryModel):
+        return
+
+    if target.posted_at is not None:
+        logger.error(
+            "immutability_violation_blocked",
+            extra={
+                "invariant": "R10",
+                "entity_type": "SubledgerEntry",
+                "entity_id": str(target.id),
+                "operation": "DELETE",
+            },
+        )
+        raise ImmutabilityViolationError(
+            entity_type="SubledgerEntry",
+            entity_id=str(target.id),
+            reason="Posted subledger entries cannot be deleted",
+        )
+
+
+def _check_reconciliation_failure_report_immutability(mapper, connection, target):
+    """
+    Prevent any updates to ReconciliationFailureReportModel records.
+
+    These are append-only audit artifacts (SL-G6, F11). Once created,
+    they must never be modified.
+    """
+    from finance_kernel.models.subledger import ReconciliationFailureReportModel
+
+    if not isinstance(target, ReconciliationFailureReportModel):
+        return
+
+    logger.error(
+        "immutability_violation_blocked",
+        extra={
+            "invariant": "R10",
+            "entity_type": "ReconciliationFailureReport",
+            "entity_id": str(target.id),
+            "operation": "UPDATE",
+        },
+    )
+    raise ImmutabilityViolationError(
+        entity_type="ReconciliationFailureReport",
+        entity_id=str(target.id),
+        reason="Reconciliation failure reports are immutable audit artifacts",
+    )
+
+
+def _check_reconciliation_failure_report_delete(mapper, connection, target):
+    """
+    Prevent deletion of ReconciliationFailureReportModel records.
+
+    These are append-only audit artifacts and cannot be deleted.
+    """
+    from finance_kernel.models.subledger import ReconciliationFailureReportModel
+
+    if not isinstance(target, ReconciliationFailureReportModel):
+        return
+
+    logger.error(
+        "immutability_violation_blocked",
+        extra={
+            "invariant": "R10",
+            "entity_type": "ReconciliationFailureReport",
+            "entity_id": str(target.id),
+            "operation": "DELETE",
+        },
+    )
+    raise ImmutabilityViolationError(
+        entity_type="ReconciliationFailureReport",
+        entity_id=str(target.id),
+        reason="Reconciliation failure reports cannot be deleted",
+    )
+
+
 def register_immutability_listeners():
     """
     Register all immutability enforcement event listeners.
@@ -1047,6 +1213,10 @@ def register_immutability_listeners():
     from finance_kernel.models.fiscal_period import FiscalPeriod
     from finance_kernel.models.dimensions import Dimension, DimensionValue
     from finance_kernel.models.exchange_rate import ExchangeRate
+    from finance_kernel.models.subledger import (
+        SubledgerEntryModel,
+        ReconciliationFailureReportModel,
+    )
 
     # Session-level before_flush event for checking deletions before flush plan
     # This is necessary for Account deletion checks because mapper-level events
@@ -1084,6 +1254,22 @@ def register_immutability_listeners():
     event.listen(ExchangeRate, "before_update", _check_exchange_rate_immutability)
     event.listen(ExchangeRate, "before_delete", _check_exchange_rate_delete)
 
+    # SubledgerEntry listeners
+    event.listen(SubledgerEntryModel, "before_update", _check_subledger_entry_immutability)
+    event.listen(SubledgerEntryModel, "before_delete", _check_subledger_entry_delete)
+
+    # ReconciliationFailureReport listeners (always immutable)
+    event.listen(
+        ReconciliationFailureReportModel,
+        "before_update",
+        _check_reconciliation_failure_report_immutability,
+    )
+    event.listen(
+        ReconciliationFailureReportModel,
+        "before_delete",
+        _check_reconciliation_failure_report_delete,
+    )
+
 
 def _safe_remove_listener(target, event_name, listener_fn):
     """
@@ -1109,6 +1295,10 @@ def unregister_immutability_listeners():
     from finance_kernel.models.fiscal_period import FiscalPeriod
     from finance_kernel.models.dimensions import Dimension, DimensionValue
     from finance_kernel.models.exchange_rate import ExchangeRate
+    from finance_kernel.models.subledger import (
+        SubledgerEntryModel,
+        ReconciliationFailureReportModel,
+    )
 
     # Session-level before_flush event
     _safe_remove_listener(Session, "before_flush", _check_account_deletion_before_flush)
@@ -1143,3 +1333,19 @@ def unregister_immutability_listeners():
     _safe_remove_listener(ExchangeRate, "before_insert", _check_exchange_rate_insert)
     _safe_remove_listener(ExchangeRate, "before_update", _check_exchange_rate_immutability)
     _safe_remove_listener(ExchangeRate, "before_delete", _check_exchange_rate_delete)
+
+    # SubledgerEntry listeners
+    _safe_remove_listener(SubledgerEntryModel, "before_update", _check_subledger_entry_immutability)
+    _safe_remove_listener(SubledgerEntryModel, "before_delete", _check_subledger_entry_delete)
+
+    # ReconciliationFailureReport listeners
+    _safe_remove_listener(
+        ReconciliationFailureReportModel,
+        "before_update",
+        _check_reconciliation_failure_report_immutability,
+    )
+    _safe_remove_listener(
+        ReconciliationFailureReportModel,
+        "before_delete",
+        _check_reconciliation_failure_report_delete,
+    )

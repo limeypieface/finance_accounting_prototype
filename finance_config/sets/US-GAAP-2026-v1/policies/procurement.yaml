@@ -107,3 +107,123 @@ policies:
     side: debit
   - role: PURCHASE_COMMITMENT
     side: credit
+- name: RequisitionCreated
+  version: 1
+  module: procurement
+  description: Purchase requisition commitment recorded
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: procurement.requisition_created
+  meaning:
+    economic_type: MEMO_COMMITMENT
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: PURCHASE_COMMITMENT
+    credit_role: COMMITMENT_OFFSET
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Requisition amount must be positive
+  line_mappings:
+  - role: PURCHASE_COMMITMENT
+    side: debit
+  - role: COMMITMENT_OFFSET
+    side: credit
+  # RequisitionConverted is handled by two-step posting in service:
+  # 1. commitment_relieved (POCommitmentRelief)
+  # 2. po_encumbered (POEncumbrance)
+- name: POAmended
+  version: 1
+  module: procurement
+  description: PO amended — adjust encumbrance by delta
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: procurement.po_amended
+  meaning:
+    economic_type: BUDGETARY_ENCUMBRANCE
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: ENCUMBRANCE
+    credit_role: RESERVE_FOR_ENCUMBRANCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Amendment amount must be positive
+  line_mappings:
+  - role: ENCUMBRANCE
+    side: debit
+  - role: RESERVE_FOR_ENCUMBRANCE
+    side: credit
+- name: ReceiptMatched
+  version: 1
+  module: procurement
+  description: Receipt matched to PO — relieve encumbrance, create AP subledger entry
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: procurement.receipt_matched
+  meaning:
+    economic_type: BUDGETARY_RELIEF
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: RESERVE_FOR_ENCUMBRANCE
+    credit_role: ENCUMBRANCE
+  - ledger: AP
+    debit_role: INVOICE
+    credit_role: SUPPLIER_BALANCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Match amount must be positive
+  line_mappings:
+  - role: RESERVE_FOR_ENCUMBRANCE
+    side: debit
+  - role: ENCUMBRANCE
+    side: credit
+  - role: INVOICE
+    side: debit
+    ledger: AP
+  - role: SUPPLIER_BALANCE
+    side: credit
+    ledger: AP
+- name: QuantityVariance
+  version: 1
+  module: procurement
+  description: Quantity variance between PO and receipt
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: procurement.quantity_variance
+  meaning:
+    economic_type: QUANTITY_VARIANCE
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: QUANTITY_VARIANCE
+    credit_role: RESERVE_FOR_ENCUMBRANCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Variance amount must be positive
+  line_mappings:
+  - role: QUANTITY_VARIANCE
+    side: debit
+  - role: RESERVE_FOR_ENCUMBRANCE
+    side: credit

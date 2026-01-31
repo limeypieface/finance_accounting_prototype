@@ -196,3 +196,48 @@ class StockTransfer:
     quantity: Decimal
     status: TransferStatus = TransferStatus.REQUESTED
     lot_number: str | None = None
+
+
+@dataclass(frozen=True)
+class CycleCount:
+    """A cycle count result for an item at a location."""
+    id: UUID
+    count_date: date
+    item_id: str
+    location_id: str | None
+    expected_quantity: Decimal
+    actual_quantity: Decimal
+    variance_quantity: Decimal  # actual - expected
+    variance_amount: Decimal
+    currency: str = "USD"
+    counter_id: UUID | None = None
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class ABCClassification:
+    """ABC analysis result for an item."""
+    item_id: str
+    classification: str  # A, B, C
+    annual_value: Decimal
+    cumulative_percent: Decimal
+    as_of_date: date
+
+
+@dataclass(frozen=True)
+class ReorderPoint:
+    """Computed reorder point parameters for an item."""
+    item_id: str
+    location_id: str | None
+    reorder_point: Decimal
+    safety_stock: Decimal
+    eoq: Decimal
+    avg_daily_usage: Decimal
+    lead_time_days: int
+
+
+@dataclass(frozen=True)
+class ItemValue:
+    """Item annual value for ABC classification."""
+    item_id: str
+    annual_value: Decimal

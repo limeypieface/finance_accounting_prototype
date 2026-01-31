@@ -4,8 +4,9 @@ Finance Engines - Pure Calculation Engines
 Pure function engines that operate on finance_kernel primitives.
 No I/O, no database access, fully deterministic.
 
-Stateful services (ValuationLayer, ReconciliationManager, CorrectionEngine,
-SubledgerService) have moved to finance_services/.
+Purity rule: engines NEVER call ``datetime.now()`` or ``date.today()``.
+Timestamps and dates must be passed in as explicit parameters.
+Callers (services) are responsible for providing the current time.
 
 Usage:
     from finance_engines.variance import VarianceCalculator
@@ -19,9 +20,6 @@ Usage:
     from finance_engines.valuation import CostLot, CostMethod
     from finance_engines.reconciliation import ReconciliationState
     from finance_engines.correction import UnwindPlan
-
-    # Stateful services (moved to finance_services/)
-    from finance_services import ValuationLayer, ReconciliationManager, CorrectionEngine
 """
 
 from finance_kernel.logging_config import get_logger

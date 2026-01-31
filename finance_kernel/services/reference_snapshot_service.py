@@ -28,7 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import Any, Sequence
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -43,10 +43,6 @@ from finance_kernel.domain.reference_snapshot import (
     SnapshotRequest,
     SnapshotValidationResult,
 )
-
-if TYPE_CHECKING:
-    from finance_config.compiler import CompiledPolicyPack
-
 
 class ReferenceSnapshotService:
     """

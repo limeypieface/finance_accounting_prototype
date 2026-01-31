@@ -192,6 +192,13 @@ def parse_subledger_contract(data: dict[str, Any]) -> SubledgerContractDef:
         owner_module=data["owner_module"],
         control_account_role=data["control_account_role"],
         entry_types=tuple(data.get("entry_types", ())),
+        is_debit_normal=data.get("is_debit_normal", True),
+        timing=data.get("timing", "real_time"),
+        tolerance_type=data.get("tolerance_type", "none"),
+        tolerance_amount=str(data.get("tolerance_amount", "0")),
+        tolerance_percentage=str(data.get("tolerance_percentage", "0")),
+        enforce_on_post=data.get("enforce_on_post", True),
+        enforce_on_close=data.get("enforce_on_close", True),
     )
 
 

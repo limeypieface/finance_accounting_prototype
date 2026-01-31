@@ -107,7 +107,7 @@ class JournalEntrySnapshot:
 
 @dataclass(frozen=True)
 class InterpretationInfo:
-    """Pipeline B interpretation outcome. Source: interpretation_outcomes."""
+    """Interpretation outcome. Source: interpretation_outcomes."""
 
     source_event_id: UUID
     status: str
@@ -554,7 +554,7 @@ class TraceSelector(BaseSelector[JournalEntry]):
     def _resolve_interpretation(
         self, event_id: UUID | None, missing: list[MissingFact],
     ) -> InterpretationInfo | None:
-        """Load Pipeline B interpretation outcome. Source: interpretation_outcomes."""
+        """Load interpretation outcome. Source: interpretation_outcomes."""
         if event_id is None:
             return None
 
@@ -565,7 +565,7 @@ class TraceSelector(BaseSelector[JournalEntry]):
         ).scalar_one_or_none()
 
         if outcome is None:
-            # Not a MissingFact -- Pipeline A events don't have outcomes
+            # Not a MissingFact -- events without interpretation don't have outcomes
             return None
 
         journal_ids = None

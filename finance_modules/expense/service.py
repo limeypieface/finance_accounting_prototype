@@ -42,10 +42,30 @@ from finance_engines.allocation import (
     AllocationResult,
     AllocationTarget,
 )
+from finance_engines.matching import (
+    MatchCandidate,
+    MatchingEngine,
+    MatchResult,
+    MatchTolerance,
+    MatchType,
+)
 from finance_engines.tax import (
     TaxCalculationResult,
     TaxCalculator,
     TaxRate,
+)
+from finance_modules.expense.helpers import (
+    calculate_mileage as _calculate_mileage,
+    calculate_per_diem as _calculate_per_diem,
+    validate_expense_against_policy,
+)
+from finance_modules.expense.models import (
+    CardTransaction,
+    ExpenseLine,
+    ExpensePolicy,
+    MileageRate,
+    PerDiemRate,
+    PolicyViolation,
 )
 
 logger = get_logger("modules.expense.service")
@@ -84,6 +104,7 @@ class ExpenseService:
         # Stateless engines
         self._tax = TaxCalculator()
         self._allocation = AllocationEngine()
+        self._matching = MatchingEngine()
 
     # =========================================================================
     # Single Expense
@@ -623,6 +644,204 @@ class ExpenseService:
             else:
                 self._session.rollback()
             return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Policy Validation (no posting)
+    # =========================================================================
+
+    def validate_against_policy(
+        self,
+        lines: Sequence[ExpenseLine],
+        policy_rules: dict[str, ExpensePolicy],
+    ) -> list[PolicyViolation]:
+        """
+        Validate expense lines against category policies.
+
+        No posting — pure validation delegated to helpers.py.
+
+        Returns:
+            List of PolicyViolation objects (empty if compliant).
+        """
+        violations = validate_expense_against_policy(lines, policy_rules)
+        logger.info("expense_policy_validated", extra={
+            "line_count": len(lines),
+            "violation_count": len(violations),
+        })
+        return violations
+
+    # =========================================================================
+    # Card Transaction Import (no posting)
+    # =========================================================================
+
+    def import_card_transactions(
+        self,
+        transactions: Sequence[dict[str, Any]],
+        card_id: UUID,
+    ) -> list[CardTransaction]:
+        """
+        Parse and validate a corporate card transaction feed.
+
+        No posting — returns validated CardTransaction domain objects.
+        Caller is responsible for persistence or further processing.
+        """
+        from datetime import date as date_type
+
+        results: list[CardTransaction] = []
+        for txn in transactions:
+            ct = CardTransaction(
+                id=txn.get("id") or __import__("uuid").uuid4(),
+                card_id=card_id,
+                transaction_date=txn["transaction_date"] if isinstance(txn.get("transaction_date"), date_type) else date_type.fromisoformat(str(txn["transaction_date"])),
+                posting_date=txn["posting_date"] if isinstance(txn.get("posting_date"), date_type) else date_type.fromisoformat(str(txn["posting_date"])),
+                merchant_name=txn["merchant_name"],
+                amount=Decimal(str(txn["amount"])),
+                currency=txn.get("currency", "USD"),
+                merchant_category_code=txn.get("merchant_category_code"),
+            )
+            results.append(ct)
+
+        logger.info("card_transactions_imported", extra={
+            "card_id": str(card_id),
+            "transaction_count": len(results),
+        })
+        return results
+
+    # =========================================================================
+    # Mileage Calculation (no posting)
+    # =========================================================================
+
+    def calculate_mileage(
+        self,
+        miles: Decimal,
+        rate: MileageRate,
+    ) -> Decimal:
+        """
+        Calculate mileage reimbursement.
+
+        No posting — delegates to helpers.py pure function.
+        """
+        return _calculate_mileage(miles, rate.rate_per_mile)
+
+    # =========================================================================
+    # Per Diem Calculation (no posting)
+    # =========================================================================
+
+    def calculate_per_diem(
+        self,
+        days: int,
+        rates: PerDiemRate,
+        include_meals: bool = True,
+        include_lodging: bool = True,
+        include_incidentals: bool = True,
+    ) -> Decimal:
+        """
+        Calculate per diem allowance.
+
+        No posting — delegates to helpers.py pure function.
+        """
+        return _calculate_per_diem(
+            days=days,
+            rates=rates,
+            include_meals=include_meals,
+            include_lodging=include_lodging,
+            include_incidentals=include_incidentals,
+        )
+
+    # =========================================================================
+    # Record Policy Violation (no posting)
+    # =========================================================================
+
+    def record_policy_violation(
+        self,
+        report_id: UUID,
+        violations: Sequence[PolicyViolation],
+        actor_id: UUID,
+    ) -> list[PolicyViolation]:
+        """
+        Flag an expense report for policy violations.
+
+        No journal posting — records violations for review workflow.
+        Returns the violations for downstream processing.
+        """
+        logger.info("expense_policy_violations_recorded", extra={
+            "report_id": str(report_id),
+            "actor_id": str(actor_id),
+            "violation_count": len(violations),
+            "violation_types": list({v.violation_type for v in violations}),
+        })
+        return list(violations)
+
+    # =========================================================================
+    # Receipt Match (posting via MatchingEngine)
+    # =========================================================================
+
+    def record_receipt_match(
+        self,
+        expense_line_id: UUID,
+        card_transaction_id: UUID,
+        amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> tuple[MatchResult, ModulePostingResult]:
+        """
+        Match an expense receipt to a corporate card transaction.
+
+        Engine: MatchingEngine creates 2-way match (receipt <-> card txn).
+        Profile: expense.receipt_matched -> ExpenseReceiptMatched
+        """
+        try:
+            # Engine: create match between expense line and card transaction
+            receipt_candidate = MatchCandidate(
+                document_type="EXPENSE_LINE",
+                document_id=expense_line_id,
+                amount=Money.of(amount, currency),
+            )
+            card_candidate = MatchCandidate(
+                document_type="CARD_TRANSACTION",
+                document_id=card_transaction_id,
+                amount=Money.of(amount, currency),
+            )
+
+            match_result = self._matching.create_match(
+                documents=(receipt_candidate, card_candidate),
+                match_type=MatchType.TWO_WAY,
+                as_of_date=effective_date,
+            )
+
+            logger.info("expense_receipt_match_started", extra={
+                "expense_line_id": str(expense_line_id),
+                "card_transaction_id": str(card_transaction_id),
+                "amount": str(amount),
+                "match_status": match_result.status.value,
+            })
+
+            payload: dict[str, Any] = {
+                "expense_line_id": str(expense_line_id),
+                "card_transaction_id": str(card_transaction_id),
+                "amount": str(amount),
+                "match_id": str(match_result.match_id),
+                "match_status": match_result.status.value,
+            }
+
+            posting_result = self._poster.post_event(
+                event_type="expense.receipt_matched",
+                payload=payload,
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+            )
+
+            if posting_result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return match_result, posting_result
 
         except Exception:
             self._session.rollback()

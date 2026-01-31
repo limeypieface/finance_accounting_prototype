@@ -428,3 +428,190 @@ class TestInsufficientInventory:
                 effective_date=eff_date,
                 actor_id=test_actor_id,
             )
+
+
+# =============================================================================
+# Test 9: Cycle Count
+# =============================================================================
+
+
+class TestCycleCount:
+    """Cycle count: variance engine + posting."""
+
+    def test_record_cycle_count_positive_adjustment(
+        self, inventory_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Positive variance (actual > expected) posts correctly."""
+        result = inventory_service.record_cycle_count(
+            count_id=uuid4(),
+            item_id="COUNT-ITEM-1",
+            expected_quantity=Decimal("100"),
+            actual_quantity=Decimal("105"),
+            unit_cost=Decimal("10.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+        )
+
+        assert result.is_success
+        assert result.status == ModulePostingStatus.POSTED
+
+    def test_record_cycle_count_negative_adjustment(
+        self, inventory_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Negative variance (actual < expected) posts correctly."""
+        result = inventory_service.record_cycle_count(
+            count_id=uuid4(),
+            item_id="COUNT-ITEM-2",
+            expected_quantity=Decimal("100"),
+            actual_quantity=Decimal("92"),
+            unit_cost=Decimal("25.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+        )
+
+        assert result.is_success
+        assert result.status == ModulePostingStatus.POSTED
+
+    def test_record_cycle_count_zero_variance_no_posting(
+        self, inventory_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Zero variance (actual == expected) should return success without journal."""
+        result = inventory_service.record_cycle_count(
+            count_id=uuid4(),
+            item_id="COUNT-ITEM-3",
+            expected_quantity=Decimal("50"),
+            actual_quantity=Decimal("50"),
+            unit_cost=Decimal("10.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+        )
+
+        assert result.is_success
+        assert result.journal_entry_ids == ()
+
+
+# =============================================================================
+# Test 10: ABC Classification (no posting)
+# =============================================================================
+
+
+class TestABCClassification:
+    """ABC classification: pure calculation, no posting."""
+
+    def test_classify_abc_stratifies_correctly(self, inventory_service):
+        """ABC classification should stratify items by value."""
+        from finance_modules.inventory.models import ItemValue
+
+        items = [
+            ItemValue(item_id="HIGH", annual_value=Decimal("80000")),
+            ItemValue(item_id="MED", annual_value=Decimal("12000")),
+            ItemValue(item_id="LOW1", annual_value=Decimal("2000")),
+            ItemValue(item_id="LOW2", annual_value=Decimal("1000")),
+        ]
+
+        result = inventory_service.classify_abc(items)
+        assert result["HIGH"] == "A"
+        assert result["LOW2"] == "C"
+        assert len(result) == 4
+
+
+# =============================================================================
+# Test 11: Reorder Point (no posting)
+# =============================================================================
+
+
+class TestReorderPointCalc:
+    """Reorder point: pure calculation, no posting."""
+
+    def test_calculate_reorder_point(self, inventory_service):
+        """ROP calculation should return correct values."""
+        result = inventory_service.calculate_reorder_point(
+            item_id="ROP-ITEM",
+            avg_daily_usage=Decimal("20"),
+            lead_time_days=7,
+            safety_stock=Decimal("50"),
+            annual_demand=Decimal("7300"),
+            order_cost=Decimal("100"),
+            holding_cost=Decimal("5"),
+        )
+
+        assert result.item_id == "ROP-ITEM"
+        assert result.reorder_point == Decimal("190")  # (20*7)+50
+        assert result.safety_stock == Decimal("50")
+        assert result.eoq > Decimal("0")
+
+
+# =============================================================================
+# Test 12: Shelf-Life Write-Off
+# =============================================================================
+
+
+class TestShelfLifeWriteOff:
+    """Shelf-life write-off: consume lots + post scrap."""
+
+    def test_record_shelf_life_write_off(
+        self, inventory_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Expired inventory write-off should consume lots and post."""
+        eff_date = deterministic_clock.now().date()
+
+        # Receive inventory first
+        inventory_service.receive_inventory(
+            receipt_id=uuid4(),
+            item_id="PERISHABLE-001",
+            quantity=Decimal("100"),
+            unit_cost=Decimal("8.00"),
+            effective_date=eff_date,
+            actor_id=test_actor_id,
+        )
+
+        # Write off 20 expired units
+        consumption, result = inventory_service.record_shelf_life_write_off(
+            write_off_id=uuid4(),
+            item_id="PERISHABLE-001",
+            quantity=Decimal("20"),
+            effective_date=eff_date,
+            actor_id=test_actor_id,
+        )
+
+        assert result.is_success
+        assert consumption.total_cost.amount == Decimal("160.00")  # 20 * 8.00
+
+
+# =============================================================================
+# Test 13: Inter-Warehouse Transfer
+# =============================================================================
+
+
+class TestInterWarehouseTransfer:
+    """Inter-warehouse transfer: consume from source + post."""
+
+    def test_record_inter_warehouse_transfer(
+        self, inventory_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        """Transfer should consume from source and post."""
+        eff_date = deterministic_clock.now().date()
+
+        inventory_service.receive_inventory(
+            receipt_id=uuid4(),
+            item_id="XFER-ITEM",
+            quantity=Decimal("50"),
+            unit_cost=Decimal("20.00"),
+            effective_date=eff_date,
+            actor_id=test_actor_id,
+            warehouse="WH-EAST",
+        )
+
+        consumption, result = inventory_service.record_inter_warehouse_transfer(
+            transfer_id=uuid4(),
+            item_id="XFER-ITEM",
+            from_location="WH-EAST",
+            to_location="WH-WEST",
+            quantity=Decimal("15"),
+            unit_cost=Decimal("20.00"),
+            effective_date=eff_date,
+            actor_id=test_actor_id,
+        )
+
+        assert result.is_success
+        assert consumption.total_cost.amount == Decimal("300.00")  # 15 * 20.00

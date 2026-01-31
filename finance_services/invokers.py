@@ -6,12 +6,13 @@ to a specific engine's API.  Invokers read relevant fields from the payload,
 merge with frozen configuration parameters, and call the pure engine function.
 
 Usage:
-    from finance_engines.invokers import register_standard_engines
+    from finance_services.invokers import register_standard_engines
     register_standard_engines(dispatcher)
 """
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -23,7 +24,7 @@ from finance_engines.ice import ICEInput, compile_ice_submission
 from finance_engines.matching import MatchCandidate, MatchingEngine, MatchTolerance, MatchType
 from finance_engines.tax import TaxCalculator, TaxRate
 from finance_engines.variance import VarianceCalculator
-from finance_kernel.services.engine_dispatcher import EngineDispatcher, EngineInvoker
+from finance_services.engine_dispatcher import EngineDispatcher, EngineInvoker
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +118,20 @@ def _invoke_allocation(payload: dict, params: FrozenEngineParams) -> Any:
     )
 
 
+def _coerce_match_candidate(raw: dict) -> MatchCandidate:
+    """Coerce a dict to MatchCandidate with proper Money/Decimal types."""
+    coerced = dict(raw)
+    if "amount" in coerced and coerced["amount"] is not None:
+        coerced["amount"] = _money(coerced["amount"])
+    if "quantity" in coerced and coerced["quantity"] is not None:
+        coerced["quantity"] = _decimal(coerced["quantity"])
+    return MatchCandidate(**coerced)
+
+
 def _invoke_matching(payload: dict, params: FrozenEngineParams) -> Any:
     """Invoke MatchingEngine.find_matches or create_match."""
+    from finance_engines.matching import ToleranceType
+
     engine = MatchingEngine()
 
     tolerance_pct = _decimal(params.parameters.get(
@@ -132,8 +145,8 @@ def _invoke_matching(payload: dict, params: FrozenEngineParams) -> Any:
     )
 
     tolerance = MatchTolerance(
-        amount_tolerance=_money(tolerance_amt),
-        amount_tolerance_type="percent" if tolerance_pct else "absolute",
+        amount_tolerance=tolerance_amt,
+        amount_tolerance_type=ToleranceType.PERCENT if tolerance_pct else ToleranceType.ABSOLUTE,
     )
 
     # Determine operation from payload
@@ -141,22 +154,25 @@ def _invoke_matching(payload: dict, params: FrozenEngineParams) -> Any:
     if operation == "create_match":
         documents = payload.get("match_documents", [])
         candidates = [
-            c if isinstance(c, MatchCandidate) else MatchCandidate(**c)
+            c if isinstance(c, MatchCandidate) else _coerce_match_candidate(c)
             for c in documents
         ]
         match_type_str = payload.get("match_type", match_strategy)
         match_type = MatchType(match_type_str) if isinstance(match_type_str, str) else match_type_str
+        match_date_str = payload.get("as_of_date") or payload.get("match_date")
+        as_of_date = date.fromisoformat(match_date_str) if match_date_str else date.today()
         return engine.create_match(
             documents=candidates,
             match_type=match_type,
+            as_of_date=as_of_date,
             tolerance=tolerance,
         )
     else:
         target_raw = payload.get("match_target")
-        target = target_raw if isinstance(target_raw, MatchCandidate) else MatchCandidate(**target_raw)
+        target = target_raw if isinstance(target_raw, MatchCandidate) else _coerce_match_candidate(target_raw)
         candidates_raw = payload.get("match_candidates", [])
         candidates = [
-            c if isinstance(c, MatchCandidate) else MatchCandidate(**c)
+            c if isinstance(c, MatchCandidate) else _coerce_match_candidate(c)
             for c in candidates_raw
         ]
         return engine.find_matches(
@@ -211,13 +227,81 @@ def _invoke_allocation_cascade(payload: dict, params: FrozenEngineParams) -> Any
     return execute_cascade(steps, pool_balances, rates, currency)
 
 
+def _coerce_billing_input(raw: dict) -> BillingInput:
+    """Coerce a dict into BillingInput with proper nested types."""
+    from finance_engines.billing import (
+        BillingContractType, CostBreakdown, IndirectRates,
+        LaborRateEntry, MilestoneEntry,
+    )
+
+    kwargs = dict(raw)
+
+    # contract_type: str → BillingContractType
+    if "contract_type" in kwargs and isinstance(kwargs["contract_type"], str):
+        kwargs["contract_type"] = BillingContractType(kwargs["contract_type"])
+
+    # cost_breakdown: dict → CostBreakdown (needs Money fields)
+    if "cost_breakdown" in kwargs and isinstance(kwargs["cost_breakdown"], dict):
+        cb = dict(kwargs["cost_breakdown"])
+        for fld in ("direct_labor", "direct_material", "subcontract", "travel", "odc"):
+            if fld in cb and cb[fld] is not None:
+                cb[fld] = _money(cb[fld])
+        kwargs["cost_breakdown"] = CostBreakdown(**cb)
+
+    # indirect_rates: dict → IndirectRates (needs Decimal fields)
+    if "indirect_rates" in kwargs and isinstance(kwargs["indirect_rates"], dict):
+        ir = {k: _decimal(v) for k, v in kwargs["indirect_rates"].items()}
+        kwargs["indirect_rates"] = IndirectRates(**ir)
+
+    # Scalar Decimal fields
+    for fld in ("fee_rate", "withholding_pct", "cumulative_billed",
+                "fee_ceiling", "funding_limit", "ceiling_amount"):
+        if fld in kwargs and kwargs[fld] is not None:
+            kwargs[fld] = _decimal(kwargs[fld])
+
+    # material_passthrough: value → Money
+    if "material_passthrough" in kwargs and kwargs["material_passthrough"] is not None:
+        kwargs["material_passthrough"] = _money(kwargs["material_passthrough"])
+
+    # labor_entries: list[dict] → tuple[LaborRateEntry, ...]
+    if "labor_entries" in kwargs:
+        entries = []
+        for entry in kwargs["labor_entries"]:
+            if isinstance(entry, dict):
+                entries.append(LaborRateEntry(
+                    labor_category=entry["labor_category"],
+                    hours=_decimal(entry["hours"]),
+                    billing_rate=_decimal(entry["billing_rate"]),
+                ))
+            else:
+                entries.append(entry)
+        kwargs["labor_entries"] = tuple(entries)
+
+    # milestones: list[dict] → tuple[MilestoneEntry, ...]
+    if "milestones" in kwargs:
+        ms = []
+        for m in kwargs["milestones"]:
+            if isinstance(m, dict):
+                ms.append(MilestoneEntry(
+                    milestone_id=m["milestone_id"],
+                    description=m["description"],
+                    amount=_decimal(m["amount"]),
+                    completion_pct=_decimal(m["completion_pct"]),
+                ))
+            else:
+                ms.append(m)
+        kwargs["milestones"] = tuple(ms)
+
+    return BillingInput(**kwargs)
+
+
 def _invoke_billing(payload: dict, params: FrozenEngineParams) -> Any:
     """Invoke calculate_billing."""
     billing_input_raw = payload.get("billing_input")
     if isinstance(billing_input_raw, BillingInput):
         billing_input = billing_input_raw
     elif isinstance(billing_input_raw, dict):
-        billing_input = BillingInput(**billing_input_raw)
+        billing_input = _coerce_billing_input(billing_input_raw)
     else:
         raise ValueError("payload must contain 'billing_input' dict or BillingInput")
     return calculate_billing(billing_input)

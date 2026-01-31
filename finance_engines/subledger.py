@@ -25,21 +25,11 @@ from decimal import Decimal
 from enum import Enum
 from uuid import UUID, uuid4
 
+from finance_kernel.domain.subledger_control import SubledgerType  # SL-G9: canonical enum from kernel domain
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 
 logger = get_logger("engines.subledger")
-
-
-class SubledgerType(str, Enum):
-    """Standard subledger types."""
-
-    AP = "AP"  # Accounts Payable
-    AR = "AR"  # Accounts Receivable
-    BANK = "BANK"  # Bank/Cash
-    INVENTORY = "INVENTORY"  # Inventory
-    FIXED_ASSETS = "FA"  # Fixed Assets
-    INTERCOMPANY = "IC"  # Intercompany
 
 
 class EntryDirection(str, Enum):
@@ -256,7 +246,7 @@ def create_debit_entry(
     amount: Money,
     source_document_type: str,
     source_document_id: str | UUID,
-    effective_date: date | None = None,
+    effective_date: date,
     memo: str = "",
     reference: str = "",
     dimensions: dict[str, str] | None = None,
@@ -269,7 +259,7 @@ def create_debit_entry(
         source_document_id=source_document_id,
         debit=amount,
         credit=None,
-        effective_date=effective_date or date.today(),
+        effective_date=effective_date,
         memo=memo,
         reference=reference,
         dimensions=dimensions or {},
@@ -282,7 +272,7 @@ def create_credit_entry(
     amount: Money,
     source_document_type: str,
     source_document_id: str | UUID,
-    effective_date: date | None = None,
+    effective_date: date,
     memo: str = "",
     reference: str = "",
     dimensions: dict[str, str] | None = None,
@@ -295,7 +285,7 @@ def create_credit_entry(
         source_document_id=source_document_id,
         debit=None,
         credit=amount,
-        effective_date=effective_date or date.today(),
+        effective_date=effective_date,
         memo=memo,
         reference=reference,
         dimensions=dimensions or {},

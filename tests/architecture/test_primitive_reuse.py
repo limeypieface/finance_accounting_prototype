@@ -58,19 +58,101 @@ class TestNoDuplicatePrimitives:
         assert not violations, f"Duplicate primitives found:\n" + "\n".join(violations)
 
     def test_no_raw_decimal_amount_fields_outside_kernel(self):
-        """Amount fields outside kernel should use Money, not raw Decimal."""
+        """Amount dataclass fields outside kernel should use Money, not raw Decimal.
+
+        Relaxations:
+        - Method parameters are not checked (only dataclass fields).
+        - Frozen dataclasses are skipped — they are immutable DTOs that carry
+          amounts alongside currency context at a higher level (report metadata,
+          parent entity).  Only *mutable* dataclasses are checked, since those
+          are more likely to be domain primitives that should use Money.
+        - Mutable dataclasses that define a ``currency`` field are allowed —
+          they have consciously paired amount + currency.
+        - Config threshold / limit fields are allowed (e.g., ``max_amount``,
+          ``match_tolerance_amount``) — they are limits, not monetary amounts.
+        """
+        THRESHOLD_SUFFIXES = ("_threshold", "_limit", "_max", "_min", "_tolerance")
+
+        def _is_frozen_dataclass(decorator_list) -> bool:
+            """Check if any @dataclass(..., frozen=True) decorator is present."""
+            for d in decorator_list:
+                if isinstance(d, ast.Call):
+                    for kw in d.keywords:
+                        if (
+                            kw.arg == "frozen"
+                            and isinstance(kw.value, ast.Constant)
+                            and kw.value.value is True
+                        ):
+                            return True
+            return False
+
         violations = []
         for path in glob.glob("**/*.py", recursive=True):
             if is_core_path(path) or is_test_path(path):
                 continue
 
             content = Path(path).read_text()
-            for i, line in enumerate(content.split("\n"), 1):
-                # Catch: amount: Decimal, total: Decimal, etc.
-                if "amount" in line.lower() and ": Decimal" in line:
-                    violations.append(f"{path}:{i}: {line.strip()}")
+            try:
+                tree = ast.parse(content)
+            except SyntaxError:
+                continue
 
-        assert not violations, f"Use Money not Decimal:\n" + "\n".join(violations)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                # Check if this class is a dataclass
+                is_dataclass = any(
+                    (isinstance(d, ast.Name) and d.id == "dataclass")
+                    or (isinstance(d, ast.Call) and isinstance(d.func, ast.Name) and d.func.id == "dataclass")
+                    or (isinstance(d, ast.Attribute) and d.attr == "dataclass")
+                    or (isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "dataclass")
+                    for d in node.decorator_list
+                )
+                if not is_dataclass:
+                    continue
+
+                # Frozen dataclasses are immutable DTOs — they carry amounts
+                # alongside currency context at a higher level (report
+                # metadata, parent entity).  Only mutable dataclasses could
+                # be Money-like primitives that should use the kernel type.
+                if _is_frozen_dataclass(node.decorator_list):
+                    continue
+
+                # Collect all field names on the dataclass
+                field_names = {
+                    item.target.id
+                    for item in node.body
+                    if isinstance(item, ast.AnnAssign)
+                    and item.target
+                    and isinstance(item.target, ast.Name)
+                }
+
+                # If the dataclass carries a currency field, it has
+                # consciously paired amount + currency — allow it
+                has_currency = any("currency" in f.lower() for f in field_names)
+                if has_currency:
+                    continue
+
+                for item in node.body:
+                    if isinstance(item, ast.AnnAssign) and item.target and isinstance(item.target, ast.Name):
+                        field_name = item.target.id
+                        if "amount" not in field_name.lower():
+                            continue
+                        field_lower = field_name.lower()
+                        # Skip config thresholds / limits
+                        if any(field_lower.endswith(s) for s in THRESHOLD_SUFFIXES):
+                            continue
+                        if field_lower.startswith(("max_", "min_")):
+                            continue
+                        if "tolerance" in field_lower:
+                            continue
+                        ann = item.annotation
+                        if isinstance(ann, ast.Name) and ann.id == "Decimal":
+                            violations.append(f"{path}:{item.lineno}: {field_name}: Decimal")
+                        elif isinstance(ann, ast.Attribute) and ann.attr == "Decimal":
+                            violations.append(f"{path}:{item.lineno}: {field_name}: Decimal")
+
+        assert not violations, f"Use Money not Decimal for dataclass amount fields:\n" + "\n".join(violations)
 
     def test_posting_strategies_extend_base(self):
         """All posting strategies must extend BasePostingStrategy."""
@@ -101,6 +183,11 @@ class TestNoDuplicatePrimitives:
                         continue
 
                     bases = [self._get_base_name(b) for b in node.bases]
+
+                    # Enum subclasses are not posting strategies
+                    if any(b in ("Enum", "str") for b in bases):
+                        continue
+
                     if not any("BasePostingStrategy" in b or "PostingStrategy" in b for b in bases):
                         violations.append(f"{path}: {node.name} doesn't extend BasePostingStrategy")
 

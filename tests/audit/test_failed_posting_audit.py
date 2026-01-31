@@ -27,9 +27,9 @@ from finance_kernel.domain.clock import DeterministicClock
 
 class TestPostingAuditRecords:
     """
-    Tests for audit records on postings via Pipeline B.
+    Tests for audit records on postings via ModulePostingService.
 
-    Pipeline B records InterpretationOutcome for every event.
+    The posting pipeline records InterpretationOutcome for every event.
     """
 
     def test_successful_posting_maintains_audit_chain(
@@ -118,7 +118,7 @@ class TestPostingAuditRecords:
         current_period,
     ):
         """
-        Verify that Pipeline B records InterpretationOutcome for postings.
+        Verify that the posting pipeline records InterpretationOutcome for postings.
         """
         from finance_kernel.models.interpretation_outcome import InterpretationOutcome
 
@@ -140,7 +140,7 @@ class TestPostingAuditRecords:
 
 class TestAuditChainIntegrity:
     """
-    Tests for audit chain integrity under Pipeline B.
+    Tests for audit chain integrity under the posting pipeline.
     """
 
     def test_audit_chain_monotonic_after_postings(

@@ -87,6 +87,46 @@ class ExpenseLine:
 
 
 @dataclass(frozen=True)
+class ExpensePolicy:
+    """Category-level expense policy rules."""
+    category: str
+    daily_limit: Decimal | None = None
+    per_transaction_limit: Decimal | None = None
+    requires_receipt_above: Decimal | None = None
+    requires_justification: bool = False
+
+
+@dataclass(frozen=True)
+class PolicyViolation:
+    """A detected policy violation on an expense line."""
+    line_id: UUID
+    violation_type: str  # OVER_LIMIT, MISSING_RECEIPT, MISSING_JUSTIFICATION
+    category: str
+    amount: Decimal
+    limit: Decimal | None
+    message: str
+
+
+@dataclass(frozen=True)
+class MileageRate:
+    """IRS-style mileage reimbursement rate."""
+    effective_date: date
+    rate_per_mile: Decimal
+    currency: str = "USD"
+
+
+@dataclass(frozen=True)
+class PerDiemRate:
+    """GSA-style per diem rates for a location."""
+    location: str
+    meals_rate: Decimal
+    lodging_rate: Decimal
+    incidentals_rate: Decimal
+    currency: str = "USD"
+    effective_date: date = date(2024, 1, 1)
+
+
+@dataclass(frozen=True)
 class CorporateCard:
     """A corporate credit card assigned to an employee."""
     id: UUID

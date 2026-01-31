@@ -34,8 +34,11 @@ class TestSubledgerType:
     """Tests for SubledgerType enum."""
 
     def test_all_subledger_types_defined(self):
-        """Should have all expected subledger types."""
-        expected = {"ap", "ar", "inventory", "fixed_assets", "bank", "payroll", "wip"}
+        """Should have all expected subledger types (canonical uppercase values)."""
+        expected = {
+            "AP", "AR", "INVENTORY", "FIXED_ASSETS", "BANK",
+            "PAYROLL", "WIP", "INTERCOMPANY",
+        }
         actual = {st.value for st in SubledgerType}
         assert actual == expected
 
@@ -168,7 +171,8 @@ class TestSubledgerReconciler:
             contract=ap_contract,
             subledger_balance=Money.of("5000.00", "USD"),
             control_account_balance=Money.of("5000.00", "USD"),
-            as_of_date=date.today(),
+            as_of_date=date(2026, 1, 30),
+            checked_at=datetime(2026, 1, 30, 12, 0, 0),
         )
 
         assert result.is_balanced
@@ -182,7 +186,8 @@ class TestSubledgerReconciler:
             contract=ap_contract,
             subledger_balance=Money.of("5000.50", "USD"),
             control_account_balance=Money.of("5000.00", "USD"),
-            as_of_date=date.today(),
+            as_of_date=date(2026, 1, 30),
+            checked_at=datetime(2026, 1, 30, 12, 0, 0),
         )
 
         assert not result.is_balanced
@@ -195,7 +200,8 @@ class TestSubledgerReconciler:
             contract=ap_contract,
             subledger_balance=Money.of("5000.01", "USD"),
             control_account_balance=Money.of("5000.00", "USD"),
-            as_of_date=date.today(),
+            as_of_date=date(2026, 1, 30),
+            checked_at=datetime(2026, 1, 30, 12, 0, 0),
         )
 
         assert not result.is_balanced
@@ -209,7 +215,8 @@ class TestSubledgerReconciler:
             contract=ap_contract,
             subledger_balance=Money.of("5000.02", "USD"),
             control_account_balance=Money.of("5000.00", "USD"),
-            as_of_date=date.today(),
+            as_of_date=date(2026, 1, 30),
+            checked_at=datetime(2026, 1, 30, 12, 0, 0),
         )
 
         assert not result.is_balanced
@@ -223,7 +230,8 @@ class TestSubledgerReconciler:
                 contract=ap_contract,
                 subledger_balance=Money.of("5000.00", "USD"),
                 control_account_balance=Money.of("5000.00", "EUR"),
-                as_of_date=date.today(),
+                as_of_date=date(2026, 1, 30),
+                checked_at=datetime(2026, 1, 30, 12, 0, 0),
             )
 
     def test_validate_post_success(self, reconciler, ap_contract):
@@ -438,7 +446,7 @@ class TestReconciliationResult:
             is_reconciled=False,
             is_within_tolerance=False,
             tolerance_used=ReconciliationTolerance.pennies(),
-            checked_at=datetime.now(),
+            checked_at=datetime(2026, 1, 30, 12, 0, 0),
             entries_checked=100,
         )
 

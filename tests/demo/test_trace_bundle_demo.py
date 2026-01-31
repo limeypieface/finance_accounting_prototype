@@ -61,7 +61,7 @@ def short_id(uid) -> str:
 
 class TestTraceBundleDemo:
     """
-    Posts a $250 event through Pipeline B, creates an economic link,
+    Posts a $250 event through the posting pipeline, creates an economic link,
     then traces the event and prints the full TraceBundle.
     """
 
@@ -76,7 +76,7 @@ class TestTraceBundleDemo:
     ):
         banner("TRACE BUNDLE DEMO")
         print()
-        print("  Scenario: Post $250 CashAsset -> SalesRevenue through Pipeline B,")
+        print("  Scenario: Post $250 CashAsset -> SalesRevenue through the posting pipeline,")
         print("  decision journal persisted on InterpretationOutcome automatically,")
         print("  then trace by event_id with full auditor-readable decision journal.")
 

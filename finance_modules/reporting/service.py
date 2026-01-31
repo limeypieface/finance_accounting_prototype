@@ -482,7 +482,7 @@ class ReportingService:
                     "credit_total": Decimal("0"),
                 }
 
-            from finance_kernel.models.journal import LineSide
+            from finance_kernel.domain import LineSide
             if line.side == LineSide.DEBIT:
                 accum[line.account_id]["debit_total"] += line.amount
             else:

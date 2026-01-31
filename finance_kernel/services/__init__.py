@@ -2,7 +2,6 @@
 
 from finance_kernel.services.auditor_service import AuditorService
 from finance_kernel.services.ingestor_service import IngestorService, IngestResult, IngestStatus
-from finance_kernel.services.ledger_service import LedgerService, LedgerResult, PersistResult
 from finance_kernel.services.link_graph_service import (
     LinkGraphService,
     LinkEstablishResult,
@@ -26,8 +25,6 @@ __all__ = [
     "IngestorService",
     "IngestResult",
     "IngestStatus",
-    "LedgerService",
-    "LedgerResult",
     "LinkGraphService",
     "LinkEstablishResult",
     "ModulePostingResult",
@@ -35,7 +32,6 @@ __all__ = [
     "ModulePostingStatus",
     "PartyInfo",
     "PartyService",
-    "PersistResult",
     "PeriodService",
     "SequenceService",
     "UnconsumedValue",

@@ -225,6 +225,7 @@ class MatchingEngine:
         self,
         documents: Sequence[MatchCandidate],
         match_type: MatchType,
+        as_of_date: date,
         tolerance: MatchTolerance | None = None,
     ) -> MatchResult:
         """
@@ -316,7 +317,7 @@ class MatchingEngine:
             price_variance=price_variance,
             quantity_variance=quantity_variance,
             unmatched=unmatched,
-            created_at=date.today(),
+            created_at=as_of_date,
         )
 
     def score(
@@ -518,6 +519,7 @@ def create_three_way_match(
     po: MatchCandidate,
     receipt: MatchCandidate,
     invoice: MatchCandidate,
+    as_of_date: date,
     tolerance: MatchTolerance | None = None,
 ) -> MatchResult:
     """
@@ -527,6 +529,7 @@ def create_three_way_match(
         po: Purchase order document
         receipt: Goods receipt document
         invoice: Vendor invoice document
+        as_of_date: Date of the match (engines must not call date.today())
         tolerance: Match tolerance rules
 
     Returns:
@@ -536,6 +539,7 @@ def create_three_way_match(
     return engine.create_match(
         documents=[po, receipt, invoice],
         match_type=MatchType.THREE_WAY,
+        as_of_date=as_of_date,
         tolerance=tolerance,
     )
 
@@ -543,6 +547,7 @@ def create_three_way_match(
 def create_two_way_match(
     po: MatchCandidate,
     invoice: MatchCandidate,
+    as_of_date: date,
     tolerance: MatchTolerance | None = None,
 ) -> MatchResult:
     """
@@ -551,6 +556,7 @@ def create_two_way_match(
     Args:
         po: Purchase order document
         invoice: Vendor invoice document
+        as_of_date: Date of the match (engines must not call date.today())
         tolerance: Match tolerance rules
 
     Returns:
@@ -560,5 +566,6 @@ def create_two_way_match(
     return engine.create_match(
         documents=[po, invoice],
         match_type=MatchType.TWO_WAY,
+        as_of_date=as_of_date,
         tolerance=tolerance,
     )

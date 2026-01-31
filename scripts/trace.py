@@ -134,7 +134,7 @@ def print_journal_entries(entries) -> None:
 def print_interpretation(interp) -> None:
     section("INTERPRETATION OUTCOME")
     if interp is None:
-        print("    (none -- Pipeline A event or no outcome recorded)")
+        print("    (none -- no outcome recorded)")
         return
     field("status", interp.status)
     field("profile_id", interp.profile_id)

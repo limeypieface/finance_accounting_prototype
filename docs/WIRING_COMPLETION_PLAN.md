@@ -19,7 +19,7 @@ the runtime or deleted. No dead scaffolding.
 | 9 pure engines (variance, allocation, matching, aging, tax, subledger, allocation_cascade, billing, ice)         | Fully implemented, stateless, deterministic                           |
 | 8 engine contracts with JSON Schema parameter validation                                                         | Compiled and validated at build time                                  |
 | 14 module services (AP, AR, inventory, etc.)                                                                     | Each instantiates engines directly and posts via ModulePostingService |
-| Core kernel services (IngestorService, LedgerService, JournalWriter, PeriodService, etc.)                        | Fully implemented                                                     |
+| Core kernel services (IngestorService, JournalWriter, PeriodService, etc.)                                       | Fully implemented                                                     |
 | Profile-driven posting pipeline (PolicySelector -> MeaningBuilder -> InterpretationCoordinator)                  | Works end-to-end                                                      |
 | 6 kernel invariants (double-entry, immutability, period lock, link legality, sequence monotonicity, idempotency) | Enforced at DB + service layer                                        |
 | Configuration compilation (engine refs, param schemas, capability tags)                                          | Validated at compile time                                             |

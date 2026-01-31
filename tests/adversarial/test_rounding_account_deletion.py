@@ -40,12 +40,12 @@ class TestDeleteAllRoundingAccounts:
         Test that rounding accounts with posted journal lines cannot be deleted.
 
         This should be blocked by the existing Account immutability enforcement.
-        Posts via Pipeline B using the RoundingExpense role which maps to the
+        Posts using the RoundingExpense role which maps to the
         rounding account (code 9999).
         """
         rounding_account = standard_accounts["rounding"]
 
-        # Post a journal entry that uses the rounding account via Pipeline B
+        # Post a journal entry that uses the rounding account
         result = post_via_coordinator(
             debit_role="CashAsset",
             credit_role="RoundingExpense",

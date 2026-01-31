@@ -200,12 +200,23 @@ class EngineConfigDef:
 
 @dataclass(frozen=True)
 class SubledgerContractDef:
-    """Defines a subledger contract between modules."""
+    """Defines a subledger contract between modules.
+
+    Extended fields (timing, tolerance, enforcement) drive the compiler
+    bridge that builds SubledgerControlContract instances at config time.
+    """
 
     subledger_id: str
     owner_module: str
     control_account_role: str
     entry_types: tuple[str, ...] = ()
+    is_debit_normal: bool = True
+    timing: str = "real_time"  # real_time | daily | period_end
+    tolerance_type: str = "none"  # none | absolute | percentage
+    tolerance_amount: str = "0"  # For absolute tolerance
+    tolerance_percentage: str = "0"  # For percentage tolerance
+    enforce_on_post: bool = True
+    enforce_on_close: bool = True
 
 
 # ---------------------------------------------------------------------------

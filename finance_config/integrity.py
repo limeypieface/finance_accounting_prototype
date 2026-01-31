@@ -16,10 +16,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from finance_kernel.exceptions import FinanceKernelError
+
 PINFILE_NAME = "APPROVED_FINGERPRINT"
 
 
-class ConfigIntegrityError(Exception):
+class ConfigIntegrityError(FinanceKernelError):
     """Compiled config fingerprint does not match the approved pin.
 
     Raised when:

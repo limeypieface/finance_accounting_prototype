@@ -17,6 +17,11 @@ Profiles:
     InventoryAdjustmentPositive — Count increase: Dr Inventory / Cr Variance
     InventoryAdjustmentNegative — Count decrease: Dr Variance / Cr Inventory
     InventoryRevaluation        — LCM adjustment: Dr Revaluation / Cr Inventory
+    InventoryCycleCountPositive — Positive cycle count: Dr Inv Asset / Cr Adjustment + subledger
+    InventoryCycleCountNegative — Negative cycle count: Dr Adjustment / Cr Inv Asset + subledger
+    InventoryWarehouseTransferOut — WH transfer out: Dr In Transit / Cr Inv Asset + subledger
+    InventoryWarehouseTransferIn  — WH transfer in: Dr Inv Asset / Cr In Transit + subledger
+    InventoryExpiredWriteOff    — Expired: Dr Scrap Expense / Cr Inv Asset + subledger
 """
 
 from datetime import date
@@ -425,6 +430,233 @@ INVENTORY_REVALUATION_MAPPINGS = (
 )
 
 
+# --- Cycle Count — Positive ---------------------------------------------------
+
+INVENTORY_CYCLE_COUNT_POSITIVE = AccountingPolicy(
+    name="InventoryCycleCountPositive",
+    version=1,
+    trigger=PolicyTrigger(
+        event_type="inventory.cycle_count",
+        where=(("payload.variance_quantity > 0", True),),
+    ),
+    meaning=PolicyMeaning(
+        economic_type="INVENTORY_ADJUSTMENT",
+        quantity_field="payload.amount",
+        dimensions=("org_unit",),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="INVENTORY",
+            credit_role="INVENTORY_VARIANCE",
+        ),
+        LedgerEffect(
+            ledger="INVENTORY",
+            debit_role="ITEM_BALANCE",
+            credit_role="ADJUSTMENT",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Count adjustment amount must be positive",
+        ),
+    ),
+    description="Positive cycle count adjustment (actual > expected)",
+)
+
+INVENTORY_CYCLE_COUNT_POSITIVE_MAPPINGS = (
+    ModuleLineMapping(role="INVENTORY", side="debit", ledger="GL"),
+    ModuleLineMapping(role="INVENTORY_VARIANCE", side="credit", ledger="GL"),
+    ModuleLineMapping(role="ITEM_BALANCE", side="debit", ledger="INVENTORY"),
+    ModuleLineMapping(role="ADJUSTMENT", side="credit", ledger="INVENTORY"),
+)
+
+
+# --- Cycle Count — Negative ---------------------------------------------------
+
+INVENTORY_CYCLE_COUNT_NEGATIVE = AccountingPolicy(
+    name="InventoryCycleCountNegative",
+    version=1,
+    trigger=PolicyTrigger(
+        event_type="inventory.cycle_count",
+        where=(("payload.variance_quantity < 0", True),),
+    ),
+    meaning=PolicyMeaning(
+        economic_type="INVENTORY_ADJUSTMENT",
+        quantity_field="payload.amount",
+        dimensions=("org_unit",),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="INVENTORY_VARIANCE",
+            credit_role="INVENTORY",
+        ),
+        LedgerEffect(
+            ledger="INVENTORY",
+            debit_role="ADJUSTMENT",
+            credit_role="ITEM_BALANCE",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Count adjustment amount must be positive",
+        ),
+    ),
+    description="Negative cycle count adjustment (actual < expected)",
+)
+
+INVENTORY_CYCLE_COUNT_NEGATIVE_MAPPINGS = (
+    ModuleLineMapping(role="INVENTORY_VARIANCE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="INVENTORY", side="credit", ledger="GL"),
+    ModuleLineMapping(role="ADJUSTMENT", side="debit", ledger="INVENTORY"),
+    ModuleLineMapping(role="ITEM_BALANCE", side="credit", ledger="INVENTORY"),
+)
+
+
+# --- Warehouse Transfer Out ---------------------------------------------------
+
+INVENTORY_WAREHOUSE_TRANSFER_OUT = AccountingPolicy(
+    name="InventoryWarehouseTransferOut",
+    version=1,
+    trigger=PolicyTrigger(
+        event_type="inventory.warehouse_transfer",
+        where=(("payload.direction", "out"),),
+    ),
+    meaning=PolicyMeaning(
+        economic_type="INVENTORY_TRANSFER",
+        quantity_field="payload.amount",
+        dimensions=("org_unit",),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="INVENTORY_IN_TRANSIT",
+            credit_role="INVENTORY",
+        ),
+        LedgerEffect(
+            ledger="INVENTORY",
+            debit_role="IN_TRANSIT",
+            credit_role="STOCK_ON_HAND",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Transfer amount must be positive",
+        ),
+    ),
+    description="Warehouse transfer outbound with subledger",
+)
+
+INVENTORY_WAREHOUSE_TRANSFER_OUT_MAPPINGS = (
+    ModuleLineMapping(role="INVENTORY_IN_TRANSIT", side="debit", ledger="GL"),
+    ModuleLineMapping(role="INVENTORY", side="credit", ledger="GL"),
+    ModuleLineMapping(role="IN_TRANSIT", side="debit", ledger="INVENTORY"),
+    ModuleLineMapping(role="STOCK_ON_HAND", side="credit", ledger="INVENTORY"),
+)
+
+
+# --- Warehouse Transfer In ----------------------------------------------------
+
+INVENTORY_WAREHOUSE_TRANSFER_IN = AccountingPolicy(
+    name="InventoryWarehouseTransferIn",
+    version=1,
+    trigger=PolicyTrigger(
+        event_type="inventory.warehouse_transfer",
+        where=(("payload.direction", "in"),),
+    ),
+    meaning=PolicyMeaning(
+        economic_type="INVENTORY_TRANSFER",
+        quantity_field="payload.amount",
+        dimensions=("org_unit",),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="INVENTORY",
+            credit_role="INVENTORY_IN_TRANSIT",
+        ),
+        LedgerEffect(
+            ledger="INVENTORY",
+            debit_role="STOCK_ON_HAND",
+            credit_role="IN_TRANSIT",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Transfer amount must be positive",
+        ),
+    ),
+    description="Warehouse transfer inbound with subledger",
+)
+
+INVENTORY_WAREHOUSE_TRANSFER_IN_MAPPINGS = (
+    ModuleLineMapping(role="INVENTORY", side="debit", ledger="GL"),
+    ModuleLineMapping(role="INVENTORY_IN_TRANSIT", side="credit", ledger="GL"),
+    ModuleLineMapping(role="STOCK_ON_HAND", side="debit", ledger="INVENTORY"),
+    ModuleLineMapping(role="IN_TRANSIT", side="credit", ledger="INVENTORY"),
+)
+
+
+# --- Expired Write-Off --------------------------------------------------------
+
+INVENTORY_EXPIRED_WRITE_OFF = AccountingPolicy(
+    name="InventoryExpiredWriteOff",
+    version=1,
+    trigger=PolicyTrigger(event_type="inventory.expired"),
+    meaning=PolicyMeaning(
+        economic_type="INVENTORY_DECREASE",
+        quantity_field="payload.amount",
+        dimensions=("org_unit",),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="SCRAP_EXPENSE",
+            credit_role="INVENTORY",
+        ),
+        LedgerEffect(
+            ledger="INVENTORY",
+            debit_role="WRITEOFF",
+            credit_role="ITEM_BALANCE",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Write-off amount must be positive",
+        ),
+    ),
+    description="Expired inventory written off with subledger",
+)
+
+INVENTORY_EXPIRED_WRITE_OFF_MAPPINGS = (
+    ModuleLineMapping(role="SCRAP_EXPENSE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="INVENTORY", side="credit", ledger="GL"),
+    ModuleLineMapping(role="WRITEOFF", side="debit", ledger="INVENTORY"),
+    ModuleLineMapping(role="ITEM_BALANCE", side="credit", ledger="INVENTORY"),
+)
+
+
 # =============================================================================
 # Profile + Mapping pairs for registration
 # =============================================================================
@@ -441,6 +673,11 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     (INVENTORY_ADJUSTMENT_POSITIVE, INVENTORY_ADJUSTMENT_POSITIVE_MAPPINGS),
     (INVENTORY_ADJUSTMENT_NEGATIVE, INVENTORY_ADJUSTMENT_NEGATIVE_MAPPINGS),
     (INVENTORY_REVALUATION, INVENTORY_REVALUATION_MAPPINGS),
+    (INVENTORY_CYCLE_COUNT_POSITIVE, INVENTORY_CYCLE_COUNT_POSITIVE_MAPPINGS),
+    (INVENTORY_CYCLE_COUNT_NEGATIVE, INVENTORY_CYCLE_COUNT_NEGATIVE_MAPPINGS),
+    (INVENTORY_WAREHOUSE_TRANSFER_OUT, INVENTORY_WAREHOUSE_TRANSFER_OUT_MAPPINGS),
+    (INVENTORY_WAREHOUSE_TRANSFER_IN, INVENTORY_WAREHOUSE_TRANSFER_IN_MAPPINGS),
+    (INVENTORY_EXPIRED_WRITE_OFF, INVENTORY_EXPIRED_WRITE_OFF_MAPPINGS),
 )
 
 

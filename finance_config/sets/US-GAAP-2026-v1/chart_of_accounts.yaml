@@ -41,8 +41,14 @@ role_bindings:
 - role: INVENTORY_VARIANCE
   account_code: '6300'
   ledger: GL
+- role: INVENTORY_IN_TRANSIT
+  account_code: '1250'
+  ledger: GL
 - role: WIP
   account_code: '1400'
+  ledger: GL
+- role: QUANTITY_VARIANCE
+  account_code: '6350'
   ledger: GL
 - role: INVENTORY_REVALUATION
   account_code: '6400'
@@ -472,6 +478,22 @@ role_bindings:
   ledger: GL
 - role: OBLIGATION_CONTROL
   account_code: '1620'
+  ledger: GL
+# Subledger control account roles (resolved at config compilation time)
+- role: AP_CONTROL
+  account_code: '2000'
+  ledger: GL
+- role: AR_CONTROL
+  account_code: '1100'
+  ledger: GL
+- role: INVENTORY_CONTROL
+  account_code: '1200'
+  ledger: GL
+- role: CASH_CONTROL
+  account_code: '1000'
+  ledger: GL
+- role: CONTRACT_WIP_CONTROL
+  account_code: '1410'
   ledger: GL
 # Contract subledger roles
 - role: CONTRACT_COST_INCURRED

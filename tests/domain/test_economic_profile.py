@@ -47,7 +47,10 @@ from finance_kernel.domain.schemas.registry import EventSchemaRegistry
 
 @pytest.fixture(autouse=True)
 def clear_registries():
-    """Clear all registries before and after each test."""
+    """Save, clear, and restore registries for test isolation."""
+    saved_profiles = {k: dict(v) for k, v in PolicySelector._profiles.items()}
+    saved_by_event = {k: list(v) for k, v in PolicySelector._by_event_type.items()}
+    saved_schemas = {k: dict(v) for k, v in EventSchemaRegistry._schemas.items()}
     PolicySelector.clear()
     EventSchemaRegistry.clear()
     LedgerRegistry.clear()
@@ -55,6 +58,9 @@ def clear_registries():
     PolicySelector.clear()
     EventSchemaRegistry.clear()
     LedgerRegistry.clear()
+    PolicySelector._profiles.update(saved_profiles)
+    PolicySelector._by_event_type.update(saved_by_event)
+    EventSchemaRegistry._schemas.update(saved_schemas)
 
 
 @pytest.fixture

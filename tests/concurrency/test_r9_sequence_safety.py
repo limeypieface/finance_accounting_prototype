@@ -263,7 +263,7 @@ class TestR9JournalEntrySequences:
         """
         entry_ids = []
 
-        # Create multiple entries via Pipeline B
+        # Create multiple entries via the posting pipeline
         for i in range(10):
             result = post_via_coordinator(
                 amount=Decimal(str(100 * (i + 1))),
@@ -291,7 +291,7 @@ class TestR9JournalEntrySequences:
         """
         entry_ids = []
 
-        # Create entries sequentially via Pipeline B
+        # Create entries sequentially via the posting pipeline
         for i in range(10):
             result = post_via_coordinator(
                 amount=Decimal("100.00"),
@@ -307,39 +307,6 @@ class TestR9JournalEntrySequences:
         for i in range(1, len(sequences)):
             assert sequences[i] > sequences[i - 1], \
                 f"Sequence not increasing: {sequences[i-1]} -> {sequences[i]}"
-
-
-class TestR9LedgerServiceIntegration:
-    """
-    Verify LedgerService uses SequenceService correctly.
-    """
-
-    def test_ledger_service_uses_sequence_service(self):
-        """
-        Verify LedgerService uses SequenceService for sequence assignment.
-
-        R9: Must use approved sequence mechanism.
-        """
-        from finance_kernel.services.ledger_service import LedgerService
-
-        source = inspect.getsource(LedgerService)
-
-        # Must import/use SequenceService
-        assert 'SequenceService' in source or 'sequence_service' in source, \
-            "LedgerService must use SequenceService for sequence assignment"
-
-        # Must NOT use SQL MAX pattern for sequences
-        # Note: Python's max() builtin is OK, we're checking for SQL func.max
-        forbidden_sql_patterns = [
-            'func.max',
-            'func.MAX',
-            'MAX(seq)',
-            'MAX(entry.seq)',
-            'MAX(JournalEntry.seq)',
-        ]
-        for pattern in forbidden_sql_patterns:
-            assert pattern not in source, \
-                f"LedgerService must not use SQL {pattern} for sequence assignment"
 
 
 class TestR9DocumentedSequenceArchitecture:

@@ -747,15 +747,18 @@ class ValuationLayer:
         # Check total available
         total_available = sum(l.remaining_quantity.value for l in layers)
         if total_available < quantity.value:
+            # Normalize and format as fixed-point to avoid scientific notation
+            req_str = format(quantity.value.normalize(), 'f')
+            avail_str = format(total_available.normalize(), 'f')
             logger.warning("consumption_insufficient_inventory", extra={
                 "item_id": item_id,
-                "requested_quantity": str(quantity.value),
-                "available_quantity": str(total_available),
+                "requested_quantity": req_str,
+                "available_quantity": avail_str,
             })
             raise InsufficientInventoryError(
                 item_id=item_id,
-                requested_quantity=str(quantity.value),
-                available_quantity=str(total_available),
+                requested_quantity=req_str,
+                available_quantity=avail_str,
                 unit=quantity.unit,
             )
 

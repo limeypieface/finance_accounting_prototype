@@ -31,13 +31,15 @@ from finance_config.schema import (
     PolicyMeaningDef,
     PolicyTriggerDef,
 )
-from finance_kernel.services.engine_dispatcher import (
+from finance_services.engine_dispatcher import (
     EngineDispatcher,
-    EngineDispatchResult,
     EngineInvoker,
+)
+from finance_kernel.domain.engine_types import (
+    EngineDispatchResult,
     EngineTraceRecord,
 )
-from finance_engines.invokers import register_standard_engines
+from finance_services.invokers import register_standard_engines
 
 
 # ---------------------------------------------------------------------------

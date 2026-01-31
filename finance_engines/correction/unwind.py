@@ -8,7 +8,7 @@ and correction results. These are pure domain objects with no I/O dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Mapping, Any, Sequence
@@ -328,6 +328,7 @@ class UnwindPlan:
         correction_type: CorrectionType,
         affected: list[AffectedArtifact],
         entries: list[CompensatingEntry],
+        created_at: datetime,
         warnings: list[str] | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> UnwindPlan:
@@ -339,7 +340,7 @@ class UnwindPlan:
             correction_type=correction_type,
             affected_artifacts=tuple(affected),
             compensating_entries=tuple(entries),
-            created_at=datetime.now(timezone.utc),
+            created_at=created_at,
             max_depth_reached=max_depth,
             warnings=tuple(warnings or []),
             metadata=metadata,
@@ -387,13 +388,14 @@ class CorrectionResult:
         links: list[EconomicLink],
         actor_id: str,
         execution_event_id: UUID,
+        executed_at: datetime,
     ) -> CorrectionResult:
         """Create a correction result."""
         return cls(
             plan=plan,
             journal_entries_created=tuple(journal_entries),
             links_created=tuple(links),
-            executed_at=datetime.now(timezone.utc),
+            executed_at=executed_at,
             actor_id=actor_id,
             execution_event_id=execution_event_id,
         )

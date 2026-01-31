@@ -46,7 +46,6 @@ from finance_kernel.models.event import Event
 from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
 from finance_kernel.services.ingestor_service import IngestorService
 from finance_kernel.services.auditor_service import AuditorService
-from finance_kernel.services.ledger_service import LedgerService
 from finance_kernel.services.period_service import PeriodService
 from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
 from finance_kernel.services.outcome_recorder import OutcomeRecorder
@@ -546,12 +545,6 @@ def ingestor_service(session: Session, deterministic_clock, auditor_service):
 
 
 @pytest.fixture
-def ledger_service(session: Session, deterministic_clock, auditor_service):
-    """Provide a LedgerService instance."""
-    return LedgerService(session, deterministic_clock, auditor_service)
-
-
-@pytest.fixture
 def period_service(session: Session, deterministic_clock) -> PeriodService:
     """Provide a PeriodService instance."""
     return PeriodService(session, deterministic_clock)
@@ -998,11 +991,14 @@ def register_modules():
     module-defined AccountingPolicys and their line mappings.
     """
     from finance_kernel.domain.policy_bridge import ModulePolicyRegistry
+    from finance_kernel.domain.policy_selector import PolicySelector
     from finance_modules import register_all_modules
 
+    PolicySelector.clear()
     ModulePolicyRegistry.clear()
     register_all_modules()
     yield
+    PolicySelector.clear()
     ModulePolicyRegistry.clear()
 
 
@@ -1488,6 +1484,8 @@ def module_role_resolver(module_accounts):
         "INVENTORY_VARIANCE": module_accounts["inventory_variance"],
         "RoundingExpense": module_accounts["rounding"],
         "WIP": module_accounts["wip"],
+        "INVENTORY_IN_TRANSIT": module_accounts["in_transit"],  # GL role for WH transfer
+        "INVENTORY_ASSET": module_accounts["inventory"],  # GL alias
         # Inventory subledger roles
         "STOCK_ON_HAND": module_accounts["stock_on_hand"],
         "IN_TRANSIT": module_accounts["in_transit"],
@@ -1495,6 +1493,9 @@ def module_role_resolver(module_accounts):
         "IN_PRODUCTION": module_accounts["in_production"],
         "SCRAPPED": module_accounts["scrapped"],
         "INVENTORY_REVALUATION": module_accounts["inventory_revaluation"],
+        "ITEM_BALANCE": module_accounts["stock_on_hand"],  # subledger alias
+        "ADJUSTMENT": module_accounts["inventory_variance"],  # subledger alias
+        "WRITEOFF": module_accounts["scrapped"],  # subledger alias
         # AP subledger roles
         "INVOICE": module_accounts["invoice_ap"],
         "SUPPLIER_BALANCE": module_accounts["supplier_balance"],
@@ -1551,6 +1552,7 @@ def module_role_resolver(module_accounts):
         "RESERVE_FOR_ENCUMBRANCE": module_accounts["reserve_for_encumbrance"],
         "PURCHASE_COMMITMENT": module_accounts["encumbrance"],
         "COMMITMENT_OFFSET": module_accounts["reserve_for_encumbrance"],
+        "QUANTITY_VARIANCE": module_accounts["inventory_variance"],
         # =================================================================
         # WIP module (additional)
         # =================================================================

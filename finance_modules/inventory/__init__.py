@@ -15,6 +15,10 @@ from finance_modules.inventory.models import (
     InventoryIssue,
     InventoryAdjustment,
     StockTransfer,
+    CycleCount,
+    ABCClassification,
+    ReorderPoint,
+    ItemValue,
 )
 from finance_modules.inventory.profiles import INVENTORY_PROFILES
 from finance_modules.inventory.workflows import (
@@ -33,6 +37,10 @@ __all__ = [
     "InventoryIssue",
     "InventoryAdjustment",
     "StockTransfer",
+    "CycleCount",
+    "ABCClassification",
+    "ReorderPoint",
+    "ItemValue",
     "INVENTORY_PROFILES",
     "RECEIPT_WORKFLOW",
     "ISSUE_WORKFLOW",

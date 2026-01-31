@@ -37,7 +37,7 @@ class FuzzingResult:
 
 
 class TestBoundaryValues:
-    """Tests for boundary value handling via Pipeline B."""
+    """Tests for boundary value handling via the posting pipeline."""
 
     def test_maximum_decimal_precision_38_9(
         self,
@@ -57,7 +57,7 @@ class TestBoundaryValues:
             )
             assert result.success
         except (ValueError, InvalidOperation):
-            # Pipeline B may reject extreme precision at IntentLine construction
+            # The posting pipeline may reject extreme precision at IntentLine construction
             pass
 
     def test_minimum_positive_amount(
@@ -252,7 +252,7 @@ class TestDecimalEdgeCases:
 
 
 class TestFuzzingCorpus:
-    """Randomized fuzzing tests with corpus generation via Pipeline B."""
+    """Randomized fuzzing tests with corpus generation via the posting pipeline."""
 
     def test_random_amount_corpus(
         self,
@@ -300,7 +300,7 @@ class TestFuzzingCorpus:
         """
         Test posting with USD across random amounts.
 
-        Pipeline B resolves roles to accounts, so we test with the standard
+        The posting pipeline resolves roles to accounts, so we test with the standard
         role mapping (CashAsset -> 1000, SalesRevenue -> 4000).
         """
         amounts = [

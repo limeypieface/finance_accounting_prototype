@@ -5,6 +5,11 @@ Validates:
 - Service importability and constructor wiring
 - Real integration: PO creation, goods receipt, price variance
 - Engine composition: VarianceCalculator, MatchingEngine, LinkGraphService
+- Requisition lifecycle: create, convert to PO
+- PO amendments and encumbrance adjustments
+- 3-way match: receipt to PO with AP subledger
+- Supplier evaluation (pure calculation)
+- Quantity variance posting
 """
 
 from __future__ import annotations
@@ -56,6 +61,9 @@ class TestProcurementServiceStructure:
         expected = [
             "create_purchase_order", "receive_goods", "record_price_variance",
             "record_commitment", "relieve_commitment",
+            "create_requisition", "convert_requisition_to_po",
+            "amend_purchase_order", "match_receipt_to_po",
+            "evaluate_supplier", "record_quantity_variance",
         ]
         for method_name in expected:
             assert hasattr(ProcurementService, method_name)
@@ -63,7 +71,7 @@ class TestProcurementServiceStructure:
 
 
 # =============================================================================
-# Integration Tests — Real Posting
+# Integration Tests — Real Posting (existing)
 # =============================================================================
 
 
@@ -150,6 +158,142 @@ class TestProcurementServiceIntegration:
             relief_id=uuid4(),
             commitment_id=uuid4(),
             amount=Decimal("50000.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+        )
+
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
+
+
+# =============================================================================
+# New Integration Tests — Requisitions, Amendments, Matching
+# =============================================================================
+
+
+class TestRequisition:
+    """Requisition creation posts commitment memo entry."""
+
+    def test_create_requisition_posts(
+        self, procurement_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        result = procurement_service.create_requisition(
+            requisition_id=uuid4(),
+            requester_id=test_actor_id,
+            items=[
+                {"description": "Laptops", "quantity": "10", "estimated_unit_cost": "1200.00"},
+            ],
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+        )
+
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
+
+
+class TestRequisitionConversion:
+    """Converting a requisition to PO relieves commitment and creates encumbrance."""
+
+    def test_convert_requisition_to_po_posts(
+        self, procurement_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        result = procurement_service.convert_requisition_to_po(
+            requisition_id=uuid4(),
+            po_id=uuid4(),
+            vendor_id="V-010",
+            amount=Decimal("12000.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+        )
+
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
+
+
+class TestPOAmendment:
+    """PO amendment adjusts encumbrance by the delta amount."""
+
+    def test_amend_purchase_order_adjusts_encumbrance(
+        self, procurement_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        po_version, result = procurement_service.amend_purchase_order(
+            po_id=uuid4(),
+            delta_amount=Decimal("5000.00"),
+            amendment_reason="Scope increase",
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+            version=2,
+            changes=("unit_price", "quantity"),
+        )
+
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
+        assert po_version.version == 2
+        assert po_version.amendment_reason == "Scope increase"
+        assert po_version.changes == ("unit_price", "quantity")
+
+
+class TestReceiptMatch:
+    """3-way match: receipt matched to PO posts encumbrance relief + AP subledger."""
+
+    def test_match_receipt_to_po_posts(
+        self, procurement_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        match_result, posting_result = procurement_service.match_receipt_to_po(
+            receipt_id=uuid4(),
+            po_id=uuid4(),
+            po_line_id=uuid4(),
+            matched_quantity=Decimal("100"),
+            matched_amount=Decimal("2500.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+            vendor_id="V-001",
+        )
+
+        assert posting_result.status == ModulePostingStatus.POSTED
+        assert posting_result.is_success
+        assert len(posting_result.journal_entry_ids) > 0
+        assert match_result is not None
+
+
+class TestSupplierEvaluation:
+    """Supplier evaluation: pure calculation, no posting."""
+
+    def test_evaluate_supplier_returns_score(
+        self, procurement_service, deterministic_clock,
+    ):
+        score = procurement_service.evaluate_supplier(
+            vendor_id=uuid4(),
+            period="2026-Q1",
+            delivery_score=Decimal("85.00"),
+            quality_score=Decimal("92.00"),
+            price_score=Decimal("78.00"),
+            evaluation_date=deterministic_clock.now().date(),
+        )
+
+        assert score.period == "2026-Q1"
+        assert score.delivery_score == Decimal("85.00")
+        assert score.quality_score == Decimal("92.00")
+        assert score.price_score == Decimal("78.00")
+        # Overall = (85 + 92 + 78) / 3 = 85.00
+        assert score.overall_score == Decimal("85.00")
+
+
+class TestQuantityVariance:
+    """Quantity variance between PO and receipt posts to GL."""
+
+    def test_record_quantity_variance_posts(
+        self, procurement_service, current_period, test_actor_id, deterministic_clock,
+    ):
+        result = procurement_service.record_quantity_variance(
+            receipt_id=uuid4(),
+            po_id=uuid4(),
+            variance_quantity=Decimal("-5"),
+            variance_amount=Decimal("125.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
         )

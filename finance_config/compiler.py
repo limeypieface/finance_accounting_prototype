@@ -37,8 +37,10 @@ from finance_config.schema import (
     PolicyTriggerDef,
     PrecedenceDef,
     RoleBinding,
+    SubledgerContractDef,
 )
 from finance_engines.contracts import ENGINE_CONTRACTS, EngineContract
+from finance_kernel.exceptions import FinanceKernelError
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +176,7 @@ class CompiledPolicyPack:
     capabilities: dict[str, bool]
     canonical_fingerprint: str
     decision_trace: PolicyDecisionTrace
+    subledger_contracts: tuple[SubledgerContractDef, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -191,8 +194,10 @@ class CompilationError:
     severity: str = "error"  # "error" or "warning"
 
 
-class CompilationFailedError(Exception):
+class CompilationFailedError(FinanceKernelError):
     """Compilation produced errors that prevent creating a valid pack."""
+
+    code: str = "COMPILATION_FAILED"
 
     def __init__(self, errors: list[CompilationError]):
         self.errors = errors
@@ -307,6 +312,7 @@ def compile_policy_pack(
         capabilities=dict(config.capabilities),
         canonical_fingerprint=fingerprint,
         decision_trace=decision_trace,
+        subledger_contracts=config.subledger_contracts,
     )
 
 

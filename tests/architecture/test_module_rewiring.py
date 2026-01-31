@@ -225,7 +225,7 @@ class TestEngineDispatcherWiring:
 
     def test_dispatch_no_engines_returns_empty_success(self):
         """Policy with no required_engines returns empty success result."""
-        from finance_kernel.services.engine_dispatcher import EngineDispatcher
+        from finance_services.engine_dispatcher import EngineDispatcher
 
         policy = self._make_compiled_policy(required_engines=())
         pack = self._make_pack(policies=[policy])
@@ -237,7 +237,7 @@ class TestEngineDispatcherWiring:
 
     def test_dispatch_unregistered_engine_reports_error(self):
         """Dispatching an unregistered engine produces an error, not a crash."""
-        from finance_kernel.services.engine_dispatcher import EngineDispatcher
+        from finance_services.engine_dispatcher import EngineDispatcher
 
         policy = self._make_compiled_policy(
             name="VariancePolicy",
@@ -255,7 +255,7 @@ class TestEngineDispatcherWiring:
     def test_dispatch_registered_engine_invokes_correctly(self):
         """Registered engine receives payload and params, returns result."""
         from finance_config.compiler import FrozenEngineParams
-        from finance_kernel.services.engine_dispatcher import (
+        from finance_services.engine_dispatcher import (
             EngineDispatcher,
             EngineInvoker,
         )
@@ -300,7 +300,7 @@ class TestEngineDispatcherWiring:
     def test_dispatch_engine_exception_captured_as_error(self):
         """Engine raising an exception is captured, not propagated."""
         from finance_config.compiler import FrozenEngineParams
-        from finance_kernel.services.engine_dispatcher import (
+        from finance_services.engine_dispatcher import (
             EngineDispatcher,
             EngineInvoker,
         )
@@ -334,7 +334,7 @@ class TestEngineDispatcherWiring:
     def test_validate_registration_detects_missing_engines(self):
         """validate_registration returns unregistered engine names."""
         from finance_config.compiler import ResolvedEngineContract
-        from finance_kernel.services.engine_dispatcher import EngineDispatcher
+        from finance_services.engine_dispatcher import EngineDispatcher
 
         pack = self._make_pack()
         # Override engine_contracts directly
@@ -357,7 +357,7 @@ class TestEngineDispatcherWiring:
     def test_engine_parameters_ref_resolves_from_pack(self):
         """engine_parameters_ref is used to look up resolved_engine_params."""
         from finance_config.compiler import FrozenEngineParams
-        from finance_kernel.services.engine_dispatcher import (
+        from finance_services.engine_dispatcher import (
             EngineDispatcher,
             EngineInvoker,
         )
@@ -405,7 +405,7 @@ class TestModuleEngineOwnership:
         """PostingOrchestrator imports no finance_engines module."""
         import inspect
 
-        from finance_kernel.services import posting_orchestrator
+        from finance_services import posting_orchestrator
 
         source = inspect.getsource(posting_orchestrator)
         # PostingOrchestrator should only reference engine_dispatcher,
@@ -464,7 +464,7 @@ class TestModuleEngineOwnership:
         """PostingOrchestrator creates an EngineDispatcher instance."""
         import inspect
 
-        from finance_kernel.services import posting_orchestrator
+        from finance_services import posting_orchestrator
 
         source = inspect.getsource(posting_orchestrator)
         assert "EngineDispatcher" in source

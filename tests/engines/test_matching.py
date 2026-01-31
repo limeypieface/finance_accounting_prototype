@@ -230,6 +230,7 @@ class TestCreateMatch:
         result = self.engine.create_match(
             documents=[po, invoice],
             match_type=MatchType.TWO_WAY,
+            as_of_date=date(2026, 1, 1),
         )
 
         assert result.status == MatchStatus.MATCHED
@@ -263,6 +264,7 @@ class TestCreateMatch:
         result = self.engine.create_match(
             documents=[po, receipt, invoice],
             match_type=MatchType.THREE_WAY,
+            as_of_date=date(2026, 1, 1),
         )
 
         assert result.match_type == MatchType.THREE_WAY
@@ -288,6 +290,7 @@ class TestCreateMatch:
         result = self.engine.create_match(
             documents=[po, invoice],
             match_type=MatchType.TWO_WAY,
+            as_of_date=date(2026, 1, 1),
         )
 
         # Status is PARTIAL because amounts differ (unmatched remainder)
@@ -314,6 +317,7 @@ class TestCreateMatch:
         result = self.engine.create_match(
             documents=[po, invoice],
             match_type=MatchType.TWO_WAY,
+            as_of_date=date(2026, 1, 1),
         )
 
         assert result.status == MatchStatus.PARTIAL
@@ -326,6 +330,7 @@ class TestCreateMatch:
             self.engine.create_match(
                 documents=[MatchCandidate(document_type="PO", document_id="po-1")],
                 match_type=MatchType.TWO_WAY,
+                as_of_date=date(2026, 1, 1),
             )
 
     def test_currency_mismatch_raises(self):
@@ -345,6 +350,7 @@ class TestCreateMatch:
                     ),
                 ],
                 match_type=MatchType.TWO_WAY,
+                as_of_date=date(2026, 1, 1),
             )
 
 
@@ -469,7 +475,7 @@ class TestConvenienceFunctions:
             amount=Money.of("1000.00", "USD"),
         )
 
-        result = create_three_way_match(po, receipt, invoice)
+        result = create_three_way_match(po, receipt, invoice, as_of_date=date(2026, 1, 1))
 
         assert result.match_type == MatchType.THREE_WAY
         assert result.document_count == 3
@@ -487,7 +493,7 @@ class TestConvenienceFunctions:
             amount=Money.of("1000.00", "USD"),
         )
 
-        result = create_two_way_match(po, invoice)
+        result = create_two_way_match(po, invoice, as_of_date=date(2026, 1, 1))
 
         assert result.match_type == MatchType.TWO_WAY
         assert result.document_count == 2

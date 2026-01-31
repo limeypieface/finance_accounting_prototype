@@ -191,3 +191,29 @@ policies:
     side: debit
   - role: ADVANCE_CLEARING
     side: credit
+- name: ExpenseReceiptMatched
+  version: 1
+  module: expense
+  description: Expense receipt matched to corporate card transaction
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: expense.receipt_matched
+  meaning:
+    economic_type: EXPENSE_RECONCILIATION
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE
+    credit_role: CORPORATE_CARD_LIABILITY
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Match amount must be positive
+  line_mappings:
+  - role: EXPENSE
+    side: debit
+  - role: CORPORATE_CARD_LIABILITY
+    side: credit

@@ -41,7 +41,6 @@ from decimal import Decimal
 from typing import Mapping, Any, Callable, Sequence
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from finance_kernel.domain.values import Money
@@ -262,6 +261,7 @@ class CorrectionEngine:
             correction_type=correction_type,
             affected=affected,
             entries=entries,
+            created_at=datetime.now(timezone.utc),
             warnings=warnings,
         )
 
@@ -377,7 +377,7 @@ class CorrectionEngine:
         For journal entries, queries the entry's effective_date.
         For other artifact types, returns None (no period check).
         """
-        from finance_kernel.models.journal import JournalEntry
+        from finance_kernel.selectors.journal_selector import JournalSelector
 
         if artifact_ref.artifact_type in (
             ArtifactType.JOURNAL_ENTRY,
@@ -388,12 +388,11 @@ class CorrectionEngine:
             except (ValueError, TypeError):
                 return None
 
-            entry = self.session.execute(
-                select(JournalEntry).where(JournalEntry.id == artifact_id)
-            ).scalar_one_or_none()
+            selector = JournalSelector(self.session)
+            dto = selector.get_entry(artifact_id)
 
-            if entry is not None:
-                return entry.effective_date
+            if dto is not None:
+                return dto.effective_date
 
         return None
 
@@ -411,11 +410,26 @@ class CorrectionEngine:
 
         For JOURNAL_ENTRY artifacts, looks up the entry directly by ID.
         For EVENT artifacts, looks up all entries posted for that event.
-        Returns (entry_id, [(account_code, amount, is_debit, line_id)]).
+        Returns (entry_id, [(account_id_str, amount, is_debit, line_id)]).
         """
-        from finance_kernel.models.journal import JournalEntry, JournalLine, LineSide
+        from finance_kernel.domain import LineSide
+        from finance_kernel.selectors.journal_selector import JournalSelector
 
+        selector = JournalSelector(self.session)
         results: list[tuple[UUID, list[tuple[str, Money, bool, UUID]]]] = []
+
+        def _entry_to_tuples(dto):
+            """Convert a JournalEntryDTO to the expected tuple format."""
+            line_tuples = [
+                (
+                    str(line.account_id),
+                    Money(line.amount, line.currency),
+                    line.side == LineSide.DEBIT,
+                    line.id,
+                )
+                for line in dto.lines
+            ]
+            return (dto.id, line_tuples)
 
         if artifact_ref.artifact_type == ArtifactType.JOURNAL_ENTRY:
             try:
@@ -423,25 +437,9 @@ class CorrectionEngine:
             except (ValueError, TypeError):
                 return []
 
-            entry = self.session.execute(
-                select(JournalEntry).where(JournalEntry.id == entry_id)
-            ).scalar_one_or_none()
-
-            if entry is not None:
-                lines = self.session.execute(
-                    select(JournalLine).where(JournalLine.entry_id == entry.id)
-                ).scalars().all()
-
-                line_tuples = [
-                    (
-                        line.account_code,
-                        Money(line.amount, line.currency),
-                        line.side == LineSide.DEBIT if isinstance(line.side, LineSide) else line.side == "debit",
-                        line.id,
-                    )
-                    for line in lines
-                ]
-                results.append((entry.id, line_tuples))
+            dto = selector.get_entry(entry_id)
+            if dto is not None:
+                results.append(_entry_to_tuples(dto))
 
         elif artifact_ref.artifact_type == ArtifactType.EVENT:
             try:
@@ -449,25 +447,9 @@ class CorrectionEngine:
             except (ValueError, TypeError):
                 return []
 
-            entries = self.session.execute(
-                select(JournalEntry).where(JournalEntry.event_id == event_id)
-            ).scalars().all()
-
-            for entry in entries:
-                lines = self.session.execute(
-                    select(JournalLine).where(JournalLine.entry_id == entry.id)
-                ).scalars().all()
-
-                line_tuples = [
-                    (
-                        line.account_code,
-                        Money(line.amount, line.currency),
-                        line.side == LineSide.DEBIT if isinstance(line.side, LineSide) else line.side == "debit",
-                        line.id,
-                    )
-                    for line in lines
-                ]
-                results.append((entry.id, line_tuples))
+            dtos = selector.get_entries_by_event(event_id)
+            for dto in dtos:
+                results.append(_entry_to_tuples(dto))
 
         return results
 
@@ -631,6 +613,7 @@ class CorrectionEngine:
             links=links,
             actor_id=actor_id,
             execution_event_id=creating_event_id,
+            executed_at=datetime.now(timezone.utc),
         )
 
     def void_document(
@@ -722,6 +705,7 @@ class CorrectionEngine:
             correction_type=CorrectionType.ADJUST,
             affected=[AffectedArtifact.root(document_ref, ())],
             entries=list(adjustment_entries),
+            created_at=datetime.now(timezone.utc),
         )
 
         return self.execute_correction(

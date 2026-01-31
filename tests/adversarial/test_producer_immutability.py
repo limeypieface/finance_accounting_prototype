@@ -40,8 +40,8 @@ class TestProducerRecording:
         """
         Verify that the producer field is recorded on ingested events.
 
-        Pipeline B creates source Event records via make_source_event, which
-        uses a default producer. We verify the event exists with a producer.
+        The posting pipeline creates source Event records via make_source_event,
+        which uses a default producer. We verify the event exists with a producer.
         """
         source_event_id = uuid4()
         result = post_via_coordinator(

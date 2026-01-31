@@ -113,7 +113,7 @@ class TestNoDirectLinkPersistenceInModules:
 class TestNoDirectSessionQueryInModules:
     """Module services should not run raw session.query() or session.execute().
 
-    All data access should go through kernel services (LedgerService,
+    All data access should go through kernel services (JournalWriter,
     JournalSelector, etc.). Direct ORM access bypasses audit, authorization,
     and invariant checks.
 
@@ -256,7 +256,7 @@ class TestModuleServicesAcceptOrchestrator:
         """
         KERNEL_SERVICES = {
             "IngestorService", "PeriodService", "JournalWriter",
-            "AuditorService", "SequenceService", "LedgerService",
+            "AuditorService", "SequenceService",
             "InterpretationCoordinator", "OutcomeRecorder",
             "ReferenceSnapshotService", "ContractService",
             "PartyService",

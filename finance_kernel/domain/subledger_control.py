@@ -34,15 +34,24 @@ logger = get_logger("domain.subledger_control")
 
 
 class SubledgerType(str, Enum):
-    """Types of subledgers that track entity-level detail."""
+    """Canonical subledger type identifiers.
 
-    AP = "ap"  # Accounts Payable
-    AR = "ar"  # Accounts Receivable
-    INVENTORY = "inventory"  # Inventory subledger
-    FIXED_ASSETS = "fixed_assets"  # Fixed asset register
-    BANK = "bank"  # Bank transactions
-    PAYROLL = "payroll"  # Payroll liabilities
-    WIP = "wip"  # Work in progress
+    This is the single source of truth for subledger type enums (SL-Phase 1).
+    finance_engines/subledger.py re-exports this enum (SL-G9: engines may
+    import from kernel domain, never the reverse).
+
+    Values are uppercase to match config ledger IDs. Persisted as .value
+    in ORM models; round-trip mapped on read (F13).
+    """
+
+    AP = "AP"  # Accounts Payable
+    AR = "AR"  # Accounts Receivable
+    INVENTORY = "INVENTORY"  # Inventory subledger
+    FIXED_ASSETS = "FIXED_ASSETS"  # Fixed asset register
+    BANK = "BANK"  # Bank transactions
+    PAYROLL = "PAYROLL"  # Payroll liabilities
+    WIP = "WIP"  # Work in progress
+    INTERCOMPANY = "INTERCOMPANY"  # Intercompany transactions
 
 
 class ReconciliationTiming(str, Enum):
@@ -259,6 +268,7 @@ class SubledgerReconciler:
         subledger_balance: Money,
         control_account_balance: Money,
         as_of_date: date,
+        checked_at: datetime,
         entries_checked: int = 0,
     ) -> ReconciliationResult:
         """
@@ -300,7 +310,7 @@ class SubledgerReconciler:
             is_reconciled=variance.is_zero,
             is_within_tolerance=is_within,
             tolerance_used=contract.tolerance,
-            checked_at=datetime.now(),
+            checked_at=checked_at,
             entries_checked=entries_checked,
         )
 
@@ -349,6 +359,7 @@ class SubledgerReconciler:
         control_balance_before: Money,
         control_balance_after: Money,
         as_of_date: date,
+        checked_at: datetime | None = None,
     ) -> list[ReconciliationViolation]:
         """
         Validate that a posting maintains the control contract.
@@ -363,11 +374,13 @@ class SubledgerReconciler:
             return violations
 
         # Check balance after posting
+        _checked_at = checked_at if checked_at is not None else datetime.min
         result = self.reconcile(
             contract=contract,
             subledger_balance=subledger_balance_after,
             control_account_balance=control_balance_after,
             as_of_date=as_of_date,
+            checked_at=_checked_at,
         )
 
         if not result.is_within_tolerance:
@@ -404,6 +417,7 @@ class SubledgerReconciler:
         subledger_balance: Money,
         control_account_balance: Money,
         period_end_date: date,
+        checked_at: datetime | None = None,
     ) -> list[ReconciliationViolation]:
         """
         Validate that subledger can close period.
@@ -415,11 +429,13 @@ class SubledgerReconciler:
         if not contract.enforce_on_close:
             return violations
 
+        _checked_at = checked_at if checked_at is not None else datetime.min
         result = self.reconcile(
             contract=contract,
             subledger_balance=subledger_balance,
             control_account_balance=control_account_balance,
             as_of_date=period_end_date,
+            checked_at=_checked_at,
         )
 
         if not result.is_reconciled and not result.is_within_tolerance:

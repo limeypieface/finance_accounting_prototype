@@ -13,6 +13,7 @@ Profiles:
     ExpenseCardPayment          — Card paid: Dr Corp Card Liability / Cr Cash
     ExpenseAdvanceIssued        — Advance out: Dr Advance Clearing / Cr Cash
     ExpenseAdvanceCleared       — Advance cleared: Dr Employee Payable / Cr Advance Clearing
+    ExpenseReceiptMatched       — Receipt match: Dr Expense / Cr Corp Card Liability
 """
 
 from datetime import date
@@ -307,6 +308,42 @@ ADVANCE_CLEARED_MAPPINGS = (
 )
 
 
+# --- Receipt Matched ----------------------------------------------------------
+
+RECEIPT_MATCHED = AccountingPolicy(
+    name="ExpenseReceiptMatched",
+    version=1,
+    trigger=PolicyTrigger(event_type="expense.receipt_matched"),
+    meaning=PolicyMeaning(
+        economic_type="EXPENSE_RECONCILIATION",
+        quantity_field="payload.amount",
+        dimensions=("org_unit",),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="EXPENSE",
+            credit_role="CORPORATE_CARD_LIABILITY",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Match amount must be positive",
+        ),
+    ),
+    description="Expense receipt matched to corporate card transaction",
+)
+
+RECEIPT_MATCHED_MAPPINGS = (
+    ModuleLineMapping(role="EXPENSE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="CORPORATE_CARD_LIABILITY", side="credit", ledger="GL"),
+)
+
+
 # =============================================================================
 # Profile + Mapping pairs for registration
 # =============================================================================
@@ -319,6 +356,7 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     (CORPORATE_CARD_PAYMENT, CORPORATE_CARD_PAYMENT_MAPPINGS),
     (ADVANCE_ISSUED, ADVANCE_ISSUED_MAPPINGS),
     (ADVANCE_CLEARED, ADVANCE_CLEARED_MAPPINGS),
+    (RECEIPT_MATCHED, RECEIPT_MATCHED_MAPPINGS),
 )
 
 

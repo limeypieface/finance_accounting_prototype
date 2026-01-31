@@ -60,10 +60,14 @@ from finance_kernel.domain.policy_selector import (
 
 @pytest.fixture(autouse=True)
 def clear_profile_registry():
-    """Clear profile registry before and after each test."""
+    """Save, clear, and restore profile registry for test isolation."""
+    saved_profiles = {k: dict(v) for k, v in PolicySelector._profiles.items()}
+    saved_by_event = {k: list(v) for k, v in PolicySelector._by_event_type.items()}
     PolicySelector.clear()
     yield
     PolicySelector.clear()
+    PolicySelector._profiles.update(saved_profiles)
+    PolicySelector._by_event_type.update(saved_by_event)
 
 
 @pytest.fixture

@@ -315,6 +315,7 @@ class APService:
             match_result: MatchResult = self._matching.create_match(
                 documents=all_documents,
                 match_type=MatchType.THREE_WAY,
+                as_of_date=date.today(),
                 tolerance=tolerance,
             )
 

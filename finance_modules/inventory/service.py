@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from typing import Any, Sequence
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
@@ -40,6 +41,17 @@ from finance_kernel.services.module_posting_service import (
 from finance_services.valuation_service import ValuationLayer
 from finance_engines.valuation import ConsumptionResult, CostMethod
 from finance_engines.variance import VarianceCalculator, VarianceResult
+from finance_modules.inventory.helpers import (
+    classify_abc as _classify_abc,
+    calculate_reorder_point as _calculate_reorder_point,
+    calculate_eoq as _calculate_eoq,
+)
+from finance_modules.inventory.models import (
+    ABCClassification,
+    CycleCount,
+    ItemValue,
+    ReorderPoint,
+)
 
 logger = get_logger("modules.inventory.service")
 
@@ -565,6 +577,221 @@ class InventoryService:
         except Exception:
             self._session.rollback()
             raise
+
+    # =========================================================================
+    # Cycle Count
+    # =========================================================================
+
+    def record_cycle_count(
+        self,
+        count_id: UUID,
+        item_id: str,
+        expected_quantity: Decimal,
+        actual_quantity: Decimal,
+        unit_cost: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        location_id: str | None = None,
+        currency: str = "USD",
+        notes: str = "",
+    ) -> ModulePostingResult:
+        """
+        Record a cycle count and post the adjustment for any variance.
+
+        Engine: VarianceCalculator for count variance computation.
+        Profile: inventory.cycle_count -> InventoryCycleCountPositive or Negative
+        (where-clause dispatch based on variance sign)
+        """
+        try:
+            variance_qty = actual_quantity - expected_quantity
+            variance_amount = variance_qty * unit_cost
+
+            if variance_qty == 0:
+                logger.info("inventory_cycle_count_no_variance", extra={
+                    "item_id": item_id, "quantity": str(actual_quantity),
+                })
+                # No posting needed when count matches
+                return ModulePostingResult(
+                    status=ModulePostingStatus.POSTED,
+                    event_id=uuid4(),
+                    journal_entry_ids=(),
+                    profile_name="InventoryCycleCountZero",
+                )
+
+            # Engine: compute variance
+            variance_result = self._variance.price_variance(
+                expected_price=Money.of(expected_quantity * unit_cost, currency),
+                actual_price=Money.of(actual_quantity * unit_cost, currency),
+                quantity=Decimal("1"),
+            )
+
+            logger.info("inventory_cycle_count_variance", extra={
+                "item_id": item_id,
+                "expected": str(expected_quantity),
+                "actual": str(actual_quantity),
+                "variance_qty": str(variance_qty),
+                "variance_amount": str(variance_amount),
+            })
+
+            result = self._poster.post_event(
+                event_type="inventory.cycle_count",
+                payload={
+                    "item_id": item_id,
+                    "expected_quantity": str(expected_quantity),
+                    "actual_quantity": str(actual_quantity),
+                    "variance_quantity": str(variance_qty),
+                    "amount": str(abs(variance_amount)),
+                    "unit_cost": str(unit_cost),
+                    "location_id": location_id,
+                    "notes": notes,
+                },
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=abs(variance_amount),
+                currency=currency,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # ABC Classification (no posting)
+    # =========================================================================
+
+    def classify_abc(
+        self,
+        items: Sequence[ItemValue],
+        a_pct: Decimal = Decimal("80"),
+        b_pct: Decimal = Decimal("15"),
+    ) -> dict[str, str]:
+        """
+        Classify items into A/B/C categories by cumulative annual value.
+
+        No posting — delegates to helpers.py pure function.
+        """
+        result = _classify_abc(items, a_pct, b_pct)
+        logger.info("inventory_abc_classified", extra={
+            "item_count": len(items),
+            "a_count": sum(1 for v in result.values() if v == "A"),
+            "b_count": sum(1 for v in result.values() if v == "B"),
+            "c_count": sum(1 for v in result.values() if v == "C"),
+        })
+        return result
+
+    # =========================================================================
+    # Reorder Point (no posting)
+    # =========================================================================
+
+    def calculate_reorder_point(
+        self,
+        item_id: str,
+        avg_daily_usage: Decimal,
+        lead_time_days: int,
+        safety_stock: Decimal,
+        annual_demand: Decimal | None = None,
+        order_cost: Decimal | None = None,
+        holding_cost: Decimal | None = None,
+        location_id: str | None = None,
+    ) -> ReorderPoint:
+        """
+        Calculate reorder point and optionally EOQ.
+
+        No posting — delegates to helpers.py pure functions.
+        """
+        rop = _calculate_reorder_point(avg_daily_usage, lead_time_days, safety_stock)
+
+        eoq = Decimal("0")
+        if annual_demand and order_cost and holding_cost:
+            eoq = _calculate_eoq(annual_demand, order_cost, holding_cost)
+
+        return ReorderPoint(
+            item_id=item_id,
+            location_id=location_id,
+            reorder_point=rop,
+            safety_stock=safety_stock,
+            eoq=eoq,
+            avg_daily_usage=avg_daily_usage,
+            lead_time_days=lead_time_days,
+        )
+
+    # =========================================================================
+    # Inter-Warehouse Transfer
+    # =========================================================================
+
+    def record_inter_warehouse_transfer(
+        self,
+        transfer_id: UUID,
+        item_id: str,
+        from_location: str,
+        to_location: str,
+        quantity: Decimal,
+        unit_cost: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        costing_method: str = "fifo",
+        currency: str = "USD",
+    ) -> tuple[ConsumptionResult, ModulePostingResult]:
+        """
+        Transfer inventory between warehouses (consumes from source).
+
+        Engine: ValuationLayer.consume_fifo/lifo() for source lot consumption.
+        Profile: inventory.warehouse_transfer -> InventoryWarehouseTransferOut/In
+        Posts the outbound side; caller should call receive_transfer for inbound.
+        """
+        return self._issue_inventory(
+            issue_id=transfer_id,
+            item_id=item_id,
+            quantity=quantity,
+            effective_date=effective_date,
+            actor_id=actor_id,
+            issue_type="TRANSFER",
+            costing_method=costing_method,
+            currency=currency,
+            location_id=from_location,
+            to_location=to_location,
+        )
+
+    # =========================================================================
+    # Shelf-Life Write-Off
+    # =========================================================================
+
+    def record_shelf_life_write_off(
+        self,
+        write_off_id: UUID,
+        item_id: str,
+        quantity: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        location_id: str | None = None,
+        reason: str = "EXPIRED",
+        costing_method: str = "fifo",
+        currency: str = "USD",
+    ) -> tuple[ConsumptionResult, ModulePostingResult]:
+        """
+        Write off expired inventory.
+
+        Engine: ValuationLayer.consume_fifo/lifo() determines write-off cost.
+        Profile: inventory.issue (issue_type=SCRAP) -> InventoryIssueScrap
+        """
+        return self._issue_inventory(
+            issue_id=write_off_id,
+            item_id=item_id,
+            quantity=quantity,
+            effective_date=effective_date,
+            actor_id=actor_id,
+            issue_type="SCRAP",
+            costing_method=costing_method,
+            currency=currency,
+            location_id=location_id,
+            reason_code=reason,
+        )
 
     # =========================================================================
     # Internal

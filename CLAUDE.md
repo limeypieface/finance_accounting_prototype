@@ -106,14 +106,21 @@ ALL DTOs are **frozen dataclasses** (immutable). Key types:
 
 ### Clock Injection
 
-Domain NEVER calls `datetime.now()`. All services receive a `Clock` via constructor:
+Domain and engines NEVER call `datetime.now()` or `date.today()`. All services
+receive a `Clock` via constructor; engine factory methods and functions receive
+timestamps as explicit required parameters:
 ```python
+# Service pattern:
 def __init__(self, session: Session, clock: Clock | None = None):
     self._clock = clock or SystemClock()
-```
-Tests use `DeterministicClock`.
 
-### Accounting Policy System (Pipeline B)
+# Engine pattern — callers provide the timestamp:
+def create_match(self, documents, match_type, as_of_date: date, ...):
+    ...
+```
+Tests use `DeterministicClock` for services and explicit dates for engines.
+
+### Accounting Policy System
 
 Declarative policy-driven interpretation of business events:
 - `accounting_policy.py` -- Policy definitions (trigger, meaning, ledger effects, guards)
@@ -169,37 +176,36 @@ Both ORM AND database triggers must be bypassed to modify protected data.
 
 ## Services (Imperative Shell)
 
-### Two Posting Pipelines
+### Posting Pipeline
 
-**Pipeline A (Legacy -- PostingOrchestrator):**
-```
-post_event() -> IngestorService -> PeriodService -> ReferenceDataLoader
-             -> Bookkeeper (pure) -> LedgerService -> COMMIT
-```
+There is ONE posting pipeline. All modules use it:
 
-**Pipeline B (Recommended -- Interpretation):**
 ```
-interpret_and_post() -> ProfileRegistry -> ReferenceSnapshotService
-                     -> MeaningBuilder (pure) -> AccountingIntent
-                     -> JournalWriter -> OutcomeRecorder -> COMMIT
+ModulePostingService.post_event()
+  → IngestorService (event ingestion, R1/R2)
+  → InterpretationCoordinator.interpret_and_post()
+      → ProfileRegistry → ReferenceSnapshotService
+      → MeaningBuilder (pure) → AccountingIntent
+      → JournalWriter → OutcomeRecorder → COMMIT
 ```
 
-Pipeline B uses **account ROLES** (not COA codes) resolved at posting time (L1).
+The pipeline uses **account ROLES** (not COA codes) resolved at posting time (L1).
 
 ### Key Services
 
-| Service | Responsibility |
-|---------|---------------|
-| **PostingOrchestrator** | Pipeline A entry point. Owns transaction boundary (R7) |
-| **IngestorService** | Event ingestion, payload hash verification, protocol violation detection |
-| **LedgerService** | Journal entry persistence, idempotency, sequence allocation |
-| **AuditorService** | Hash chain maintenance (R11), chain validation |
-| **PeriodService** | Fiscal period lifecycle, R12/R13 enforcement |
-| **SequenceService** | Monotonic sequence allocation via locked counter row (R9) |
-| **InterpretationCoordinator** | Pipeline B orchestrator, L5 atomicity |
-| **JournalWriter** | Role-to-COA resolution (L1), balance validation, atomic writes (P11) |
-| **OutcomeRecorder** | One outcome per event (P15) |
-| **LinkGraphService** | Economic link persistence, cycle detection, graph traversal |
+| Service | Location | Responsibility |
+|---------|----------|---------------|
+| **ModulePostingService** | `finance_kernel/services/` | Canonical posting entry point. All modules call `post_event()`. |
+| **InterpretationCoordinator** | `finance_kernel/services/` | Posting pipeline orchestrator, L5 atomicity |
+| **JournalWriter** | `finance_kernel/services/` | Role-to-COA resolution (L1), balance validation, atomic writes (P11) |
+| **OutcomeRecorder** | `finance_kernel/services/` | One outcome per event (P15) |
+| **IngestorService** | `finance_kernel/services/` | Event ingestion, payload hash verification, protocol violation detection |
+| **AuditorService** | `finance_kernel/services/` | Hash chain maintenance (R11), chain validation |
+| **PeriodService** | `finance_kernel/services/` | Fiscal period lifecycle, R12/R13 enforcement |
+| **SequenceService** | `finance_kernel/services/` | Monotonic sequence allocation via locked counter row (R9) |
+| **PostingOrchestrator** | `finance_services/` | DI container / service factory. Creates and wires kernel services. |
+| **EngineDispatcher** | `finance_services/` | Dispatches calculations to registered pure engines |
+| **LinkGraphService** | `finance_kernel/services/` | Economic link persistence, cycle detection, graph traversal |
 
 ---
 
@@ -236,9 +242,9 @@ These six invariants are enforced unconditionally. No config or policy may overr
 | R15 | Open/closed compliance | New event type = new strategy only |
 | R16 | ISO 4217 enforcement | Currency validation at boundary |
 | R17 | Precision-derived tolerance | Rounding tolerance from currency precision |
-| R18 | Deterministic errors | Typed exceptions with machine-readable `code` |
+| R18 | Deterministic errors | Typed exceptions with machine-readable `code`. Config exceptions also extend `FinanceKernelError`. |
 | R19 | No silent correction | Failures are explicit or produce `is_rounding=True` |
-| R20 | Test class mapping | Every invariant has unit, concurrency, crash, replay tests |
+| R20 | Test class mapping | Tiered: critical (unit+concurrency), important (unit), architectural (arch tests) |
 | R21 | Reference snapshot determinism | JournalEntry records version IDs at posting time |
 | R22 | Rounding line isolation | Only Bookkeeper may create `is_rounding=True` lines |
 | R23 | Strategy lifecycle governance | Version ranges + replay policy per strategy |
@@ -288,7 +294,7 @@ These six invariants are enforced unconditionally. No config or policy may overr
 4. Use `MAX(seq)+1` for sequence allocation
 5. Modify posted journal entries or lines
 6. Use floats for money
-7. Read `datetime.now()` in domain or service code without clock injection
+7. Read `datetime.now()` or `date.today()` in domain, engine, or service code without clock injection
 8. Bypass immutability protections
 9. Create rounding lines from strategies (only Bookkeeper may, R22)
 10. Skip the audit trail for any state-changing operation

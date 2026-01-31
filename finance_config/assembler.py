@@ -36,6 +36,7 @@ from finance_config.loader import (
     parse_scope,
     parse_subledger_contract,
 )
+from finance_kernel.exceptions import FinanceKernelError
 from finance_config.schema import (
     AccountingConfigurationSet,
     ControlRule,
@@ -48,8 +49,10 @@ from finance_config.schema import (
 )
 
 
-class AssemblyError(Exception):
+class AssemblyError(FinanceKernelError):
     """Error during fragment assembly."""
+
+    code: str = "ASSEMBLY_FAILED"
 
 
 def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:

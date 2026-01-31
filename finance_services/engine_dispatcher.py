@@ -19,7 +19,10 @@ from typing import Any, Callable
 from finance_config.compiler import CompiledPolicy, CompiledPolicyPack, FrozenEngineParams
 from finance_engines.tracer import compute_input_fingerprint
 
-_logger = logging.getLogger("finance_kernel.engine_dispatcher")
+# Import pure DTOs from kernel/domain (re-export for backwards compatibility)
+from finance_kernel.domain.engine_types import EngineDispatchResult, EngineTraceRecord
+
+_logger = logging.getLogger("finance_services.engine_dispatcher")
 
 
 # ---------------------------------------------------------------------------
@@ -41,29 +44,6 @@ class EngineInvoker:
     engine_version: str
     invoke: Callable[[dict, FrozenEngineParams], Any]
     fingerprint_fields: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class EngineTraceRecord:
-    """Audit record for a single engine invocation."""
-
-    engine_name: str
-    engine_version: str
-    input_fingerprint: str
-    duration_ms: float
-    parameters_used: dict[str, Any]
-    success: bool
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class EngineDispatchResult:
-    """Result of dispatching all required engines for a policy."""
-
-    engine_outputs: dict[str, Any]
-    traces: tuple[EngineTraceRecord, ...]
-    all_succeeded: bool
-    errors: tuple[str, ...]
 
 
 # ---------------------------------------------------------------------------

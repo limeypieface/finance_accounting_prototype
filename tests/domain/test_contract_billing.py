@@ -847,12 +847,17 @@ class TestBillingLedgerEffects:
         profile = PolicySelector.get("ContractBillingCostReimbursement")
         effects = profile.ledger_effects
 
-        # Should have 3 effects: costs, fee, and contract subledger
-        assert len(effects) == 3
+        # Should have 2 effects: GL (costs+fee via mappings) and contract subledger
+        assert len(effects) == 2
 
-        # Check for unbilled AR effect
-        unbilled_effects = [e for e in effects if e.debit_role == "UNBILLED_AR"]
-        assert len(unbilled_effects) >= 1
+        # Check for unbilled AR effect on GL
+        gl_effects = [e for e in effects if e.ledger == "GL"]
+        assert len(gl_effects) == 1
+        assert gl_effects[0].debit_role == "UNBILLED_AR"
+
+        # Check for contract subledger effect
+        contract_effects = [e for e in effects if e.ledger == "CONTRACT"]
+        assert len(contract_effects) == 1
 
     def test_tm_billing_ledger_effects(self):
         """T&M billing should post to unbilled AR and contract subledger."""

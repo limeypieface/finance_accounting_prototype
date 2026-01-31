@@ -1,11 +1,11 @@
 """
-ModulePostingService - Orchestrates Pipeline B end-to-end.
+ModulePostingService — canonical posting entry point for all modules.
 
 Connects PolicySelector, MeaningBuilder, profile_bridge, and
 InterpretationCoordinator into a single service that modules call
 to post economic events.
 
-Pipeline B flow:
+Posting flow:
     post_event(event_type, payload, effective_date, actor_id, ...)
       1. Validate period is open (PeriodService)
       2. Ingest event record (IngestorService — FK requirement)
@@ -13,7 +13,8 @@ Pipeline B flow:
       4. Build meaning (MeaningBuilder.build)
       5. Build intent (profile_bridge.build_accounting_intent)
       6. Post atomically (InterpretationCoordinator.interpret_and_post)
-      7. Commit or rollback
+      7. Post subledger entries (SL-G1: same transaction)
+      8. Commit or rollback
 
 R7 Compliance: Manages its own transaction boundary.
 All state-changing operations define their own transaction scope.
@@ -27,7 +28,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any, TYPE_CHECKING
+from typing import Any
 from uuid import UUID
 from uuid import uuid4 as _uuid4
 
@@ -48,9 +49,6 @@ from finance_kernel.services.interpretation_coordinator import (
 from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
 from finance_kernel.services.outcome_recorder import OutcomeRecorder
 from finance_kernel.services.period_service import PeriodService
-
-if TYPE_CHECKING:
-    from finance_kernel.services.posting_orchestrator import PostingOrchestrator
 
 logger = get_logger("services.module_posting")
 
@@ -95,7 +93,7 @@ class ModulePostingResult:
 
 class ModulePostingService:
     """
-    Orchestrates Pipeline B: profile-driven posting from modules.
+    Orchestrates profile-driven posting from modules.
 
     This is the missing service that connects:
     - PolicySelector (profile lookup by event_type + payload)
@@ -144,6 +142,7 @@ class ModulePostingService:
             outcome_recorder=self._outcome_recorder,
             clock=clock,
         )
+        self._post_subledger_fn = None  # Injected via from_orchestrator()
 
     @classmethod
     def from_orchestrator(
@@ -165,6 +164,12 @@ class ModulePostingService:
         instance._meaning_builder = orchestrator.meaning_builder
         instance._coordinator = orchestrator.interpretation_coordinator
         instance._party_service_ref = orchestrator.party_service
+        instance._compiled_pack = orchestrator.engine_dispatcher._pack
+        # Subledger posting callable — lives in finance_services/ to
+        # respect architecture boundary (kernel must not import engines).
+        instance._post_subledger_fn = getattr(
+            orchestrator, "post_subledger_entries", None
+        )
         return instance
 
     def post_event(
@@ -185,7 +190,7 @@ class ModulePostingService:
         dimension_schema_version: int = 1,
     ) -> ModulePostingResult:
         """
-        Post an economic event through Pipeline B.
+        Post an economic event through the posting pipeline.
 
         R7 Compliance: Commits on success, rolls back on failure
         (when auto_commit=True).
@@ -370,11 +375,23 @@ class ModulePostingService:
                 message=str(e),
             )
 
+        # Look up CompiledPolicy for engine dispatch (if compiled pack available)
+        compiled_policy = None
+        if hasattr(self, '_compiled_pack') and self._compiled_pack:
+            for cp in self._compiled_pack.policies:
+                if cp.name == profile.name and cp.version == profile.version:
+                    compiled_policy = cp
+                    break
+
         logger.info(
             "profile_matched",
             extra={
                 "profile_name": profile.name,
                 "profile_version": profile.version,
+                "has_compiled_policy": compiled_policy is not None,
+                "required_engines": list(
+                    compiled_policy.required_engines
+                ) if compiled_policy and compiled_policy.required_engines else [],
             },
         )
 
@@ -439,6 +456,8 @@ class ModulePostingService:
             meaning_result=meaning_result,
             accounting_intent=accounting_intent,
             actor_id=actor_id,
+            compiled_policy=compiled_policy,
+            event_payload=payload,
         )
 
         if not interpretation_result.success:
@@ -448,6 +467,18 @@ class ModulePostingService:
                 interpretation_result=interpretation_result,
                 profile_name=profile.name,
                 message=interpretation_result.error_message,
+            )
+
+        # 7. Post subledger entries (SL-G1: same transaction as journal write).
+        #    Callable lives in finance_services/ (architecture boundary).
+        if self._post_subledger_fn and interpretation_result.journal_result:
+            self._post_subledger_fn(
+                accounting_intent=accounting_intent,
+                journal_result=interpretation_result.journal_result,
+                event_id=event_id,
+                event_type=event_type,
+                payload=payload,
+                actor_id=actor_id,
             )
 
         # Success
@@ -462,5 +493,6 @@ class ModulePostingService:
             interpretation_result=interpretation_result,
             meaning_result=meaning_result,
             profile_name=profile.name,
-            message="Event posted successfully via Pipeline B",
+            message="Event posted successfully",
         )
+

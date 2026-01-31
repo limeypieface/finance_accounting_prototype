@@ -97,12 +97,16 @@ class TestCompilationReceipt:
     """Tests for CompilationReceipt and PolicySelector receipt validation."""
 
     def setup_method(self):
-        """Clear PolicySelector registry before each test."""
+        """Save and clear PolicySelector registry before each test."""
+        self._saved_profiles = {k: dict(v) for k, v in PolicySelector._profiles.items()}
+        self._saved_by_event = {k: list(v) for k, v in PolicySelector._by_event_type.items()}
         PolicySelector.clear()
 
     def teardown_method(self):
-        """Clear PolicySelector registry after each test."""
+        """Restore PolicySelector registry after each test."""
         PolicySelector.clear()
+        PolicySelector._profiles.update(self._saved_profiles)
+        PolicySelector._by_event_type.update(self._saved_by_event)
 
     def test_receipt_matches_correct_policy(self):
         """Receipt matches when name and version match."""

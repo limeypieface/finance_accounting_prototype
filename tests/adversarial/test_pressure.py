@@ -359,7 +359,7 @@ class TestPeriodBoundaryRace:
             cleanup_test_data(setup_session)
             accounts, period = setup_test_data(setup_session, actor_id)
             effective_date = period.start_date
-            period_id = period.id
+            period_id = period.period_code
             role_resolver = _build_role_resolver(accounts)
 
         barrier = Barrier(num_posters + 1, timeout=30)

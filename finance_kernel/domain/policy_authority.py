@@ -14,7 +14,7 @@ This prevents "creative accounting by configuration" by enforcing that:
 Enforcement points:
 - MeaningBuilder: Can this profile exist?
 - AccountingIntentBuilder: Can this intent be formed?
-- LedgerService: Can this role be posted?
+- JournalWriter: Can this role be posted?
 
 All policies are versioned and snapshotable for audit and replay.
 """

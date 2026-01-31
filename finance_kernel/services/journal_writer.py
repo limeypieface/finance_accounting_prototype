@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import NamedTuple, TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -181,6 +181,24 @@ class JournalWriteResult:
         return tuple(e.entry_id for e in self.entries)
 
 
+class BindingRecord(NamedTuple):
+    """Full provenance record for a role-to-account binding.
+
+    Stored on RoleResolver so that journal_writer can log the complete
+    binding context into the decision journal at role-resolution time.
+    """
+
+    account_id: UUID
+    account_code: str
+    account_name: str = ""
+    account_type: str = ""
+    normal_balance: str = ""
+    effective_from: str = ""      # ISO date or ""
+    effective_to: str = ""        # ISO date or ""
+    config_id: str = ""
+    config_version: int = 0
+
+
 class RoleResolver:
     """
     Resolves account roles to COA accounts.
@@ -190,15 +208,34 @@ class RoleResolver:
     """
 
     def __init__(self):
-        # role -> (account_id, account_code) mapping
-        # In production, this would be loaded from database
-        self._bindings: dict[str, tuple[UUID, str]] = {}
+        self._bindings: dict[str, BindingRecord] = {}
 
     def register_binding(
-        self, role: str, account_id: UUID, account_code: str
+        self,
+        role: str,
+        account_id: UUID,
+        account_code: str,
+        *,
+        account_name: str = "",
+        account_type: str = "",
+        normal_balance: str = "",
+        effective_from: str = "",
+        effective_to: str = "",
+        config_id: str = "",
+        config_version: int = 0,
     ) -> None:
-        """Register a role binding."""
-        self._bindings[role] = (account_id, account_code)
+        """Register a role binding with optional provenance metadata."""
+        self._bindings[role] = BindingRecord(
+            account_id=account_id,
+            account_code=account_code,
+            account_name=account_name,
+            account_type=account_type,
+            normal_balance=normal_balance,
+            effective_from=effective_from,
+            effective_to=effective_to,
+            config_id=config_id,
+            config_version=config_version,
+        )
 
     def resolve(
         self,
@@ -220,6 +257,18 @@ class RoleResolver:
         Raises:
             RoleResolutionError: If role cannot be resolved
         """
+        if role not in self._bindings:
+            raise RoleResolutionError(role, ledger_id, coa_version)
+        binding = self._bindings[role]
+        return (binding.account_id, binding.account_code)
+
+    def resolve_full(
+        self,
+        role: str,
+        ledger_id: str,
+        coa_version: int,
+    ) -> BindingRecord:
+        """Resolve a role and return the full BindingRecord with provenance."""
         if role not in self._bindings:
             raise RoleResolutionError(role, ledger_id, coa_version)
         return self._bindings[role]
@@ -467,11 +516,13 @@ class JournalWriter:
             resolved_lines: list[ResolvedIntentLine] = []
 
             for i, line in enumerate(ledger_intent.lines):
-                account_id, account_code = self._role_resolver.resolve(
+                binding = self._role_resolver.resolve_full(
                     line.account_role,
                     ledger_intent.ledger_id,
                     intent.snapshot.coa_version,
                 )
+                account_id = binding.account_id
+                account_code = binding.account_code
 
                 logger.info(
                     "role_resolved",
@@ -479,6 +530,9 @@ class JournalWriter:
                         "role": line.account_role,
                         "account_code": account_code,
                         "account_id": str(account_id),
+                        "account_name": binding.account_name,
+                        "account_type": binding.account_type,
+                        "normal_balance": binding.normal_balance,
                         "ledger_id": ledger_intent.ledger_id,
                         "coa_version": intent.snapshot.coa_version,
                         "line_seq": i,
@@ -486,6 +540,10 @@ class JournalWriter:
                         "amount": str(line.money.amount),
                         "currency": line.money.currency,
                         "source_event_id": str(intent.source_event_id),
+                        "binding_effective_from": binding.effective_from,
+                        "binding_effective_to": binding.effective_to or "open",
+                        "config_id": binding.config_id,
+                        "config_version": binding.config_version,
                     },
                 )
 
@@ -700,38 +758,182 @@ class JournalWriter:
         """
         G9: Validate subledger control contracts after posting.
 
-        For each ledger intent, checks if a subledger control contract
-        exists with enforce_on_post=True. If so, runs the SubledgerReconciler
-        to validate the posting didn't break subledger–GL balance.
+        For each subledger ledger intent with enforce_on_post=True:
+        1. Get GL control account balance (already includes flushed journal entries)
+        2. Get SL aggregate balance (before SL entries are created)
+        3. Compute projected SL balance after SL entries would be created
+        4. Run reconciler to check if SL-GL will be in balance
+        5. Raise SubledgerReconciliationError if blocking violations found
+
+        Invariants enforced:
+        - SL-G3: Per-currency reconciliation
+        - SL-G4: Same session for all queries (snapshot isolation)
+        - SL-G5: Blocking violations abort the transaction
         """
-        from finance_kernel.domain.subledger_control import SubledgerReconciler
+        from finance_kernel.domain.subledger_control import (
+            SubledgerReconciler,
+            SubledgerType,
+        )
+        from finance_kernel.domain.values import Money
+        from finance_kernel.selectors.subledger_selector import SubledgerSelector
+        from finance_kernel.selectors.ledger_selector import LedgerSelector
 
         registry = self._subledger_control_registry
         if registry is None:
             return
 
         reconciler = SubledgerReconciler()
+        # SL-G4: Selectors created lazily but share the SAME session
+        # (snapshot isolation). Lazy init avoids accessing self._session
+        # when no subledger ledger intents require enforcement.
+        sl_selector: SubledgerSelector | None = None
+        gl_selector: LedgerSelector | None = None
 
         for ledger_intent in intent.ledger_intents:
-            contract = registry.get(ledger_intent.ledger_id)
+            # Convert ledger_id (str) to SubledgerType for registry lookup.
+            # Non-subledger ledgers (e.g., "GL") won't match any SubledgerType
+            # and are safely skipped.
+            try:
+                sl_type = SubledgerType(ledger_intent.ledger_id)
+            except ValueError:
+                continue
+
+            contract = registry.get(sl_type)
             if contract is None or not contract.enforce_on_post:
                 continue
 
-            # The reconciler.validate_post() requires before/after balances.
-            # At this point we log the enforcement check. Full balance
-            # computation requires the LedgerService (added in Phase 5).
-            # For now, log that the check is enforced at this point.
-            logger.info(
-                "subledger_control_check",
-                extra={
-                    "ledger_id": ledger_intent.ledger_id,
-                    "contract_type": contract.subledger_type.value
-                    if hasattr(contract, "subledger_type")
-                    else "unknown",
-                    "enforce_on_post": True,
-                    "source_event_id": str(intent.source_event_id),
-                },
-            )
+            # Lazy-init selectors on first use (SL-G4: same session)
+            if sl_selector is None:
+                sl_selector = SubledgerSelector(self._session)
+                gl_selector = LedgerSelector(self._session)
+
+            # Resolve GL control account from the binding's role
+            try:
+                control_account_id, _ = self._role_resolver.resolve(
+                    contract.control_account_role,
+                    "GL",
+                    intent.snapshot.coa_version,
+                )
+            except RoleResolutionError:
+                logger.warning(
+                    "subledger_control_account_unresolvable",
+                    extra={
+                        "subledger_type": sl_type.value,
+                        "control_account_role": contract.control_account_role,
+                        "source_event_id": str(intent.source_event_id),
+                    },
+                )
+                continue
+
+            # SL-G3: Check per currency
+            for currency in ledger_intent.currencies:
+                # 1. GL control account balance "after" posting.
+                #    Journal entries are already flushed in the same transaction,
+                #    so LedgerSelector sees them.
+                gl_balances = gl_selector.account_balance(
+                    account_id=control_account_id,
+                    as_of_date=intent.effective_date,
+                    currency=currency,
+                )
+                if gl_balances:
+                    raw_gl_balance = gl_balances[0].balance  # always debit - credit
+                else:
+                    raw_gl_balance = Decimal("0")
+
+                # Normalize GL balance to match SL sign convention:
+                # GL always returns (debit - credit).
+                # Credit-normal accounts (AP, PAYROLL): negate to get
+                # economic balance matching SL convention (credit - debit).
+                # Debit-normal accounts (AR, INVENTORY, BANK): use as-is.
+                if not contract.binding.is_debit_normal:
+                    gl_economic = -raw_gl_balance
+                else:
+                    gl_economic = raw_gl_balance
+
+                control_balance_after = Money.of(gl_economic, currency)
+
+                # 2. SL aggregate balance "before" (SL entries not yet created)
+                sl_before = sl_selector.get_aggregate_balance(
+                    subledger_type=sl_type,
+                    as_of_date=intent.effective_date,
+                    currency=currency,
+                )
+
+                # 3. Compute projected SL delta from intent lines.
+                #    SL balance convention:
+                #      debit-normal:  delta = sum(debits) - sum(credits)
+                #      credit-normal: delta = sum(credits) - sum(debits)
+                debit_total = ledger_intent.total_debits(currency)
+                credit_total = ledger_intent.total_credits(currency)
+
+                if contract.binding.is_debit_normal:
+                    sl_delta = debit_total - credit_total
+                else:
+                    sl_delta = credit_total - debit_total
+
+                sl_after = Money.of(sl_before.amount + sl_delta, currency)
+
+                # 4. Run reconciler.
+                #    validate_post() only uses "after" values for enforcement;
+                #    "before" values are passed for audit completeness.
+                checked_at = self._clock.now()
+                violations = reconciler.validate_post(
+                    contract=contract,
+                    subledger_balance_before=sl_before,
+                    subledger_balance_after=sl_after,
+                    control_balance_before=control_balance_after,
+                    control_balance_after=control_balance_after,
+                    as_of_date=intent.effective_date,
+                    checked_at=checked_at,
+                )
+
+                # 5. SL-G5: Blocking violations abort the transaction
+                blocking = [v for v in violations if v.blocking]
+                if blocking:
+                    violation_msgs = [v.message for v in blocking]
+                    logger.error(
+                        "subledger_control_violation",
+                        extra={
+                            "subledger_type": sl_type.value,
+                            "currency": currency,
+                            "sl_balance_before": str(sl_before.amount),
+                            "sl_balance_after": str(sl_after.amount),
+                            "gl_control_balance": str(gl_economic),
+                            "variance": str(sl_after.amount - gl_economic),
+                            "source_event_id": str(intent.source_event_id),
+                            "violations": violation_msgs,
+                        },
+                    )
+                    raise SubledgerReconciliationError(
+                        ledger_id=ledger_intent.ledger_id,
+                        violations=violation_msgs,
+                    )
+
+                # Non-blocking violations: log warning and continue
+                non_blocking = [v for v in violations if not v.blocking]
+                if non_blocking:
+                    for v in non_blocking:
+                        logger.warning(
+                            "subledger_control_warning",
+                            extra={
+                                "subledger_type": sl_type.value,
+                                "currency": currency,
+                                "message": v.message,
+                                "source_event_id": str(intent.source_event_id),
+                            },
+                        )
+                else:
+                    logger.info(
+                        "subledger_control_check",
+                        extra={
+                            "subledger_type": sl_type.value,
+                            "currency": currency,
+                            "sl_balance_after": str(sl_after.amount),
+                            "gl_control_balance": str(gl_economic),
+                            "status": "reconciled",
+                            "source_event_id": str(intent.source_event_id),
+                        },
+                    )
 
     def _validate_snapshot_freshness(self, intent: AccountingIntent) -> None:
         """

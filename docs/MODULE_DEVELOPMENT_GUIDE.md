@@ -561,7 +561,7 @@ print(f"Age: {aged_item.age_days} days, Bucket: {aged_item.bucket.name}")
 
 ## Accounting Policy Layer (Advanced)
 
-For complex event interpretation, the kernel provides the **Accounting Policy** infrastructure (`AccountingPolicy`, `PolicySelector`, `MeaningBuilder`, `PolicyBridge`). Your module defines the actual policies in its `profiles.py` file, and the `PolicyAuthority` governs which policies are active. The `ModulePostingService` orchestrates the full Pipeline B flow: event -> policy lookup -> meaning -> intent -> atomic post.
+For complex event interpretation, the kernel provides the **Accounting Policy** infrastructure (`AccountingPolicy`, `PolicySelector`, `MeaningBuilder`, `PolicyBridge`). Your module defines the actual policies in its `profiles.py` file, and the `PolicyAuthority` governs which policies are active. The `ModulePostingService` orchestrates the full posting flow: event -> policy lookup -> meaning -> intent -> atomic post.
 
 ### When to Use Policies vs Strategies
 
@@ -709,7 +709,7 @@ class APService:
             # 1. Build event envelope from invoice data
             event = self._build_invoice_event(invoice_data)
 
-            # 2. Post via ModulePostingService (Pipeline B)
+            # 2. Post via ModulePostingService
             result = self._poster.post(event)
 
             # 3. Establish economic links

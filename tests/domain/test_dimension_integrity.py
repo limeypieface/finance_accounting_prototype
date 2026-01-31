@@ -24,6 +24,50 @@ from finance_kernel.exceptions import (
 )
 
 
+class _ReferenceDataLoader:
+    """Helper to load ReferenceData from the DB session with dimension info."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def load(self):
+        from finance_kernel.domain.dtos import ReferenceData
+
+        # Load active dimensions
+        dims = self._session.execute(
+            select(Dimension)
+        ).scalars().all()
+        active_dimensions = frozenset(
+            d.code for d in dims if d.is_active
+        )
+
+        # Load active dimension values
+        vals = self._session.execute(
+            select(DimensionValue)
+        ).scalars().all()
+        active_dimension_values: dict[str, frozenset[str]] = {}
+        for v in vals:
+            if v.is_active:
+                codes = set(active_dimension_values.get(v.dimension_code, frozenset()))
+                codes.add(v.code)
+                active_dimension_values[v.dimension_code] = frozenset(codes)
+
+        return ReferenceData(
+            account_ids_by_code={},
+            active_account_codes=frozenset(),
+            valid_currencies=frozenset({"USD"}),
+            rounding_account_ids={},
+            active_dimensions=active_dimensions,
+            active_dimension_values=active_dimension_values,
+        )
+
+
+@pytest.fixture
+def reference_data_loader(session):
+    """Provide a ReferenceDataLoader that reads dimensions from the DB."""
+    return _ReferenceDataLoader(session)
+
+
 class TestDimensionValueForeignKey:
     """Tests for DimensionValue FK constraint to Dimension."""
 

@@ -176,3 +176,43 @@ class Receipt:
     receiver_id: UUID | None = None
     location_id: UUID | None = None
     lot_number: str | None = None
+
+
+@dataclass(frozen=True)
+class PurchaseOrderVersion:
+    """A versioned snapshot of a PO amendment."""
+    po_id: UUID
+    version: int
+    amendment_date: date
+    amendment_reason: str
+    changes: tuple[str, ...]
+    previous_total: Decimal
+    new_total: Decimal
+    amended_by: UUID
+
+
+@dataclass(frozen=True)
+class ReceiptMatch:
+    """A match record linking a receipt to a PO for 3-way matching."""
+    id: UUID
+    receipt_id: UUID
+    po_id: UUID
+    po_line_id: UUID
+    matched_quantity: Decimal
+    matched_amount: Decimal
+    variance_amount: Decimal
+    match_type: str  # "2-way", "3-way"
+    matched_date: date
+
+
+@dataclass(frozen=True)
+class SupplierScore:
+    """Supplier performance scorecard for a given period."""
+    vendor_id: UUID
+    period: str  # e.g. "2026-Q1"
+    delivery_score: Decimal  # 0-100
+    quality_score: Decimal
+    price_score: Decimal
+    overall_score: Decimal
+    evaluation_date: date
+    evaluator_id: UUID | None = None

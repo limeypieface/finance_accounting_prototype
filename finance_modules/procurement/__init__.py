@@ -13,6 +13,9 @@ from finance_modules.procurement.models import (
     PurchaseOrder,
     PurchaseOrderLine,
     Receipt,
+    PurchaseOrderVersion,
+    ReceiptMatch,
+    SupplierScore,
 )
 from finance_modules.procurement.profiles import PROCUREMENT_PROFILES
 from finance_modules.procurement.workflows import (
@@ -27,6 +30,9 @@ __all__ = [
     "PurchaseOrder",
     "PurchaseOrderLine",
     "Receipt",
+    "PurchaseOrderVersion",
+    "ReceiptMatch",
+    "SupplierScore",
     "PROCUREMENT_PROFILES",
     "REQUISITION_WORKFLOW",
     "PURCHASE_ORDER_WORKFLOW",

@@ -155,6 +155,25 @@ class JournalSelector(BaseSelector[JournalEntry]):
 
         return self._to_dto(entry)
 
+    def get_entries_by_event(self, event_id: UUID) -> list[JournalEntryDTO]:
+        """
+        Get all journal entries for a source event ID.
+
+        Args:
+            event_id: Event ID.
+
+        Returns:
+            List of JournalEntryDTOs (may be empty).
+        """
+        entries = self.session.execute(
+            select(JournalEntry)
+            .options(selectinload(JournalEntry.lines))
+            .where(JournalEntry.source_event_id == event_id)
+            .order_by(JournalEntry.seq)
+        ).scalars().all()
+
+        return [self._to_dto(entry) for entry in entries]
+
     def get_entries_by_period(
         self,
         start_date: date,

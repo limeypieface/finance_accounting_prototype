@@ -77,7 +77,7 @@ from finance_kernel.domain.clock import DeterministicClock
 from finance_kernel.models.journal import JournalEntry
 
 
-# Hypothesis strategies for Pipeline B fuzzing
+# Hypothesis strategies for posting pipeline fuzzing
 
 if HYPOTHESIS_AVAILABLE:
     @composite
@@ -110,7 +110,7 @@ if HYPOTHESIS_AVAILABLE:
 @pytest.mark.skipif(not HYPOTHESIS_AVAILABLE, reason="hypothesis not installed")
 class TestAmountFuzzing:
     """
-    Tests for amount edge cases via Pipeline B.
+    Tests for amount edge cases via the posting pipeline.
     """
 
     @given(amount=st.decimals(
@@ -130,7 +130,7 @@ class TestAmountFuzzing:
         current_period,
     ):
         """
-        Valid positive amounts should always post successfully via Pipeline B.
+        Valid positive amounts should always post successfully.
         """
         result = post_via_coordinator(
             amount=amount,
@@ -206,12 +206,12 @@ class TestIdempotencyProperty:
             entry_id_1 = result1.journal_result.entries[0].entry_id
 
             # Second attempt with same event_id should be idempotent
-            # Pipeline B uses source_event_id for idempotency via InterpretationOutcome
+            # The posting pipeline uses source_event_id for idempotency via InterpretationOutcome
             # A second attempt with the same source_event_id should either:
             # - Return a success pointing to the same entry
             # - Return an error indicating already processed
             # Both are acceptable idempotent behaviors
-            pass  # Pipeline B idempotency is enforced at the InterpretationOutcome level
+            pass  # Idempotency is enforced at the InterpretationOutcome level
 
 
 @pytest.mark.skipif(not HYPOTHESIS_AVAILABLE, reason="hypothesis not installed")

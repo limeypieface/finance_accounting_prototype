@@ -32,10 +32,11 @@ class TestCompiledPolicyPackFieldUsage:
 
         consumer_files = [
             # Kernel services that receive the compiled pack
-            "finance_kernel/services/engine_dispatcher.py",
-            "finance_kernel/services/posting_orchestrator.py",
             "finance_kernel/services/interpretation_coordinator.py",
             "finance_kernel/services/journal_writer.py",
+            # Cross-layer services (moved from kernel to finance_services/)
+            "finance_services/engine_dispatcher.py",
+            "finance_services/posting_orchestrator.py",
             # Domain components
             "finance_kernel/domain/policy_authority.py",
             "finance_kernel/domain/policy_selector.py",
@@ -162,11 +163,10 @@ class TestOrchestratorServiceUsage:
 
     def test_all_orchestrator_services_are_public(self):
         """PostingOrchestrator exposes services as public attributes."""
-        from finance_kernel.services.posting_orchestrator import PostingOrchestrator
+        from finance_services.posting_orchestrator import PostingOrchestrator
 
         # These are the services created in __init__
         expected_services = {
-            "sequence_service",
             "auditor",
             "period_service",
             "link_graph",
@@ -195,7 +195,6 @@ class TestOrchestratorServiceUsage:
         from pathlib import Path
 
         expected_services = [
-            "sequence_service",
             "auditor",
             "period_service",
             "link_graph",

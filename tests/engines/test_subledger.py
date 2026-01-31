@@ -15,12 +15,12 @@ from datetime import date, datetime
 from uuid import uuid4
 
 from finance_kernel.domain.values import Money
+from finance_kernel.domain.subledger_control import SubledgerType
 from finance_services.subledger_service import SubledgerService
 from finance_engines.subledger import (
     SubledgerEntry,
     SubledgerBalance,
     ReconciliationResult,
-    SubledgerType,
     EntryDirection,
     ReconciliationStatus,
     create_debit_entry,
@@ -96,6 +96,7 @@ class TestSubledgerEntryCreation:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         with pytest.raises(AttributeError):
@@ -113,6 +114,7 @@ class TestEntryOpenStatus:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         assert entry.is_open
@@ -127,6 +129,7 @@ class TestEntryOpenStatus:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         assert entry.open_amount == Money.of("100.00", "USD")
@@ -143,6 +146,7 @@ class TestEntryReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         reconciled = entry.with_reconciliation(
@@ -167,6 +171,7 @@ class TestEntryReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         reconciled = entry.with_reconciliation(
@@ -190,6 +195,7 @@ class TestConvenienceFactories:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
             memo="Test invoice",
             dimensions={"cost_center": "SALES"},
         )
@@ -206,6 +212,7 @@ class TestConvenienceFactories:
             amount=Money.of("100.00", "USD"),
             source_document_type="payment",
             source_document_id="pmt-1",
+            effective_date=date(2024, 1, 15),
         )
 
         assert entry.direction == EntryDirection.CREDIT
@@ -217,7 +224,7 @@ class TestSubledgerServiceBase:
     def setup_method(self):
         # Create a concrete implementation for testing
         class TestSubledgerService(SubledgerService):
-            subledger_type = "TEST"
+            subledger_type = SubledgerType.AP
 
             def post(self, entry, gl_entry_id):
                 return entry  # Simple passthrough for testing
@@ -225,8 +232,8 @@ class TestSubledgerServiceBase:
             def get_balance(self, entity_id, as_of_date=None, currency=None):
                 return SubledgerBalance(
                     entity_id=entity_id,
-                    subledger_type=self.subledger_type,
-                    as_of_date=as_of_date or date.today(),
+                    subledger_type=self.subledger_type.value,
+                    as_of_date=as_of_date or date(2026, 1, 30),
                     debit_total=Money.of("0", "USD"),
                     credit_total=Money.of("0", "USD"),
                     balance=Money.of("0", "USD"),
@@ -247,6 +254,7 @@ class TestSubledgerServiceBase:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         errors = self.service.validate_entry(entry)
@@ -275,7 +283,7 @@ class TestReconciliation:
 
     def setup_method(self):
         class TestSubledgerService(SubledgerService):
-            subledger_type = "AP"
+            subledger_type = SubledgerType.AP
 
             def post(self, entry, gl_entry_id):
                 return entry
@@ -296,6 +304,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         credit = create_credit_entry(
@@ -304,6 +313,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="payment",
             source_document_id="pmt-1",
+            effective_date=date(2024, 1, 15),
         )
 
         result = self.service.reconcile(debit, credit)
@@ -320,6 +330,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         credit = create_credit_entry(
@@ -328,6 +339,7 @@ class TestReconciliation:
             amount=Money.of("60.00", "USD"),
             source_document_type="payment",
             source_document_id="pmt-1",
+            effective_date=date(2024, 1, 15),
         )
 
         result = self.service.reconcile(debit, credit)
@@ -343,6 +355,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         credit = create_credit_entry(
@@ -351,6 +364,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="payment",
             source_document_id="pmt-1",
+            effective_date=date(2024, 1, 15),
         )
 
         result = self.service.reconcile(
@@ -370,6 +384,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         credit = create_credit_entry(
@@ -378,6 +393,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="payment",
             source_document_id="pmt-1",
+            effective_date=date(2024, 1, 15),
         )
 
         with pytest.raises(ValueError, match="different subledgers"):
@@ -391,6 +407,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         credit = create_credit_entry(
@@ -399,6 +416,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="payment",
             source_document_id="pmt-1",
+            effective_date=date(2024, 1, 15),
         )
 
         with pytest.raises(ValueError, match="different entities"):
@@ -412,6 +430,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         debit2 = create_debit_entry(
@@ -420,6 +439,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-2",
+            effective_date=date(2024, 1, 15),
         )
 
         with pytest.raises(ValueError, match="credit"):
@@ -433,6 +453,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "USD"),
             source_document_type="invoice",
             source_document_id="inv-1",
+            effective_date=date(2024, 1, 15),
         )
 
         credit = create_credit_entry(
@@ -441,6 +462,7 @@ class TestReconciliation:
             amount=Money.of("100.00", "EUR"),  # Different currency
             source_document_type="payment",
             source_document_id="pmt-1",
+            effective_date=date(2024, 1, 15),
         )
 
         with pytest.raises(ValueError, match="different currencies"):
@@ -452,7 +474,7 @@ class TestBalanceCalculation:
 
     def setup_method(self):
         class TestSubledgerService(SubledgerService):
-            subledger_type = "AP"
+            subledger_type = SubledgerType.AP
 
             def post(self, entry, gl_entry_id):
                 return entry
@@ -474,6 +496,7 @@ class TestBalanceCalculation:
                 amount=Money.of("1000.00", "USD"),
                 source_document_type="invoice",
                 source_document_id="inv-1",
+                effective_date=date(2024, 1, 15),
             ),
             create_debit_entry(
                 subledger_type="AP",
@@ -481,10 +504,11 @@ class TestBalanceCalculation:
                 amount=Money.of("400.00", "USD"),
                 source_document_type="payment",
                 source_document_id="pmt-1",
+                effective_date=date(2024, 1, 15),
             ),
         ]
 
-        balance = self.service.calculate_balance(entries)
+        balance = self.service.calculate_balance(entries, as_of_date=date(2026, 1, 30))
 
         assert balance.credit_total == Money.of("1000.00", "USD")
         assert balance.debit_total == Money.of("400.00", "USD")
@@ -500,6 +524,7 @@ class TestBalanceCalculation:
                 amount=Money.of("100.00", "USD"),
                 source_document_type="invoice",
                 source_document_id="inv-1",
+                effective_date=date(2024, 1, 15),
             ),
             create_credit_entry(
                 subledger_type="AP",
@@ -507,27 +532,30 @@ class TestBalanceCalculation:
                 amount=Money.of("200.00", "USD"),
                 source_document_type="invoice",
                 source_document_id="inv-2",
+                effective_date=date(2024, 1, 15),
             ),
         ]
 
-        balance = self.service.calculate_balance(entries)
+        balance = self.service.calculate_balance(entries, as_of_date=date(2026, 1, 30))
 
         assert balance.open_item_count == 2
 
     def test_calculate_balance_empty_raises(self):
         """Raises error for empty entries."""
         with pytest.raises(ValueError, match="empty"):
-            self.service.calculate_balance([])
+            self.service.calculate_balance([], as_of_date=date(2026, 1, 30))
 
 
 class TestSubledgerTypes:
-    """Tests for subledger type enums."""
+    """Tests for subledger type enums (now canonical from kernel domain)."""
 
     def test_subledger_types(self):
-        """All expected subledger types exist."""
+        """All expected subledger types exist with canonical uppercase values."""
         assert SubledgerType.AP == "AP"
         assert SubledgerType.AR == "AR"
         assert SubledgerType.BANK == "BANK"
         assert SubledgerType.INVENTORY == "INVENTORY"
-        assert SubledgerType.FIXED_ASSETS == "FA"
-        assert SubledgerType.INTERCOMPANY == "IC"
+        assert SubledgerType.FIXED_ASSETS == "FIXED_ASSETS"
+        assert SubledgerType.INTERCOMPANY == "INTERCOMPANY"
+        assert SubledgerType.PAYROLL == "PAYROLL"
+        assert SubledgerType.WIP == "WIP"

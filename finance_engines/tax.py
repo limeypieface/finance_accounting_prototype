@@ -101,11 +101,8 @@ class TaxRate:
             # Rates > 100% are unusual but valid in some cases
             pass
 
-    def is_effective(self, on_date: date | None = None) -> bool:
+    def is_effective(self, on_date: date) -> bool:
         """Check if rate is effective on given date."""
-        if on_date is None:
-            on_date = date.today()
-
         if self.effective_from and on_date < self.effective_from:
             return False
         if self.effective_to and on_date > self.effective_to:

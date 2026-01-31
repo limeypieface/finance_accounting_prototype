@@ -12,6 +12,10 @@ from finance_modules.expense.models import (
     ExpenseLine,
     CorporateCard,
     CardTransaction,
+    ExpensePolicy,
+    PolicyViolation,
+    MileageRate,
+    PerDiemRate,
 )
 from finance_modules.expense.profiles import EXPENSE_PROFILES
 from finance_modules.expense.workflows import EXPENSE_REPORT_WORKFLOW
@@ -22,6 +26,10 @@ __all__ = [
     "ExpenseLine",
     "CorporateCard",
     "CardTransaction",
+    "ExpensePolicy",
+    "PolicyViolation",
+    "MileageRate",
+    "PerDiemRate",
     "EXPENSE_PROFILES",
     "EXPENSE_REPORT_WORKFLOW",
     "ExpenseConfig",

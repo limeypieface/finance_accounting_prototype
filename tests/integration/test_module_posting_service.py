@@ -1,11 +1,11 @@
 """
-End-to-end integration test for ModulePostingService (Pipeline B).
+End-to-end integration test for ModulePostingService.
 
 Tests the full flow:
     Event → PolicySelector lookup → MeaningBuilder → AccountingIntent → JournalEntry
 
 Scenarios:
-    1. Inventory receipt → verify JournalEntry created via Pipeline B
+    1. Inventory receipt → verify JournalEntry created via ModulePostingService
     2. Where-clause dispatch → AP invoice with and without PO
     3. Profile not found → unknown event type returns PROFILE_NOT_FOUND
     4. Period closed → posting to closed period returns PERIOD_CLOSED
@@ -29,7 +29,7 @@ from finance_kernel.services.module_posting_service import (
 
 
 class TestInventoryReceiptEndToEnd:
-    """Post an inventory receipt through Pipeline B and verify journal entries."""
+    """Post an inventory receipt and verify journal entries."""
 
     def test_inventory_receipt_posts_successfully(
         self, module_posting_service, current_period, test_actor_id, deterministic_clock,
@@ -258,7 +258,7 @@ class TestMultiLedgerPosting:
 
 
 class TestAPPaymentPosting:
-    """Test AP payment posting through Pipeline B."""
+    """Test AP payment posting through ModulePostingService."""
 
     def test_ap_payment_posts_successfully(
         self, module_posting_service, current_period, test_actor_id, deterministic_clock,

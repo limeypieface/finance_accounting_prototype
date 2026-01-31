@@ -140,14 +140,7 @@ class TestEngineNoImpureFunctions:
     # Known violations in the current codebase that are tracked for
     # remediation.  Each entry is (normalised_filepath, line, qualname).
     # The test will still flag *new* violations while tolerating these.
-    KNOWN_VIOLATIONS: set[tuple[str, int, str]] = {
-        ("finance_engines/correction/unwind.py", 342, "datetime.utcnow"),
-        ("finance_engines/correction/unwind.py", 396, "datetime.utcnow"),
-        ("finance_engines/matching.py", 316, "date.today"),
-        ("finance_engines/subledger.py", 272, "date.today"),
-        ("finance_engines/subledger.py", 298, "date.today"),
-        ("finance_engines/tax.py", 106, "date.today"),
-    }
+    KNOWN_VIOLATIONS: set[tuple[str, int, str]] = set()
 
     def test_no_impure_calls_in_engines(self):
         new_violations: list[str] = []
@@ -223,6 +216,12 @@ class TestConfigCentralization:
 
             # Files inside finance_config/ are internal — skip them.
             if normalised.startswith("finance_config/"):
+                continue
+
+            # Build tooling and tests legitimately need internal access
+            # (e.g., demo scripts import the loader, test fixtures import
+            # the assembler).  Only production modules are checked.
+            if normalised.startswith("scripts/") or normalised.startswith("tests/"):
                 continue
 
             for lineno, module in _extract_imports(filepath):

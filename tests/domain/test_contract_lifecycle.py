@@ -1230,18 +1230,14 @@ class TestPhase5BillingAndRevenue:
         assert result.economic_event.economic_type == "CONTRACT_BILLING"
         assert result.economic_event.profile_id == "ContractBillingCostReimbursement"
 
-        # GL effect 1: costs
-        gl_cost = CONTRACT_BILLING_COST_REIMB.ledger_effects[0]
-        assert gl_cost.debit_role == "UNBILLED_AR"
-        assert gl_cost.credit_role == "WIP_BILLED"
-
-        # GL effect 2: fee
-        gl_fee = CONTRACT_BILLING_COST_REIMB.ledger_effects[1]
-        assert gl_fee.debit_role == "UNBILLED_AR"
-        assert gl_fee.credit_role == "DEFERRED_FEE_REVENUE"
+        # GL effect: costs + fee (fee line handled by module mappings)
+        gl_effect = CONTRACT_BILLING_COST_REIMB.ledger_effects[0]
+        assert gl_effect.ledger == "GL"
+        assert gl_effect.debit_role == "UNBILLED_AR"
+        assert gl_effect.credit_role == "WIP_BILLED"
 
         # CONTRACT subledger
-        contract_effect = CONTRACT_BILLING_COST_REIMB.ledger_effects[2]
+        contract_effect = CONTRACT_BILLING_COST_REIMB.ledger_effects[1]
         assert contract_effect.ledger == "CONTRACT"
 
         dims = result.economic_event.dimensions

@@ -30,6 +30,8 @@ Usage:
         session.rollback()
 """
 
+from __future__ import annotations
+
 import hashlib
 import time
 from dataclasses import dataclass
@@ -47,6 +49,7 @@ from finance_kernel.domain.accounting_intent import (
     AccountingIntentSnapshot,
 )
 from finance_kernel.domain.clock import Clock, SystemClock
+from finance_kernel.domain.engine_types import EngineDispatchResult
 from finance_kernel.domain.meaning_builder import (
     EconomicEventData,
     MeaningBuilderResult,
@@ -55,10 +58,6 @@ from finance_kernel.models.economic_event import EconomicEvent
 from finance_kernel.models.interpretation_outcome import (
     InterpretationOutcome,
     OutcomeStatus,
-)
-from finance_kernel.services.engine_dispatcher import (
-    EngineDispatcher,
-    EngineDispatchResult,
 )
 from finance_kernel.services.journal_writer import (
     JournalWriteResult,

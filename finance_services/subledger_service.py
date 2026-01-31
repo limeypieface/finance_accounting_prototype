@@ -41,6 +41,7 @@ from uuid import UUID, uuid4
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 
+from finance_kernel.domain.subledger_control import SubledgerType
 from finance_engines.subledger import (
     SubledgerEntry,
     SubledgerBalance,
@@ -69,14 +70,15 @@ class SubledgerService(ABC, Generic[EntityT]):
         - Session injection for database access
     """
 
-    # Override in subclass
-    subledger_type: str = ""
+    # Override in subclass with canonical SubledgerType enum value
+    subledger_type: SubledgerType
 
     @abstractmethod
     def post(
         self,
         entry: SubledgerEntry,
         gl_entry_id: str | UUID,
+        actor_id: UUID,
     ) -> SubledgerEntry:
         """
         Post entry to subledger with GL link.
@@ -86,6 +88,7 @@ class SubledgerService(ABC, Generic[EntityT]):
         Args:
             entry: The subledger entry to post
             gl_entry_id: Link to the GL journal entry
+            actor_id: UUID of the actor creating this entry (required for audit trail)
 
         Returns:
             The posted entry (may have updated fields like posted_at)
@@ -135,6 +138,7 @@ class SubledgerService(ABC, Generic[EntityT]):
         debit_entry: SubledgerEntry,
         credit_entry: SubledgerEntry,
         amount: Money | None = None,
+        reconciled_at: datetime | None = None,
     ) -> ReconciliationResult:
         """
         Reconcile matching debit and credit entries.
@@ -224,7 +228,7 @@ class SubledgerService(ABC, Generic[EntityT]):
             debit_entry_id=debit_entry.entry_id,
             credit_entry_id=credit_entry.entry_id,
             reconciled_amount=amount,
-            reconciled_at=datetime.now(),
+            reconciled_at=reconciled_at if reconciled_at is not None else datetime.min,
             is_full_match=is_full,
         )
 
@@ -254,7 +258,9 @@ class SubledgerService(ABC, Generic[EntityT]):
             logger.warning("subledger_balance_empty_entries", extra={})
             raise ValueError("Cannot calculate balance from empty entries")
 
-        as_of = as_of_date or date.today()
+        if as_of_date is None:
+            raise ValueError("as_of_date is required (clock injection: never use date.today())")
+        as_of = as_of_date
         currency = entries[0].currency
         entity_id = entries[0].entity_id
         subledger_type = entries[0].subledger_type
@@ -278,10 +284,12 @@ class SubledgerService(ABC, Generic[EntityT]):
             if entry.is_open:
                 open_count += 1
 
-        # Balance depends on subledger type
-        # AP: Credit normal (liability), so balance = credit - debit
-        # AR: Debit normal (asset), so balance = debit - credit
-        if subledger_type in ("AP", "BANK"):
+        # Balance depends on subledger type normal balance side.
+        # Credit-normal (liabilities): balance = credit - debit
+        # Debit-normal (assets): balance = debit - credit
+        # Only AP and PAYROLL are credit-normal; BANK, AR, INVENTORY etc. are debit-normal.
+        _credit_normal = (SubledgerType.AP.value, SubledgerType.PAYROLL.value)
+        if subledger_type in _credit_normal:
             balance_amount = credit_total - debit_total
         else:
             balance_amount = debit_total - credit_total

@@ -291,7 +291,7 @@ class TestRoundingDocumentation:
         """
         Verify that rounding differences are recorded in the journal.
         """
-        # Post an entry that may require rounding via Pipeline B
+        # Post an entry that may require rounding
         result = post_via_coordinator(
             amount=Decimal("100.00"),
         )

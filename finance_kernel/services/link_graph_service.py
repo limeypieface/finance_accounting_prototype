@@ -7,7 +7,7 @@ This service is responsible for:
 - Unconsumed value calculations for AP/Inventory
 - Efficient CTE-based queries for graph navigation
 
-The service follows the pattern established in LedgerService:
+The service follows the standard kernel service pattern:
 - Accepts a Session from the caller
 - Uses session.flush() within the transaction
 - Does NOT call session.commit() - caller controls boundaries

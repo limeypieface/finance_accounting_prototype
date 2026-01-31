@@ -37,7 +37,7 @@ post_event()
 
 **Usage:**
 ```python
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator
+from finance_services.posting_orchestrator import PostingOrchestrator
 
 orchestrator = PostingOrchestrator(session, clock, auto_commit=True)
 
@@ -95,37 +95,6 @@ ingestor.ingest(event_id="A", payload_hash="HASH_2")  # REJECTED!
 - Prevents replay attacks with modified data
 - Ensures event immutability after first ingestion
 - Creates audit trail for violation attempts
-
----
-
-### LedgerService (`ledger_service.py`)
-
-Handles **journal entry persistence** with idempotency guarantees.
-
-**Key responsibilities:**
-1. Check for existing entry (idempotency)
-2. Allocate monotonic sequence number
-3. Create JournalEntry and JournalLines
-4. Create POSTED audit event
-
-**Idempotency mechanism:**
-```python
-# idempotency_key = f"{producer}:{event_type}:{event_id}"
-
-# First call - creates entry
-result1 = ledger.persist(proposed_entry)  # status=CREATED
-
-# Second call - returns existing entry
-result2 = ledger.persist(proposed_entry)  # status=ALREADY_EXISTS
-result1.entry_id == result2.entry_id  # True - same entry
-```
-
-**Concurrent posting:**
-When multiple threads/processes post the same event simultaneously:
-- Database unique constraint prevents duplicate entries
-- Row-level locking ensures exactly one wins
-- Losers detect the existing entry and return ALREADY_EXISTS
-- No race conditions, no duplicate financial effects
 
 ---
 
@@ -329,7 +298,7 @@ Captures and retrieves **reference data snapshots** at posting time. Supports re
 
 ### ModulePostingService (`module_posting_service.py`)
 
-The **Pipeline B orchestrator** for profile-based module posting. While `PostingOrchestrator` handles Pipeline A (strategy-based posting), `ModulePostingService` handles events that flow through the policy/profile interpretation pipeline.
+The **posting orchestrator** for profile-based module posting. `ModulePostingService` handles events that flow through the policy/profile interpretation pipeline.
 
 **Key responsibilities:**
 1. Receive an economic event from a finance module
@@ -426,17 +395,18 @@ except AdjustmentsNotAllowedError as e:
 ## Service Dependencies
 
 ```
-PostingOrchestrator
-    ├── IngestorService
-    │       └── AuditorService
+PostingOrchestrator (DI container / service factory)
+    ├── AuditorService
     ├── PeriodService
-    ├── ReferenceDataLoader
-    ├── Bookkeeper (domain layer - no I/O)
-    └── LedgerService
-            ├── SequenceService
-            └── AuditorService
+    ├── IngestorService
+    ├── ReferenceSnapshotService
+    ├── JournalWriter
+    ├── OutcomeRecorder
+    ├── InterpretationCoordinator
+    ├── EngineDispatcher
+    └── Subledger services (AP, AR, Bank, Inventory, Contract)
 
-ModulePostingService (Pipeline B orchestrator)
+ModulePostingService (posting orchestrator)
     ├── IngestorService
     │       └── AuditorService
     ├── PeriodService
@@ -454,25 +424,8 @@ ContractService (standalone - session only)
 PartyService (standalone - session only)
 ```
 
-All services receive their dependencies through constructor injection:
-```python
-class PostingOrchestrator:
-    def __init__(
-        self,
-        session: Session,           # Database session
-        clock: Clock | None = None, # Time abstraction
-        auto_commit: bool = True,   # Transaction control
-    ):
-        self._session = session
-        self._clock = clock or SystemClock()
-
-        # Initialize sub-services with shared dependencies
-        self._auditor = AuditorService(session, clock)
-        self._ingestor = IngestorService(session, clock, self._auditor)
-        self._ledger = LedgerService(session, clock, self._auditor)
-        self._period_service = PeriodService(session, clock)
-        self._bookkeeper = Bookkeeper()  # Pure - no dependencies
-```
+All services receive their dependencies through constructor injection.
+`PostingOrchestrator` creates every kernel service once and exposes them as attributes.
 
 ---
 

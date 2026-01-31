@@ -490,7 +490,7 @@ class TestInterpretation:
         self, session, trace_selector, standard_accounts,
         test_actor_id, deterministic_clock,
     ):
-        """Pipeline A events without outcomes don't produce a MissingFact."""
+        """Events without outcomes don't produce a MissingFact."""
         event = _create_event(session, deterministic_clock, test_actor_id)
         _create_posted_entry(
             session, deterministic_clock, test_actor_id, event, standard_accounts,

@@ -582,7 +582,7 @@ with get_session() as session:
 ### Legacy Posting Flow
 
 ```python
-from finance_kernel.services.posting_orchestrator import PostingOrchestrator
+from finance_services.posting_orchestrator import PostingOrchestrator
 from finance_kernel.db.engine import get_session
 
 with get_session() as session:

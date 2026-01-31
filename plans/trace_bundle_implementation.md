@@ -96,7 +96,7 @@ Hashing utilities extend `utils/hashing.py` (already has `canonicalize_json()`, 
 | `OriginEvent` | Canonical source event | `Event` fields |
 | `JournalEntrySnapshot` | Entry + lines with account codes | `JournalEntry` + `JournalLine` + `Account.code` |
 | `JournalLineSnapshot` | Single line | `JournalLine` fields |
-| `InterpretationInfo` | Pipeline B outcome | `InterpretationOutcome` fields |
+| `InterpretationInfo` | Interpretation outcome | `InterpretationOutcome` fields |
 | `ReproducibilityInfo` | R21 snapshot | JournalEntry/EconomicEvent R21 columns |
 | `TimelineEntry` | Action in timeline | `AuditEvent` or structured log record |
 | `LifecycleLink` | Economic link | `EconomicLinkModel` fields |
@@ -149,7 +149,7 @@ class TraceSelector(BaseSelector[JournalEntry]):
 |--------|---------|-------------|
 | `_resolve_event()` | Load canonical event | `Event` table |
 | `_resolve_journal_entries()` | Load entries by event | `JournalEntry` + `JournalLine` + `Account` |
-| `_resolve_interpretation()` | Load Pipeline B outcome | `InterpretationOutcome` table |
+| `_resolve_interpretation()` | Load interpretation outcome | `InterpretationOutcome` table |
 | `_resolve_economic_event()` | Load economic event | `EconomicEvent` table |
 | `_resolve_lifecycle_links()` | Load artifact links | `EconomicLinkModel` (depth=1) |
 | `_resolve_audit_trail()` | Load audit chain segment | `AuditEvent` table |
