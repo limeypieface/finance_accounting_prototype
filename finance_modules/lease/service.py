@@ -46,7 +46,7 @@ and amortization schedules.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -76,6 +76,13 @@ from finance_modules.lease.models import (
     LeasePayment,
     LeaseStatus,
     ROUAsset,
+)
+from finance_modules.lease.orm import (
+    LeaseModel,
+    LeaseModificationModel,
+    LeasePaymentModel,
+    LeaseLiabilityModel,
+    ROUAssetModel,
 )
 
 logger = get_logger("modules.lease.service")
@@ -181,6 +188,7 @@ class LeaseAccountingService:
         lease_term_months: int,
         commencement_date: date,
         actor_id: UUID,
+        lessee_id: UUID | None = None,
         currency: str = "USD",
     ) -> tuple[ROUAsset, LeaseLiability, ModulePostingResult]:
         """
@@ -234,6 +242,26 @@ class LeaseAccountingService:
             )
 
             if result.is_success:
+                end_date = commencement_date + timedelta(days=lease_term_months * 30)
+                orm_lease = LeaseModel(
+                    id=lease_id,
+                    lease_number=str(lease_id)[:20],
+                    lessee_id=lessee_id or actor_id,
+                    lessor_name="",
+                    commencement_date=commencement_date,
+                    end_date=end_date,
+                    classification=classification.value,
+                    status=LeaseStatus.ACTIVE.value,
+                    monthly_payment=monthly_payment,
+                    discount_rate=discount_rate,
+                    currency=currency,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_lease)
+                orm_rou = ROUAssetModel.from_dto(rou, created_by_id=actor_id)
+                self._session.add(orm_rou)
+                orm_liability = LeaseLiabilityModel.from_dto(liability, created_by_id=actor_id)
+                self._session.add(orm_liability)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -323,6 +351,17 @@ class LeaseAccountingService:
             )
 
             if result.is_success:
+                orm_payment = LeasePaymentModel(
+                    id=uuid4(),
+                    lease_id=lease_id,
+                    payment_date=payment_date,
+                    amount=payment_amount,
+                    principal_portion=payment_amount,
+                    interest_portion=Decimal("0"),
+                    payment_number=0,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_payment)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -480,6 +519,8 @@ class LeaseAccountingService:
             )
 
             if result.is_success:
+                orm_mod = LeaseModificationModel.from_dto(modification, created_by_id=actor_id)
+                self._session.add(orm_mod)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -525,6 +566,9 @@ class LeaseAccountingService:
             )
 
             if result.is_success:
+                orm_lease = self._session.get(LeaseModel, lease_id)
+                if orm_lease is not None:
+                    orm_lease.status = LeaseStatus.TERMINATED.value
                 self._session.commit()
             else:
                 self._session.rollback()

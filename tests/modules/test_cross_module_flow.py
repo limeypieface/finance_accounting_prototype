@@ -16,6 +16,17 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
+from tests.modules.conftest import (
+    TEST_VENDOR_ID,
+    TEST_CUSTOMER_ID,
+    TEST_BANK_ACCOUNT_ID,
+    TEST_ASSET_CATEGORY_ID,
+    TEST_TAX_JURISDICTION_ID,
+    TEST_WORK_ORDER_ID,
+    TEST_OPERATION_ID,
+    TEST_PAY_PERIOD_ID,
+    TEST_PAYROLL_EMPLOYEE_ID,
+)
 
 # All 12 module service classes
 MODULE_SERVICES = [
@@ -75,6 +86,8 @@ class TestUniformConstructorSignature:
 # =============================================================================
 
 # One representative call per module — uses the simplest method with a registered profile.
+# FK-constrained IDs use deterministic values from tests/modules/conftest.py so that
+# the corresponding opt-in fixtures can create the parent rows before posting.
 _MODULE_POST_CALLS = [
     (
         "finance_modules.inventory.service", "InventoryService",
@@ -87,17 +100,20 @@ _MODULE_POST_CALLS = [
     (
         "finance_modules.ap.service", "APService",
         "record_invoice",
-        {"invoice_id": uuid4, "vendor_id": uuid4, "amount": Decimal("5000.00")},
+        {"invoice_id": uuid4, "vendor_id": TEST_VENDOR_ID, "amount": Decimal("5000.00")},
     ),
     (
         "finance_modules.ar.service", "ARService",
         "record_invoice",
-        {"invoice_id": uuid4, "customer_id": uuid4, "amount": Decimal("10000.00")},
+        {"invoice_id": uuid4, "customer_id": TEST_CUSTOMER_ID, "amount": Decimal("10000.00")},
     ),
     (
         "finance_modules.cash.service", "CashService",
         "record_receipt",
-        {"receipt_id": uuid4, "amount": Decimal("5000.00")},
+        {
+            "receipt_id": uuid4, "amount": Decimal("5000.00"),
+            "bank_account_id": TEST_BANK_ACCOUNT_ID,
+        },
     ),
     (
         "finance_modules.procurement.service", "ProcurementService",
@@ -112,6 +128,8 @@ _MODULE_POST_CALLS = [
         "record_labor_charge",
         {
             "charge_id": uuid4, "job_id": "JOB-100",
+            "work_order_id": TEST_WORK_ORDER_ID,
+            "operation_id": TEST_OPERATION_ID,
             "hours": Decimal("40"), "rate": Decimal("50.00"),
         },
     ),
@@ -121,6 +139,7 @@ _MODULE_POST_CALLS = [
         {
             "run_id": uuid4, "employee_id": "EMP-001",
             "gross_pay": Decimal("5000.00"),
+            "pay_period_id": TEST_PAY_PERIOD_ID,
         },
     ),
     (
@@ -138,6 +157,7 @@ _MODULE_POST_CALLS = [
         {
             "obligation_id": uuid4, "tax_type": "sales_tax_collected",
             "amount": Decimal("600.00"), "jurisdiction": "CA",
+            "jurisdiction_id": TEST_TAX_JURISDICTION_ID,
         },
     ),
     (
@@ -146,6 +166,7 @@ _MODULE_POST_CALLS = [
         {
             "asset_id": uuid4, "cost": Decimal("50000.00"),
             "asset_class": "MACHINERY", "useful_life_months": 60,
+            "category_id": TEST_ASSET_CATEGORY_ID,
         },
     ),
     (
@@ -184,6 +205,17 @@ class TestAllServicesPostSuccessfully:
         register_modules,
         current_period,
         test_actor_id,
+        # Parent entity fixtures -- requested unconditionally so that FK-
+        # constrained parent rows exist for every parametrized service.
+        # Pytest only creates them when the test function lists them.
+        test_vendor_party,
+        test_customer_party,
+        test_bank_account,
+        test_asset_category,
+        test_tax_jurisdiction,
+        test_operation,        # depends on test_work_order (auto-resolved)
+        test_pay_period,
+        test_payroll_employee,  # depends on test_employee_party (auto-resolved)
     ):
         """Instantiate service and call one method through the real pipeline."""
         mod = importlib.import_module(module_path)

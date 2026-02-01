@@ -66,6 +66,7 @@ from finance_modules.budget.models import (
     EncumbranceStatus,
     ForecastEntry,
 )
+from finance_modules.budget.orm import BudgetLineModel, BudgetTransferModel
 
 logger = get_logger("modules.budget.service")
 
@@ -160,6 +161,8 @@ class BudgetService:
                 currency=currency,
             )
             if result.is_success:
+                orm_line = BudgetLineModel.from_dto(entry, created_by_id=actor_id)
+                self._session.add(orm_line)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -180,6 +183,7 @@ class BudgetService:
         period: str,
         effective_date: date,
         actor_id: UUID,
+        version_id: UUID,
         currency: str = "USD",
     ) -> ModulePostingResult:
         """Transfer budget between accounts."""
@@ -203,6 +207,21 @@ class BudgetService:
                 currency=currency,
             )
             if result.is_success:
+                orm_transfer = BudgetTransferModel(
+                    id=uuid4(),
+                    version_id=version_id,
+                    from_account_code=from_account,
+                    from_period=period,
+                    to_account_code=to_account,
+                    to_period=period,
+                    amount=amount,
+                    currency=currency,
+                    transfer_date=effective_date,
+                    reason=f"Budget transfer {from_account} -> {to_account}",
+                    transferred_by=actor_id,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_transfer)
                 self._session.commit()
             else:
                 self._session.rollback()

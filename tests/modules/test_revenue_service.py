@@ -22,6 +22,7 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
+from tests.modules.conftest import TEST_CUSTOMER_ID, TEST_REVENUE_CONTRACT_ID
 from finance_modules.revenue.helpers import (
     assess_modification_type,
     calculate_ssp,
@@ -296,11 +297,11 @@ class TestRevenueHelpers:
 class TestIdentifyContract:
     """Tests for Step 1: identify_contract."""
 
-    def test_identify_contract_returns_model(self, revenue_service):
+    def test_identify_contract_returns_model(self, revenue_service, test_customer_party):
         """Step 1 returns a RevenueContract with IDENTIFIED status."""
         contract = revenue_service.identify_contract(
             contract_id=uuid4(),
-            customer_id=uuid4(),
+            customer_id=TEST_CUSTOMER_ID,
             contract_number="C-2024-001",
             start_date=date(2024, 1, 1),
             total_consideration=Decimal("200000.00"),
@@ -310,11 +311,11 @@ class TestIdentifyContract:
         assert contract.status == ContractStatus.IDENTIFIED
         assert contract.total_consideration == Decimal("200000.00")
 
-    def test_identify_contract_with_variable(self, revenue_service):
+    def test_identify_contract_with_variable(self, revenue_service, test_customer_party):
         """Contract with variable consideration."""
         contract = revenue_service.identify_contract(
             contract_id=uuid4(),
-            customer_id=uuid4(),
+            customer_id=TEST_CUSTOMER_ID,
             contract_number="C-2024-002",
             start_date=date(2024, 1, 1),
             total_consideration=Decimal("100000.00"),
@@ -331,7 +332,7 @@ class TestIdentifyContract:
 class TestIdentifyPerformanceObligations:
     """Tests for Step 2: identify_performance_obligations."""
 
-    def test_identify_obligations(self, revenue_service):
+    def test_identify_obligations(self, revenue_service, test_revenue_contract):
         """Step 2 returns tuple of PerformanceObligations."""
         deliverables = [
             {"description": "Software license", "standalone_selling_price": "60000"},
@@ -342,7 +343,7 @@ class TestIdentifyPerformanceObligations:
         ]
 
         obligations = revenue_service.identify_performance_obligations(
-            contract_id=uuid4(),
+            contract_id=TEST_REVENUE_CONTRACT_ID,
             deliverables=deliverables,
         )
 
@@ -361,24 +362,24 @@ class TestIdentifyPerformanceObligations:
 class TestDetermineTransactionPrice:
     """Tests for Step 3: determine_transaction_price."""
 
-    def test_simple_price(self, revenue_service):
+    def test_simple_price(self, revenue_service, test_revenue_contract):
         """Simple fixed-price contract."""
         tp = revenue_service.determine_transaction_price(
-            contract_id=uuid4(),
+            contract_id=TEST_REVENUE_CONTRACT_ID,
             base_price=Decimal("100000.00"),
         )
         assert isinstance(tp, TransactionPrice)
         assert tp.total_transaction_price == Decimal("100000.00")
         assert tp.variable_consideration == Decimal("0")
 
-    def test_price_with_variable(self, revenue_service):
+    def test_price_with_variable(self, revenue_service, test_revenue_contract):
         """Contract with variable consideration."""
         scenarios = [
             {"probability": "0.70", "amount": "120000"},
             {"probability": "0.30", "amount": "100000"},
         ]
         tp = revenue_service.determine_transaction_price(
-            contract_id=uuid4(),
+            contract_id=TEST_REVENUE_CONTRACT_ID,
             base_price=Decimal("80000.00"),
             variable_scenarios=scenarios,
             variable_method="expected_value",
@@ -398,23 +399,46 @@ class TestAllocateTransactionPrice:
 
     def test_allocate_proportional(
         self, revenue_service, current_period, test_actor_id, deterministic_clock,
+        test_revenue_contract, session,
     ):
         """Proportional SSP allocation and posting."""
+        from finance_modules.revenue.orm import PerformanceObligationModel
+
+        ob1_id = uuid4()
+        ob2_id = uuid4()
+
+        # Create PerformanceObligationModel rows so SSPAllocationModel FK is satisfied
+        session.add(PerformanceObligationModel(
+            id=ob1_id,
+            contract_id=TEST_REVENUE_CONTRACT_ID,
+            description="License",
+            standalone_selling_price=Decimal("60000"),
+            created_by_id=test_actor_id,
+        ))
+        session.add(PerformanceObligationModel(
+            id=ob2_id,
+            contract_id=TEST_REVENUE_CONTRACT_ID,
+            description="Support",
+            standalone_selling_price=Decimal("40000"),
+            created_by_id=test_actor_id,
+        ))
+        session.flush()
+
         obligations = (
             PerformanceObligation(
-                id=uuid4(), contract_id=uuid4(),
+                id=ob1_id, contract_id=TEST_REVENUE_CONTRACT_ID,
                 description="License",
                 standalone_selling_price=Decimal("60000"),
             ),
             PerformanceObligation(
-                id=uuid4(), contract_id=uuid4(),
+                id=ob2_id, contract_id=TEST_REVENUE_CONTRACT_ID,
                 description="Support",
                 standalone_selling_price=Decimal("40000"),
             ),
         )
 
         allocations, result = revenue_service.allocate_transaction_price(
-            contract_id=uuid4(),
+            contract_id=TEST_REVENUE_CONTRACT_ID,
             total_price=Decimal("90000.00"),
             obligations=obligations,
             effective_date=deterministic_clock.now().date(),
@@ -438,6 +462,7 @@ class TestRecognizeRevenue:
 
     def test_recognize_point_in_time(
         self, revenue_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         """Point-in-time recognition posts via Dr AR / Cr Revenue."""
         result = revenue_service.recognize_revenue(
@@ -453,6 +478,7 @@ class TestRecognizeRevenue:
 
     def test_recognize_over_time_input(
         self, revenue_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         """Over-time input recognition posts via Dr Unbilled / Cr Revenue."""
         result = revenue_service.recognize_revenue(
@@ -469,6 +495,7 @@ class TestRecognizeRevenue:
 
     def test_recognize_over_time_output(
         self, revenue_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         """Over-time output recognition posts via Dr Unbilled / Cr Revenue."""
         result = revenue_service.recognize_revenue(
@@ -492,11 +519,11 @@ class TestModifyContract:
     """Tests for modify_contract."""
 
     def test_modification_cumulative(
-        self, revenue_service, current_period, test_actor_id,
+        self, revenue_service, current_period, test_actor_id, test_revenue_contract,
     ):
         """Cumulative catch-up modification posts."""
         modification, result = revenue_service.modify_contract(
-            contract_id=uuid4(),
+            contract_id=TEST_REVENUE_CONTRACT_ID,
             modification_date=date(2024, 1, 1),
             price_change=Decimal("25000.00"),
             adds_distinct_goods=False,
@@ -509,11 +536,11 @@ class TestModifyContract:
         assert modification.modification_type == ModificationType.CUMULATIVE_CATCH_UP
 
     def test_modification_prospective(
-        self, revenue_service, current_period, test_actor_id,
+        self, revenue_service, current_period, test_actor_id, test_revenue_contract,
     ):
         """Prospective modification posts via different profile."""
         modification, result = revenue_service.modify_contract(
-            contract_id=uuid4(),
+            contract_id=TEST_REVENUE_CONTRACT_ID,
             modification_date=date(2024, 1, 1),
             price_change=Decimal("15000.00"),
             adds_distinct_goods=False,
@@ -535,6 +562,7 @@ class TestVariableConsiderationUpdate:
 
     def test_variable_update_posts(
         self, revenue_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         """Variable consideration update posts."""
         result = revenue_service.update_variable_consideration(

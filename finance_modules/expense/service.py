@@ -100,6 +100,7 @@ from finance_modules.expense.models import (
     PerDiemRate,
     PolicyViolation,
 )
+from finance_modules.expense.orm import ExpenseReportModel, ReimbursementModel
 
 logger = get_logger("modules.expense.service")
 
@@ -345,6 +346,21 @@ class ExpenseService:
             )
 
             if result.is_success:
+                orm_report = ExpenseReportModel(
+                    id=report_id,
+                    report_number=str(report_id)[:50],
+                    employee_id=employee_id or actor_id,
+                    report_date=effective_date,
+                    purpose=description or "Expense report",
+                    total_amount=posting_amount,
+                    currency=currency,
+                    status="approved",
+                    approved_date=effective_date,
+                    approved_by=actor_id,
+                    project_id=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_report)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -482,6 +498,17 @@ class ExpenseService:
             )
 
             if result.is_success:
+                orm_reimbursement = ReimbursementModel(
+                    id=reimbursement_id,
+                    report_id=report_id or reimbursement_id,
+                    employee_id=employee_id or actor_id,
+                    amount=amount,
+                    currency=currency,
+                    payment_date=effective_date,
+                    payment_method="direct_deposit",
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_reimbursement)
                 self._session.commit()
             else:
                 self._session.rollback()

@@ -67,6 +67,7 @@ from finance_modules.intercompany.models import (
     ICTransaction,
     IntercompanyAgreement,
 )
+from finance_modules.intercompany.orm import IntercompanyTransactionModel
 
 logger = get_logger(__name__)
 
@@ -160,6 +161,20 @@ class IntercompanyService:
             )
 
             if result.is_success:
+                txn_id = uuid4()
+                orm_txn = IntercompanyTransactionModel(
+                    id=txn_id,
+                    from_entity=from_entity,
+                    to_entity=to_entity,
+                    amount=amount,
+                    currency=currency,
+                    transaction_date=effective_date,
+                    description=description or "",
+                    status="posted",
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_txn)
+                self._session.flush()
                 self._session.commit()
                 logger.info("ic_transfer_committed", extra={
                     "from_entity": from_entity,
@@ -167,10 +182,11 @@ class IntercompanyService:
                     "status": result.status.value,
                 })
             else:
+                txn_id = uuid4()
                 self._session.rollback()
 
             transaction = ICTransaction(
-                id=uuid4(),
+                id=txn_id,
                 from_entity=from_entity,
                 to_entity=to_entity,
                 amount=amount,
@@ -234,16 +250,31 @@ class IntercompanyService:
             )
 
             if result.is_success:
+                elim_id = uuid4()
+                orm_txn = IntercompanyTransactionModel(
+                    id=elim_id,
+                    from_entity=entity_scope,
+                    to_entity=entity_scope,
+                    amount=elimination_amount,
+                    currency=currency,
+                    transaction_date=effective_date,
+                    description=f"IC elimination: {entity_scope}",
+                    status="posted",
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_txn)
+                self._session.flush()
                 self._session.commit()
                 logger.info("ic_elimination_committed", extra={
                     "period": period,
                     "entity_scope": entity_scope,
                 })
             else:
+                elim_id = uuid4()
                 self._session.rollback()
 
             transaction = ICTransaction(
-                id=uuid4(),
+                id=elim_id,
                 from_entity=entity_scope,
                 to_entity=entity_scope,
                 amount=elimination_amount,
@@ -507,6 +538,21 @@ class IntercompanyService:
             )
 
             if result.is_success:
+                tp_id = uuid4()
+                orm_txn = IntercompanyTransactionModel(
+                    id=tp_id,
+                    agreement_id=agreement_id,
+                    from_entity=from_entity,
+                    to_entity=to_entity,
+                    amount=markup,
+                    currency=currency,
+                    transaction_date=effective_date,
+                    description=f"Transfer pricing adjustment: {agreement_id}",
+                    status="posted",
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_txn)
+                self._session.flush()
                 self._session.commit()
                 logger.info("ic_transfer_pricing_committed", extra={
                     "agreement_id": str(agreement_id),
@@ -514,10 +560,11 @@ class IntercompanyService:
                     "status": result.status.value,
                 })
             else:
+                tp_id = uuid4()
                 self._session.rollback()
 
             transaction = ICTransaction(
-                id=uuid4(),
+                id=tp_id,
                 agreement_id=agreement_id,
                 from_entity=from_entity,
                 to_entity=to_entity,

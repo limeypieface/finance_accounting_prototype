@@ -25,6 +25,7 @@ from finance_modules.ap.models import (
     VendorHold,
 )
 from finance_modules.ap.service import APService
+from tests.modules.conftest import TEST_VENDOR_ID
 
 
 # =============================================================================
@@ -116,7 +117,7 @@ class TestCreatePaymentRun:
     """Tests for create_payment_run service method."""
 
     def test_create_payment_run_returns_run(
-        self, ap_service, deterministic_clock, test_actor_id,
+        self, ap_service, deterministic_clock, test_actor_id, test_vendor_party,
     ):
         """create_payment_run returns a PaymentRun with correct totals."""
         invoices = [
@@ -139,7 +140,7 @@ class TestCreatePaymentRun:
         assert run.created_by == test_actor_id
 
     def test_create_payment_run_empty_invoices(
-        self, ap_service, deterministic_clock, test_actor_id,
+        self, ap_service, deterministic_clock, test_actor_id, test_vendor_party,
     ):
         """create_payment_run handles empty invoice list."""
         run = ap_service.create_payment_run(
@@ -157,7 +158,7 @@ class TestExecutePaymentRun:
     """Tests for execute_payment_run service method."""
 
     def test_execute_payment_run_posts_each_line(
-        self, ap_service, current_period, test_actor_id, deterministic_clock,
+        self, ap_service, current_period, test_actor_id, test_vendor_party, deterministic_clock,
     ):
         """execute_payment_run posts a payment for each line."""
         run_id = uuid4()
@@ -175,14 +176,14 @@ class TestExecutePaymentRun:
                 id=uuid4(),
                 run_id=run_id,
                 invoice_id=uuid4(),
-                vendor_id=uuid4(),
+                vendor_id=TEST_VENDOR_ID,
                 amount=Decimal("5000.00"),
             ),
             PaymentRunLine(
                 id=uuid4(),
                 run_id=run_id,
                 invoice_id=uuid4(),
-                vendor_id=uuid4(),
+                vendor_id=TEST_VENDOR_ID,
                 amount=Decimal("3000.00"),
             ),
         ]
@@ -250,7 +251,7 @@ class TestVendorHoldRelease:
     """Tests for hold_vendor and release_vendor_hold service methods."""
 
     def test_hold_vendor_returns_hold(
-        self, ap_service, deterministic_clock, test_actor_id,
+        self, ap_service, deterministic_clock, test_actor_id, test_vendor_party,
     ):
         """hold_vendor returns an active VendorHold."""
         vendor_id = uuid4()
@@ -269,7 +270,7 @@ class TestVendorHoldRelease:
         assert hold.held_by == test_actor_id
 
     def test_release_vendor_hold_returns_released(
-        self, ap_service, deterministic_clock, test_actor_id,
+        self, ap_service, deterministic_clock, test_actor_id, test_vendor_party,
     ):
         """release_vendor_hold returns a released VendorHold."""
         hold = VendorHold(

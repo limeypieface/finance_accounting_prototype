@@ -81,6 +81,13 @@ from finance_modules.ar.models import (
     DunningHistory,
     DunningLevel,
 )
+from finance_modules.ar.orm import (
+    ARCreditDecisionModel,
+    ARCreditMemoModel,
+    ARDunningHistoryModel,
+    ARInvoiceModel,
+    ARReceiptModel,
+)
 
 logger = get_logger("modules.ar.service")
 
@@ -200,6 +207,22 @@ class ARService:
             )
 
             if result.is_success:
+                orm_invoice = ARInvoiceModel(
+                    id=invoice_id,
+                    customer_id=customer_id,
+                    invoice_number=invoice_number or str(invoice_id),
+                    invoice_date=effective_date,
+                    due_date=due_date or effective_date,
+                    currency=currency,
+                    subtotal=amount - (tax_amount or Decimal("0")),
+                    tax_amount=tax_amount or Decimal("0"),
+                    total_amount=amount,
+                    balance_due=amount,
+                    status="draft",
+                    sales_order_id=sales_order_id,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_invoice)
                 self._session.commit()
                 logger.info("ar_record_invoice_committed", extra={
                     "invoice_id": str(invoice_id),
@@ -260,6 +283,20 @@ class ARService:
             )
 
             if result.is_success:
+                orm_receipt = ARReceiptModel(
+                    id=payment_id,
+                    customer_id=customer_id,
+                    receipt_date=effective_date,
+                    amount=amount,
+                    currency=currency,
+                    payment_method=payment_method or "ach",
+                    reference=reference or str(payment_id),
+                    status="unallocated",
+                    bank_account_id=bank_account_id,
+                    unallocated_amount=amount,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_receipt)
                 self._session.commit()
                 logger.info("ar_record_payment_committed", extra={
                     "payment_id": str(payment_id),
@@ -501,6 +538,20 @@ class ARService:
             )
 
             if result.is_success:
+                orm_receipt = ARReceiptModel(
+                    id=receipt_id,
+                    customer_id=customer_id,
+                    receipt_date=effective_date,
+                    amount=amount,
+                    currency=currency,
+                    payment_method=payment_method or "ach",
+                    reference=reference or str(receipt_id),
+                    status="unallocated",
+                    bank_account_id=bank_account_id,
+                    unallocated_amount=amount,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_receipt)
                 self._session.commit()
                 logger.info("ar_record_receipt_committed", extra={
                     "receipt_id": str(receipt_id),
@@ -567,6 +618,19 @@ class ARService:
             )
 
             if result.is_success:
+                orm_memo = ARCreditMemoModel(
+                    id=memo_id,
+                    customer_id=customer_id,
+                    credit_memo_number=str(memo_id),
+                    issue_date=effective_date,
+                    amount=amount,
+                    currency=currency,
+                    reason=description or reason_code,
+                    status="draft",
+                    original_invoice_id=invoice_id,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_memo)
                 self._session.commit()
                 logger.info("ar_record_credit_memo_committed", extra={
                     "memo_id": str(memo_id),
@@ -625,6 +689,10 @@ class ARService:
             )
 
             if result.is_success:
+                existing = self._session.get(ARInvoiceModel, invoice_id)
+                if existing is not None:
+                    existing.status = "written_off"
+                    existing.balance_due = Decimal("0")
                 self._session.commit()
                 logger.info("ar_record_write_off_committed", extra={
                     "write_off_id": str(write_off_id),
@@ -910,8 +978,9 @@ class ARService:
             else:
                 level = DunningLevel.COLLECTION
 
+            dunning_id = _uuid4()
             record = DunningHistory(
-                id=_uuid4(),
+                id=dunning_id,
                 customer_id=customer["customer_id"],
                 level=level,
                 sent_date=as_of_date,
@@ -921,6 +990,19 @@ class ARService:
                 currency=currency,
             )
             results.append(record)
+
+            orm_dunning = ARDunningHistoryModel(
+                id=dunning_id,
+                customer_id=customer["customer_id"],
+                level=level.value,
+                sent_date=as_of_date,
+                as_of_date=as_of_date,
+                total_overdue=Decimal(str(customer.get("total_overdue", "0"))),
+                invoice_count=int(customer.get("invoice_count", 0)),
+                currency=currency,
+                created_by_id=actor_id,
+            )
+            self._session.add(orm_dunning)
 
         logger.info("ar_generate_dunning_completed", extra={
             "letters_generated": len(results),
@@ -1021,8 +1103,9 @@ class ARService:
             "approved": approved,
         })
 
-        return CreditDecision(
-            id=_uuid4(),
+        decision_id = _uuid4()
+        decision = CreditDecision(
+            id=decision_id,
             customer_id=customer_id,
             decision_date=self._clock.now().date(),
             previous_limit=credit_limit,
@@ -1032,6 +1115,22 @@ class ARService:
             reason="Within limit" if approved else f"Projected balance {projected_balance} exceeds limit {credit_limit}",
             decided_by=actor_id,
         )
+
+        orm_decision = ARCreditDecisionModel(
+            id=decision_id,
+            customer_id=customer_id,
+            decision_date=self._clock.now().date(),
+            previous_limit=credit_limit,
+            new_limit=None,
+            order_amount=order_amount,
+            approved=approved,
+            reason=decision.reason,
+            decided_by=actor_id,
+            created_by_id=actor_id,
+        )
+        self._session.add(orm_decision)
+
+        return decision
 
     def update_credit_limit(
         self,
@@ -1054,8 +1153,9 @@ class ARService:
             "new_limit": str(new_limit),
         })
 
-        return CreditDecision(
-            id=_uuid4(),
+        decision_id = _uuid4()
+        decision = CreditDecision(
+            id=decision_id,
             customer_id=customer_id,
             decision_date=self._clock.now().date(),
             previous_limit=previous_limit,
@@ -1064,6 +1164,21 @@ class ARService:
             reason=reason or f"Credit limit updated from {previous_limit} to {new_limit}",
             decided_by=actor_id,
         )
+
+        orm_decision = ARCreditDecisionModel(
+            id=decision_id,
+            customer_id=customer_id,
+            decision_date=self._clock.now().date(),
+            previous_limit=previous_limit,
+            new_limit=new_limit,
+            approved=True,
+            reason=decision.reason,
+            decided_by=actor_id,
+            created_by_id=actor_id,
+        )
+        self._session.add(orm_decision)
+
+        return decision
 
     # =========================================================================
     # Small Balance Write-Off

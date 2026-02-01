@@ -175,22 +175,39 @@ def session_scope() -> Generator[Session, None, None]:
         session.close()
 
 
-def create_tables(install_triggers: bool = True) -> None:
+def create_tables(install_triggers: bool = True, *, kernel_only: bool = False) -> None:
     """
-    Create all tables defined in the models and optionally install triggers.
+    Create all tables registered in Base.metadata, with safety guard.
+
+    Safety guard
+    ------------
+    In a full-system context (default), module ORM models MUST be imported
+    into ``Base.metadata`` before this function is called — otherwise the
+    schema will be incomplete (kernel tables only, missing ~106 module
+    tables).  The canonical way to do this is::
+
+        from finance_modules._orm_registry import create_all_tables
+        create_all_tables()
+
+    If you are deliberately creating only kernel tables (e.g. in a
+    kernel-only unit test), pass ``kernel_only=True`` to bypass the guard.
 
     Preconditions: Engine must be initialized via init_engine_from_url().
-        All ORM models must be imported before calling (so Base.metadata
-        contains all table definitions).
-    Postconditions: All tables exist in the database.  If install_triggers=True,
-        all R10 immutability triggers are installed (with deadlock retry).
+        Unless *kernel_only* is True, all ORM models (kernel + module) must
+        be imported so Base.metadata contains all table definitions.
+    Postconditions: All registered tables exist in the database.  If
+        *install_triggers* is True, R10 immutability triggers are installed.
 
     Args:
         install_triggers: If True, install database-level immutability triggers
                          for R10 compliance.
+        kernel_only: If True, skip the module-table guard.  Only kernel tables
+                     will be created.  **Do not use in production or full-system
+                     tests.**
 
     Raises:
-        RuntimeError: If engine is not initialized.
+        RuntimeError: If engine is not initialized, or if module tables are
+            missing from metadata and *kernel_only* is False.
         OperationalError: If trigger installation fails after 3 retries.
     """
     import time
@@ -198,12 +215,23 @@ def create_tables(install_triggers: bool = True) -> None:
 
     engine = get_engine()
 
+    # Guard: prevent incomplete schema in full-system contexts.
+    # Kernel alone defines ~15 tables; modules add ~106.  If fewer than
+    # 25 tables are registered, module ORM models were not imported.
+    if not kernel_only:
+        table_count = len(Base.metadata.tables)
+        if table_count < 25:
+            raise RuntimeError(
+                f"create_tables() found only {table_count} table(s) in "
+                f"Base.metadata — module ORM models are not imported and "
+                f"the schema would be incomplete.  Use create_all_tables() "
+                f"from finance_modules._orm_registry for the full system "
+                f"schema, or pass kernel_only=True if you intentionally "
+                f"want only kernel tables."
+            )
+
     # Dispose existing connections to avoid stale metadata
     engine.dispose()
-
-    # Import all module-level ORM models so Base.metadata discovers their tables.
-    from finance_modules._orm_registry import import_all_orm_models
-    import_all_orm_models()
 
     Base.metadata.create_all(engine)
 

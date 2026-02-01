@@ -32,7 +32,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from finance_kernel.db.engine import (
     init_engine_from_url,
-    create_tables,
     drop_tables,
     get_session,
     get_session_factory,
@@ -355,7 +354,15 @@ def db_tables(db_engine):
                 _kill_orphaned_connections()
                 time.sleep(1.0 * (attempt + 1))
             # On final attempt, swallow and proceed (create_tables is idempotent)
-    create_tables()
+
+    # Use the production orchestration function: imports all module ORM
+    # models, creates all kernel + module tables, and installs R10 DB
+    # triggers.  Tests must call the same path as production.
+    from finance_modules._orm_registry import create_all_tables
+    create_all_tables()
+
+    # ORM-level immutability listeners (defense layer 1, separate from
+    # the DB triggers installed by create_all_tables).
     register_immutability_listeners()
     yield
     unregister_immutability_listeners()

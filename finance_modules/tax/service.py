@@ -52,7 +52,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from typing import Any, Sequence
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -82,6 +82,11 @@ from finance_modules.tax.models import (
     Jurisdiction,
     TaxProvision,
     TemporaryDifference,
+)
+from finance_modules.tax.orm import (
+    DeferredTaxAssetModel,
+    DeferredTaxLiabilityModel,
+    TaxTransactionModel,
 )
 
 logger = get_logger("modules.tax.service")
@@ -145,6 +150,7 @@ class TaxService:
         amount: Decimal,
         effective_date: date,
         actor_id: UUID,
+        jurisdiction_id: UUID,
         jurisdiction: str | None = None,
         currency: str = "USD",
         invoice_ref: str | None = None,
@@ -206,6 +212,18 @@ class TaxService:
             )
 
             if result.is_success:
+                orm_model = TaxTransactionModel(
+                    id=obligation_id,
+                    source_type="tax_obligation",
+                    source_id=obligation_id,
+                    transaction_date=effective_date,
+                    jurisdiction_id=jurisdiction_id,
+                    tax_type=tax_type,
+                    taxable_amount=amount,
+                    tax_amount=amount,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_model)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -226,6 +244,7 @@ class TaxService:
         amount: Decimal,
         effective_date: date,
         actor_id: UUID,
+        jurisdiction_id: UUID,
         jurisdiction: str | None = None,
         currency: str = "USD",
         payment_ref: str | None = None,
@@ -272,6 +291,18 @@ class TaxService:
             )
 
             if result.is_success:
+                orm_model = TaxTransactionModel(
+                    id=payment_id,
+                    source_type="tax_payment",
+                    source_id=payment_id,
+                    transaction_date=effective_date,
+                    jurisdiction_id=jurisdiction_id,
+                    tax_type=tax_type,
+                    taxable_amount=amount,
+                    tax_amount=amount,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_model)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -292,6 +323,7 @@ class TaxService:
         input_vat: Decimal,
         effective_date: date,
         actor_id: UUID,
+        jurisdiction_id: UUID,
         jurisdiction: str | None = None,
         currency: str = "USD",
         description: str | None = None,
@@ -343,6 +375,18 @@ class TaxService:
             )
 
             if result.is_success:
+                orm_model = TaxTransactionModel(
+                    id=settlement_id,
+                    source_type="vat_settlement",
+                    source_id=settlement_id,
+                    transaction_date=effective_date,
+                    jurisdiction_id=jurisdiction_id,
+                    tax_type="vat",
+                    taxable_amount=output_vat,
+                    tax_amount=net_payment,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_model)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -474,6 +518,8 @@ class TaxService:
                 description=description,
             )
             if result.is_success:
+                orm_model = DeferredTaxAssetModel.from_dto(dta, created_by_id=actor_id)
+                self._session.add(orm_model)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -524,6 +570,8 @@ class TaxService:
                 description=description,
             )
             if result.is_success:
+                orm_model = DeferredTaxLiabilityModel.from_dto(dtl, created_by_id=actor_id)
+                self._session.add(orm_model)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -570,6 +618,7 @@ class TaxService:
         jurisdictions: list[dict],
         effective_date: date,
         actor_id: UUID,
+        jurisdiction_id: UUID,
         currency: str = "USD",
         description: str | None = None,
     ) -> tuple[dict, ModulePostingResult]:
@@ -607,6 +656,19 @@ class TaxService:
                 description=description,
             )
             if result.is_success:
+                txn_id = uuid4()
+                orm_model = TaxTransactionModel(
+                    id=txn_id,
+                    source_type="multi_jurisdiction_tax",
+                    source_id=txn_id,
+                    transaction_date=effective_date,
+                    jurisdiction_id=jurisdiction_id,
+                    tax_type="multi_jurisdiction",
+                    taxable_amount=summary["total_taxable"],
+                    tax_amount=summary["total_tax"],
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_model)
                 self._session.commit()
             else:
                 self._session.rollback()

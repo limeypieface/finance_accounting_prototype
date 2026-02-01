@@ -209,6 +209,7 @@ class TestProvision:
 
     def test_provision_posts(
         self, credit_loss_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         result = credit_loss_service.record_provision(
             segment="commercial",
@@ -220,6 +221,7 @@ class TestProvision:
 
     def test_adjustment_posts(
         self, credit_loss_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         result = credit_loss_service.adjust_provision(
             segment="commercial",
@@ -240,6 +242,7 @@ class TestWriteOffRecovery:
 
     def test_write_off_posts(
         self, credit_loss_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         result = credit_loss_service.record_write_off(
             customer_id=uuid4(),
@@ -251,6 +254,7 @@ class TestWriteOffRecovery:
 
     def test_recovery_posts(
         self, credit_loss_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         result = credit_loss_service.record_recovery(
             customer_id=uuid4(),

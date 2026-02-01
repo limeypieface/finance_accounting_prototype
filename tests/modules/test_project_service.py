@@ -44,6 +44,7 @@ from finance_modules.project.models import (
     WBSElement,
 )
 from finance_modules.project.service import ProjectService
+from tests.modules.conftest import TEST_PROJECT_ID
 
 
 # =============================================================================
@@ -202,9 +203,10 @@ class TestCostRecording:
 
     def test_cost_recorded_posts(
         self, project_service, current_period, test_actor_id, deterministic_clock,
+        test_project,
     ):
         result = project_service.record_cost(
-            project_id=uuid4(),
+            project_id=TEST_PROJECT_ID,
             wbs_code="1.1",
             cost_type="labor",
             amount=Decimal("50000.00"),

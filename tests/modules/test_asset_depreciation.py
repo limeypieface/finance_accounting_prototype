@@ -26,6 +26,7 @@ from typing import List, Optional, Tuple
 from uuid import uuid4
 
 from finance_kernel.domain.values import Money
+from tests.modules.conftest import TEST_ASSET_CATEGORY_ID, TEST_ASSET_ID
 
 
 # =============================================================================
@@ -835,6 +836,7 @@ class TestAssetDepreciationIntegration:
 
     def test_record_asset_acquisition_posts(
         self, asset_service, current_period, test_actor_id, deterministic_clock,
+        test_asset_category,
     ):
         """Record asset acquisition through the real pipeline."""
         from finance_kernel.services.module_posting_service import ModulePostingStatus
@@ -844,6 +846,7 @@ class TestAssetDepreciationIntegration:
             cost=Decimal("50000.00"),
             asset_class="MACHINERY",
             useful_life_months=60,
+            category_id=TEST_ASSET_CATEGORY_ID,
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
         )
@@ -854,12 +857,13 @@ class TestAssetDepreciationIntegration:
 
     def test_record_depreciation_posts(
         self, asset_service, current_period, test_actor_id, deterministic_clock,
+        test_asset,
     ):
         """Record monthly depreciation through the real pipeline."""
         from finance_kernel.services.module_posting_service import ModulePostingStatus
 
         result = asset_service.record_depreciation(
-            asset_id=uuid4(),
+            asset_id=TEST_ASSET_ID,
             amount=Decimal("750.00"),
             depreciation_method="straight_line",
             effective_date=deterministic_clock.now().date(),
@@ -872,6 +876,7 @@ class TestAssetDepreciationIntegration:
 
     def test_record_disposal_reaches_pipeline(
         self, asset_service, current_period, test_actor_id, deterministic_clock,
+        test_asset,
     ):
         """Record asset disposal (sale) through the real pipeline.
 
@@ -883,7 +888,7 @@ class TestAssetDepreciationIntegration:
         from finance_kernel.services.module_posting_service import ModulePostingStatus
 
         result = asset_service.record_disposal(
-            asset_id=uuid4(),
+            asset_id=TEST_ASSET_ID,
             proceeds=Decimal("3500.00"),
             original_cost=Decimal("10000.00"),
             accumulated_depreciation=Decimal("7200.00"),

@@ -89,6 +89,11 @@ from finance_modules.procurement.models import (
     ReceiptMatch,
     SupplierScore,
 )
+from finance_modules.procurement.orm import (
+    PurchaseRequisitionModel,
+    ReceivingReportModel,
+    RequisitionLineModel,
+)
 
 logger = get_logger("modules.procurement.service")
 
@@ -416,6 +421,28 @@ class ProcurementService:
             )
 
             if result.is_success:
+                orm_receipt = ReceivingReportModel(
+                    id=receipt_id,
+                    receipt_number=str(receipt_id),
+                    sindri_po_reference=str(po_id),
+                    receipt_date=effective_date,
+                    quantity_received=sum(
+                        Decimal(str(ln.get("quantity", "0"))) for ln in lines
+                    ),
+                    quantity_accepted=sum(
+                        Decimal(str(ln.get("quantity", "0"))) for ln in lines
+                    ),
+                    quantity_rejected=Decimal("0"),
+                    status="accepted",
+                    receiver_id=actor_id,
+                    description=description or f"Receipt {receipt_id} against PO {po_id}",
+                    currency=currency,
+                    unit_cost=Decimal("0"),
+                    total_cost=total_amount,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_receipt)
+                self._session.flush()
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -578,6 +605,33 @@ class ProcurementService:
             )
 
             if result.is_success:
+                orm_requisition = PurchaseRequisitionModel(
+                    id=requisition_id,
+                    requisition_number=str(requisition_id),
+                    requester_id=requester_id,
+                    request_date=effective_date,
+                    description=description or f"Requisition {requisition_id}",
+                    total_amount=total_amount,
+                    currency=currency,
+                    status="draft",
+                    created_by_id=actor_id,
+                )
+                # Persist requisition lines
+                for idx, item in enumerate(items, start=1):
+                    orm_line = RequisitionLineModel(
+                        requisition_id=requisition_id,
+                        line_number=idx,
+                        description=item.get("description", ""),
+                        quantity=Decimal(str(item.get("quantity", "0"))),
+                        unit_of_measure=item.get("unit_of_measure", "EA"),
+                        estimated_unit_cost=Decimal(str(item.get("estimated_unit_cost", "0"))),
+                        estimated_total=Decimal(str(item.get("quantity", "0"))) * Decimal(str(item.get("estimated_unit_cost", "0"))),
+                        gl_account_code=item.get("gl_account_code"),
+                        created_by_id=actor_id,
+                    )
+                    orm_requisition.lines.append(orm_line)
+                self._session.add(orm_requisition)
+                self._session.flush()
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -845,6 +899,24 @@ class ProcurementService:
             )
 
             if result.is_success:
+                orm_match_receipt = ReceivingReportModel(
+                    receipt_number=f"MATCH-{receipt_id}",
+                    sindri_po_reference=str(po_id),
+                    sindri_po_line_reference=str(po_line_id),
+                    receipt_date=effective_date,
+                    quantity_received=matched_quantity,
+                    quantity_accepted=matched_quantity,
+                    quantity_rejected=Decimal("0"),
+                    status="matched",
+                    receiver_id=actor_id,
+                    description=description or f"Receipt {receipt_id} matched to PO {po_id}",
+                    currency=currency,
+                    unit_cost=Decimal("0"),
+                    total_cost=matched_amount,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_match_receipt)
+                self._session.flush()
                 self._session.commit()
             else:
                 self._session.rollback()

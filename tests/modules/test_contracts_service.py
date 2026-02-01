@@ -11,13 +11,15 @@ Validates:
 from __future__ import annotations
 
 import inspect
+from datetime import date
 from decimal import Decimal
-from uuid import uuid4
+from uuid import uuid4, uuid5, NAMESPACE_DNS
 
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.contracts.service import GovernmentContractsService
+from tests.modules.conftest import TEST_CUSTOMER_ID
 
 
 # =============================================================================
@@ -33,6 +35,42 @@ def contracts_service(session, module_role_resolver, deterministic_clock, regist
         role_resolver=module_role_resolver,
         clock=deterministic_clock,
     )
+
+
+# UUID that the service computes for contract_id="FA8750-21-C-0001"
+_CONTRACT_STR = "FA8750-21-C-0001"
+_CONTRACT_UUID = uuid5(NAMESPACE_DNS, _CONTRACT_STR)
+
+
+@pytest.fixture
+def test_gov_contract(session, test_actor_id, test_customer_party):
+    """Create a kernel Contract whose id matches uuid5(NAMESPACE_DNS, 'FA8750-21-C-0001').
+
+    The GovernmentContractsService converts string contract IDs to UUIDs via
+    uuid5(NAMESPACE_DNS, contract_id).  ORM FK constraints require the
+    corresponding kernel Contract row to exist.
+    """
+    from finance_kernel.models.contract import Contract, ContractType, ContractStatus
+    existing = session.get(Contract, _CONTRACT_UUID)
+    if existing is not None:
+        return existing
+    contract = Contract(
+        id=_CONTRACT_UUID,
+        contract_number=_CONTRACT_STR,
+        contract_name="FA8750-21-C-0001 Test Contract",
+        contract_type=ContractType.COST_PLUS_FIXED_FEE,
+        status=ContractStatus.ACTIVE,
+        customer_party_id=TEST_CUSTOMER_ID,
+        start_date=date(2024, 1, 1),
+        end_date=date(2025, 12, 31),
+        ceiling_amount=Decimal("1000000.00"),
+        funded_amount=Decimal("500000.00"),
+        currency="USD",
+        created_by_id=test_actor_id,
+    )
+    session.add(contract)
+    session.flush()
+    return contract
 
 
 # =============================================================================
@@ -75,6 +113,7 @@ class TestContractsServiceIntegration:
 
     def test_record_cost_incurrence_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         """Record contract cost incurrence through the real pipeline."""
         result = contracts_service.record_cost_incurrence(
@@ -92,6 +131,7 @@ class TestContractsServiceIntegration:
 
     def test_generate_billing_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
+        test_gov_contract,
     ):
         """Generate contract billing through the real pipeline."""
         from finance_engines.billing import (
@@ -138,6 +178,7 @@ class TestContractsServiceIntegration:
 
     def test_record_funding_action_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
+        test_gov_contract,
     ):
         """Record contract funding obligation through the real pipeline."""
         result = contracts_service.record_funding_action(
@@ -154,6 +195,7 @@ class TestContractsServiceIntegration:
 
     def test_record_indirect_allocation_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         """Record indirect cost allocation through the real pipeline."""
         result = contracts_service.record_indirect_allocation(
@@ -172,6 +214,7 @@ class TestContractsServiceIntegration:
 
     def test_record_rate_adjustment_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         """Record rate adjustment through the real pipeline."""
         result = contracts_service.record_rate_adjustment(
@@ -242,6 +285,7 @@ class TestContractsServiceIntegration:
 
     def test_record_fee_accrual_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         """Record fixed fee accrual through the real pipeline."""
         result = contracts_service.record_fee_accrual(

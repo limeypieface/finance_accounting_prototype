@@ -17,6 +17,7 @@ import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.tax.service import TaxService
+from tests.modules.conftest import TEST_TAX_JURISDICTION_ID
 
 
 # =============================================================================
@@ -71,7 +72,7 @@ class TestTaxServiceIntegration:
     """Integration tests calling real tax service methods through the posting pipeline."""
 
     def test_record_tax_obligation_posts(
-        self, tax_service, current_period, test_actor_id, deterministic_clock,
+        self, tax_service, current_period, test_actor_id, test_tax_jurisdiction, deterministic_clock,
     ):
         """Record sales tax obligation through the real pipeline."""
         result = tax_service.record_tax_obligation(
@@ -80,6 +81,7 @@ class TestTaxServiceIntegration:
             amount=Decimal("600.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            jurisdiction_id=TEST_TAX_JURISDICTION_ID,
             jurisdiction="CA",
         )
 
@@ -88,7 +90,7 @@ class TestTaxServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_tax_payment_posts(
-        self, tax_service, current_period, test_actor_id, deterministic_clock,
+        self, tax_service, current_period, test_actor_id, test_tax_jurisdiction, deterministic_clock,
     ):
         """Record tax payment through the real pipeline."""
         result = tax_service.record_tax_payment(
@@ -97,6 +99,7 @@ class TestTaxServiceIntegration:
             amount=Decimal("600.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            jurisdiction_id=TEST_TAX_JURISDICTION_ID,
             jurisdiction="CA",
         )
 
@@ -125,7 +128,7 @@ class TestTaxServiceIntegration:
         assert result.net_amount.amount == Decimal("10000.00")
 
     def test_record_use_tax_obligation_posts(
-        self, tax_service, current_period, test_actor_id, deterministic_clock,
+        self, tax_service, current_period, test_actor_id, test_tax_jurisdiction, deterministic_clock,
     ):
         """Record use tax obligation through the real pipeline."""
         result = tax_service.record_tax_obligation(
@@ -134,6 +137,7 @@ class TestTaxServiceIntegration:
             amount=Decimal("150.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            jurisdiction_id=TEST_TAX_JURISDICTION_ID,
             jurisdiction="TX",
         )
 
@@ -142,7 +146,7 @@ class TestTaxServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_vat_input_posts(
-        self, tax_service, current_period, test_actor_id, deterministic_clock,
+        self, tax_service, current_period, test_actor_id, test_tax_jurisdiction, deterministic_clock,
     ):
         """Record VAT input credit through the real pipeline."""
         result = tax_service.record_tax_obligation(
@@ -151,6 +155,7 @@ class TestTaxServiceIntegration:
             amount=Decimal("200.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            jurisdiction_id=TEST_TAX_JURISDICTION_ID,
             jurisdiction="DE",
         )
 
@@ -159,7 +164,7 @@ class TestTaxServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_vat_settlement_posts(
-        self, tax_service, current_period, test_actor_id, deterministic_clock,
+        self, tax_service, current_period, test_actor_id, test_tax_jurisdiction, deterministic_clock,
     ):
         """Record VAT settlement (output - input = net payment) through the real pipeline."""
         result = tax_service.record_vat_settlement(
@@ -168,6 +173,7 @@ class TestTaxServiceIntegration:
             input_vat=Decimal("600.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            jurisdiction_id=TEST_TAX_JURISDICTION_ID,
             jurisdiction="DE",
         )
 
@@ -176,7 +182,7 @@ class TestTaxServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_tax_refund_posts(
-        self, tax_service, current_period, test_actor_id, deterministic_clock,
+        self, tax_service, current_period, test_actor_id, test_tax_jurisdiction, deterministic_clock,
     ):
         """Record tax refund received through the real pipeline."""
         result = tax_service.record_tax_obligation(
@@ -185,6 +191,7 @@ class TestTaxServiceIntegration:
             amount=Decimal("500.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            jurisdiction_id=TEST_TAX_JURISDICTION_ID,
             jurisdiction="CA",
         )
 

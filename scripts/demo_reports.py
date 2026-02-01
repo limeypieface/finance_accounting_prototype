@@ -416,7 +416,8 @@ def main() -> int:
     import logging
     logging.disable(logging.CRITICAL)  # suppress kernel logs for clean output
 
-    from finance_kernel.db.engine import init_engine_from_url, create_tables, get_session
+    from finance_kernel.db.engine import init_engine_from_url, get_session
+    from finance_modules._orm_registry import create_all_tables
     from finance_kernel.domain.clock import DeterministicClock
     from finance_modules.reporting.service import ReportingService
     from finance_modules.reporting.models import IncomeStatementFormat
@@ -425,7 +426,7 @@ def main() -> int:
     # 1. Connect
     try:
         init_engine_from_url(DB_URL, echo=False)
-        create_tables(install_triggers=False)
+        create_all_tables(install_triggers=False)
     except Exception as exc:
         print(f"ERROR: Could not connect to PostgreSQL: {exc}", file=sys.stderr)
         print("Make sure PostgreSQL is running and the database exists.", file=sys.stderr)

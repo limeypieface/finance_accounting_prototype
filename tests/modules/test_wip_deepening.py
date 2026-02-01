@@ -22,6 +22,7 @@ from finance_modules.wip.models import (
     UnitCostBreakdown,
 )
 from finance_modules.wip.service import WipService
+from tests.modules.conftest import TEST_WORK_ORDER_ID
 
 
 # =============================================================================
@@ -111,10 +112,11 @@ class TestByproduct:
 
     def test_byproduct_posts(
         self, wip_service, current_period, test_actor_id, deterministic_clock,
+        test_work_order, test_operation,
     ):
         """Byproduct recording posts Dr Inventory / Cr WIP."""
         bp, result = wip_service.record_byproduct(
-            job_id=uuid4(),
+            job_id=TEST_WORK_ORDER_ID,
             item_id=uuid4(),
             description="Sawdust byproduct",
             value=Decimal("500.00"),

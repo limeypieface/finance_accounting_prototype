@@ -79,6 +79,12 @@ from finance_modules.wip.models import (
     ProductionCostSummary,
     UnitCostBreakdown,
 )
+from finance_modules.wip.orm import (
+    LaborEntryModel,
+    OverheadApplicationModel,
+    WorkOrderModel,
+    ByproductRecordModel,
+)
 from finance_services.valuation_service import ValuationLayer
 from finance_engines.allocation import AllocationEngine, AllocationMethod, AllocationTarget
 from finance_engines.variance import VarianceCalculator, VarianceResult
@@ -233,6 +239,8 @@ class WipService:
         self,
         charge_id: UUID,
         job_id: str,
+        work_order_id: UUID,
+        operation_id: UUID,
         hours: Decimal,
         rate: Decimal,
         effective_date: date,
@@ -273,6 +281,19 @@ class WipService:
             )
 
             if result.is_success:
+                orm_labor = LaborEntryModel(
+                    id=charge_id,
+                    work_order_id=work_order_id,
+                    operation_id=operation_id,
+                    employee_id=UUID(employee_id) if employee_id else uuid4(),
+                    work_date=effective_date,
+                    hours=hours,
+                    labor_rate=rate,
+                    labor_cost=total_cost,
+                    entry_type=labor_code or "run",
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_labor)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -289,6 +310,7 @@ class WipService:
     def record_overhead_allocation(
         self,
         job_id: str,
+        work_order_id: UUID,
         allocation_amount: Decimal,
         effective_date: date,
         actor_id: UUID,
@@ -329,6 +351,18 @@ class WipService:
             )
 
             if result.is_success:
+                orm_overhead = OverheadApplicationModel(
+                    id=uuid4(),
+                    work_order_id=work_order_id,
+                    application_date=effective_date,
+                    overhead_type="variable",
+                    basis=allocation_base or "labor_hours",
+                    rate=rate or Decimal("0"),
+                    quantity=Decimal("1"),
+                    amount=allocation_amount,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_overhead)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -412,6 +446,23 @@ class WipService:
             )
 
             if result.is_success:
+                orm_work_order = WorkOrderModel(
+                    id=completion_id,
+                    order_number=job_id,
+                    item_id=UUID(str(item_id)) if item_id else uuid4(),
+                    quantity_ordered=quantity,
+                    quantity_completed=quantity,
+                    quantity_scrapped=Decimal("0"),
+                    planned_start_date=None,
+                    planned_end_date=None,
+                    actual_start_date=None,
+                    actual_end_date=effective_date,
+                    status="completed",
+                    parent_work_order_id=None,
+                    sales_order_id=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_work_order)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -465,6 +516,17 @@ class WipService:
             )
 
             if result.is_success:
+                # Query for existing work order by order_number to update scrap qty
+                existing_wo = (
+                    self._session.query(WorkOrderModel)
+                    .filter(WorkOrderModel.order_number == job_id)
+                    .first()
+                )
+                if existing_wo is not None:
+                    existing_wo.quantity_scrapped = (
+                        existing_wo.quantity_scrapped + quantity
+                    )
+                    existing_wo.updated_by_id = actor_id
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -790,6 +852,16 @@ class WipService:
             )
 
             if result.is_success:
+                orm_byproduct = ByproductRecordModel(
+                    id=byproduct_id,
+                    job_id=job_id,
+                    item_id=item_id,
+                    description=description,
+                    value=value,
+                    quantity=quantity,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_byproduct)
                 self._session.commit()
             else:
                 self._session.rollback()

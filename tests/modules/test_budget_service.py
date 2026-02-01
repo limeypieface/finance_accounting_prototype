@@ -23,6 +23,7 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
+from tests.modules.conftest import TEST_BUDGET_VERSION_ID
 from finance_modules.budget.models import (
     BudgetEntry,
     BudgetLock,
@@ -110,10 +111,11 @@ class TestBudgetEntry:
 
     def test_budget_entry_posts(
         self, budget_service, current_period, test_actor_id, deterministic_clock,
+        test_budget_version,
     ):
         """Budget memo entry posts successfully."""
         entry, result = budget_service.post_budget_entry(
-            version_id=uuid4(),
+            version_id=TEST_BUDGET_VERSION_ID,
             account_code="6000",
             period="2025-01",
             amount=Decimal("50000.00"),
@@ -130,6 +132,7 @@ class TestBudgetTransfer:
 
     def test_transfer_posts(
         self, budget_service, current_period, test_actor_id, deterministic_clock,
+        test_budget_version,
     ):
         """Budget transfer posts successfully."""
         result = budget_service.transfer_budget(
@@ -139,6 +142,7 @@ class TestBudgetTransfer:
             period="2025-01",
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            version_id=TEST_BUDGET_VERSION_ID,
         )
         assert result.status == ModulePostingStatus.POSTED
 
@@ -173,6 +177,7 @@ class TestEncumbranceLifecycle:
 
     def test_encumbrance_commit_posts(
         self, budget_service, current_period, test_actor_id, deterministic_clock,
+        test_budget_version,
     ):
         """Encumbrance commitment posts."""
         enc, result = budget_service.record_encumbrance(
@@ -188,6 +193,7 @@ class TestEncumbranceLifecycle:
 
     def test_encumbrance_relieve_partial(
         self, budget_service, current_period, test_actor_id, deterministic_clock,
+        test_budget_version,
     ):
         """Partial relief updates status."""
         enc = Encumbrance(
@@ -207,6 +213,7 @@ class TestEncumbranceLifecycle:
 
     def test_encumbrance_relieve_full(
         self, budget_service, current_period, test_actor_id, deterministic_clock,
+        test_budget_version,
     ):
         """Full relief sets status to RELIEVED."""
         enc = Encumbrance(
@@ -225,6 +232,7 @@ class TestEncumbranceLifecycle:
 
     def test_encumbrance_cancel_posts(
         self, budget_service, current_period, test_actor_id, deterministic_clock,
+        test_budget_version,
     ):
         """Encumbrance cancellation posts."""
         enc = Encumbrance(
@@ -311,6 +319,7 @@ class TestForecast:
 
     def test_forecast_update_posts(
         self, budget_service, current_period, test_actor_id, deterministic_clock,
+        test_budget_version,
     ):
         """Forecast update memo posting."""
         entry, result = budget_service.update_forecast(

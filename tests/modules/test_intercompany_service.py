@@ -28,6 +28,7 @@ from finance_modules.intercompany.models import (
     IntercompanyAgreement,
 )
 from finance_modules.intercompany.service import IntercompanyService
+from tests.modules.conftest import TEST_IC_AGREEMENT_ID
 
 
 # =============================================================================
@@ -307,11 +308,11 @@ class TestTransferPricing:
 
     def test_transfer_pricing_posts(
         self, ic_service, current_period, test_actor_id, deterministic_clock,
+        test_ic_agreement,
     ):
         """Transfer pricing adjustment posts markup amount."""
-        agreement_id = uuid4()
         txn, result = ic_service.post_transfer_pricing_adjustment(
-            agreement_id=agreement_id,
+            agreement_id=TEST_IC_AGREEMENT_ID,
             from_entity="ENTITY_A",
             to_entity="ENTITY_B",
             base_amount=Decimal("100000.00"),
@@ -324,10 +325,11 @@ class TestTransferPricing:
 
     def test_transfer_pricing_high_markup(
         self, ic_service, current_period, test_actor_id, deterministic_clock,
+        test_ic_agreement,
     ):
         """Higher markup rate calculates correct amount."""
         txn, result = ic_service.post_transfer_pricing_adjustment(
-            agreement_id=uuid4(),
+            agreement_id=TEST_IC_AGREEMENT_ID,
             from_entity="ENTITY_A",
             to_entity="ENTITY_B",
             base_amount=Decimal("200000.00"),

@@ -1,9 +1,11 @@
 # Module ORM Persistence Layer Implementation
 
 **Date:** 2026-01-31
-**Status:** IN-PROGRESS (Phase 1 ORM creation DONE, Phase 2 service wiring PENDING)
+**Last Update:** 2026-02-01
+**Status:** COMPLETE -- ready to commit
 **Reference plan:** `plans/MODULE_ORM_PERSISTENCE_PLAN.md`
-**Baseline:** 3,614+ tests passed before changes
+**Baseline:** 3,614+ tests passed before ORM work began
+**Current:** 4,052 pass / 0 fail / 0 errors
 
 ---
 
@@ -16,113 +18,110 @@ across 19 modules are ephemeral in-memory objects.
 
 ---
 
-## What Was Done This Session
+## Completed Phases
 
-### Phase 0: Foundation Infrastructure -- DONE
+### Phase 0: Architecture Boundary Fix -- DONE
 
-| File | Action | Status |
-|------|--------|--------|
-| `finance_modules/_orm_registry.py` | Created `import_all_orm_models()` function | DONE |
-| `finance_kernel/db/engine.py` | Added `import_all_orm_models()` call in `create_tables()` | DONE |
+- Created `create_all_tables()` in `finance_modules/_orm_registry.py`
+- Removed illegal `import finance_modules` from `finance_kernel/db/engine.py`
+- Added `kernel_only` guard parameter to `create_tables()`
+- Updated `tests/conftest.py` to use production orchestration path
+- Removed unused `create_tables` import from `tests/conftest.py`
+- All 14 architecture tests pass
 
 ### Phase 1: ORM Model Files -- DONE (106 models, 8,119 lines)
 
-All 18 `orm.py` files created by parallel agents:
+All 18 `orm.py` files created:
 
-| Module | File | Models | Lines | Status |
-|--------|------|--------|-------|--------|
-| AP | `finance_modules/ap/orm.py` | 8 | 707 | DONE |
-| AR | `finance_modules/ar/orm.py` | 9 | 756 | DONE |
-| Assets | `finance_modules/assets/orm.py` | 7 | 564 | DONE |
-| Budget | `finance_modules/budget/orm.py` | 5 | 391 | DONE |
-| Cash | `finance_modules/cash/orm.py` | 6 | 462 | DONE |
-| Contracts | `finance_modules/contracts/orm.py` | 4 | 346 | DONE |
-| Expense | `finance_modules/expense/orm.py` | 4 | 345 | DONE |
-| GL | `finance_modules/gl/orm.py` | 7 | 546 | DONE |
-| Intercompany | `finance_modules/intercompany/orm.py` | 3 | 272 | DONE |
-| Inventory | `finance_modules/inventory/orm.py` | 7 | 586 | DONE |
-| Lease | `finance_modules/lease/orm.py` | 5 | 477 | DONE |
-| Payroll | `finance_modules/payroll/orm.py` | 9 | 736 | DONE |
-| Procurement | `finance_modules/procurement/orm.py` | 3 | 310 | DONE |
-| Project | `finance_modules/project/orm.py` | 3 | 283 | DONE |
-| Revenue | `finance_modules/revenue/orm.py` | 6 | 606 | DONE |
-| Tax | `finance_modules/tax/orm.py` | 10 | 733 | DONE |
-| WIP | `finance_modules/wip/orm.py` | 8 | 755 | DONE |
-| Period Close | `finance_services/orm.py` | 2 | 245 | DONE |
-| **TOTAL** | **18 files** | **106** | **8,119** | **DONE** |
+| Module | File | Models | Lines |
+|--------|------|--------|-------|
+| AP | `finance_modules/ap/orm.py` | 8 | 707 |
+| AR | `finance_modules/ar/orm.py` | 9 | 756 |
+| Assets | `finance_modules/assets/orm.py` | 7 | 564 |
+| Budget | `finance_modules/budget/orm.py` | 5 | 391 |
+| Cash | `finance_modules/cash/orm.py` | 6 | 462 |
+| Contracts | `finance_modules/contracts/orm.py` | 4 | 346 |
+| Expense | `finance_modules/expense/orm.py` | 4 | 345 |
+| GL | `finance_modules/gl/orm.py` | 7 | 546 |
+| Intercompany | `finance_modules/intercompany/orm.py` | 3 | 272 |
+| Inventory | `finance_modules/inventory/orm.py` | 7 | 586 |
+| Lease | `finance_modules/lease/orm.py` | 5 | 477 |
+| Payroll | `finance_modules/payroll/orm.py` | 9 | 736 |
+| Procurement | `finance_modules/procurement/orm.py` | 3 | 310 |
+| Project | `finance_modules/project/orm.py` | 3 | 283 |
+| Revenue | `finance_modules/revenue/orm.py` | 6 | 606 |
+| Tax | `finance_modules/tax/orm.py` | 10 | 733 |
+| WIP | `finance_modules/wip/orm.py` | 8 | 755 |
+| Period Close | `finance_services/orm.py` | 2 | 245 |
+| **TOTAL** | **18 files** | **106** | **8,119** |
 
----
+### Phase 2: Service Wiring -- DONE (17 modules, 75+ session.add() calls)
 
-## What Still Needs To Be Done
+All 17 module services wired with `session.add()` calls to persist ORM
+models atomically with journal entries.
 
-### Phase 2: Validation & Fixes -- PENDING (do this FIRST next session)
+| Module | Service File | session.add() Calls | Status |
+|--------|-------------|---------------------|--------|
+| AP | `ap/service.py` | 5 | WIRED |
+| AR | `ar/service.py` | 7 | WIRED |
+| Cash | `cash/service.py` | 9 | WIRED |
+| Assets | `assets/service.py` | 6 | WIRED |
+| Inventory | `inventory/service.py` | 4 | WIRED |
+| WIP | `wip/service.py` | 4 | WIRED |
+| Tax | `tax/service.py` | 6 | WIRED |
+| Payroll | `payroll/service.py` | 2 | WIRED |
+| GL | `gl/service.py` | 2 | WIRED |
+| Revenue | `revenue/service.py` | 5 | WIRED |
+| Lease | `lease/service.py` | 5 | WIRED |
+| Budget | `budget/service.py` | 2 | WIRED |
+| Expense | `expense/service.py` | 2 | WIRED |
+| Project | `project/service.py` | 2 | WIRED |
+| Contracts | `contracts/service.py` | 2 | WIRED |
+| Intercompany | `intercompany/service.py` | 3 | WIRED |
+| Procurement | `procurement/service.py` | 3 | WIRED |
+| Reporting | `reporting/service.py` | 0 | N/A (read-only) |
 
-1. **Run test suite** to see if ORM creation caused any regressions:
-   ```bash
-   python3 -m pytest tests/ -v --tb=short
-   ```
-2. **Fix any import errors** in orm.py files (agents may have guessed field names)
-3. **Verify all orm.py files import cleanly**:
-   ```bash
-   python3 -c "from finance_modules._orm_registry import import_all_orm_models; import_all_orm_models(); print('OK')"
-   ```
-4. **Verify table discovery**:
-   ```python
-   from finance_kernel.db.base import Base
-   from finance_modules._orm_registry import import_all_orm_models
-   import_all_orm_models()
-   print(f"Tables: {len(Base.metadata.tables)}")
-   for t in sorted(Base.metadata.tables): print(f"  {t}")
-   ```
+### Phase 2a: FK Parameter Fixes -- DONE (8 services, 19 methods)
 
-### Phase 3: Service Wiring -- PENDING (bulk of remaining work)
+Service methods updated to require real parent entity IDs instead of
+placeholder UUIDs.
 
-For each module service, add `session.add(model)` calls so business objects
-are persisted atomically alongside journal entries. The pattern:
+### Phase 2b: Test Fixture Restructuring -- DONE
 
-```python
-# In each service method that creates a business object:
-orm_model = APInvoiceModel.from_dto(invoice_dto, created_by_id=actor_id)
-self._session.add(orm_model)
-# ... existing post_event() call ...
-# Commit happens at end of transaction (both ORM + journal entry)
-```
+- Removed autouse from `_module_parent_entities`
+- Split into individual fixtures: `test_vendor_party`, `test_customer_party`,
+  `test_employee_party`, `test_lessee_party`, `test_bank_account`,
+  `test_asset_category`, `test_asset`, `test_tax_jurisdiction`,
+  `test_work_order`, `test_operation`, `test_budget_version`,
+  `test_pay_period`, `test_payroll_employee`, `test_revenue_contract`,
+  `test_lease`, `test_contract`, `test_expense_report`, `test_project`,
+  `test_ic_agreement`, `test_gov_contract`
+- 18 deterministic UUIDs for test imports
+- 30+ test files updated with explicit fixture dependencies
 
-Services to update (19 total):
+### Phase 2c: ORM Model / Fixture Alignment -- DONE
 
-| Module | Service File | Methods to Update | Status |
-|--------|-------------|-------------------|--------|
-| AP | `finance_modules/ap/service.py` | record_invoice, record_payment, create_payment_run, hold_vendor, release_hold | PENDING |
-| AR | `finance_modules/ar/service.py` | create_invoice, record_receipt, apply_credit_memo, create_dunning | PENDING |
-| Cash | `finance_modules/cash/service.py` | create_bank_account, record_transaction, start_reconciliation | PENDING |
-| Assets | `finance_modules/assets/service.py` | acquire_asset, record_depreciation, dispose_asset, transfer_asset | PENDING |
-| Inventory | `finance_modules/inventory/service.py` | receive_inventory, issue_inventory, adjust_inventory, transfer_stock | PENDING |
-| WIP | `finance_modules/wip/service.py` | create_work_order, record_labor, apply_overhead | PENDING |
-| Tax | `finance_modules/tax/service.py` | record_tax_payment, file_return, create_exemption | PENDING |
-| Payroll | `finance_modules/payroll/service.py` | create_employee, submit_timecard, run_payroll | PENDING |
-| GL | `finance_modules/gl/service.py` | create_recurring_entry, post_adjustment | PENDING |
-| Revenue | `finance_modules/revenue/service.py` | create_contract, recognize_revenue | PENDING |
-| Lease | `finance_modules/lease/service.py` | create_lease, modify_lease | PENDING |
-| Budget | `finance_modules/budget/service.py` | create_budget, approve_budget, transfer_budget | PENDING |
-| Expense | `finance_modules/expense/service.py` | submit_report, approve_report, reimburse | PENDING |
-| Project | `finance_modules/project/service.py` | create_project, record_cost | PENDING |
-| Contracts | `finance_modules/contracts/service.py` | create_deliverable, record_billing | PENDING |
-| Intercompany | `finance_modules/intercompany/service.py` | create_transaction, settle | PENDING |
-| Procurement | `finance_modules/procurement/service.py` | create_requisition, receive | PENDING |
-| Reporting | `finance_modules/reporting/service.py` | (read-only, no persistence needed) | N/A |
-| Period Close | `finance_services/period_close_orchestrator.py` | execute_close | PENDING |
+Fixed 5 field name mismatches between ORM models and test fixtures:
+- `AssetCategoryModel`: `useful_life_months` -> `useful_life_years`, GL account names
+- `BudgetVersionModel` -> `BudgetModel`: fixture was creating wrong entity type
+- `PayPeriodModel`: `period_code`/`status` -> `period_number`/`year`/`pay_frequency`
+- `TaxJurisdictionModel`: removed non-existent `country` field
+- `WorkOrderModel`: removed non-existent `priority` field
+- `AssetModel`: `asset_tag` -> `asset_number`, `residual_value` -> `salvage_value`
+- `EmployeeModel`: fixed `party_id`/`status`/`pay_rate`/`department` column names
 
-### Phase 4: ORM Tests -- PENDING
+### Phase 3: ORM Round-Trip Tests -- DONE (18 files, 423 tests)
 
-Create `tests/modules/test_{module}_orm.py` for each module to verify:
-- Round-trip: `from_dto()` -> persist -> query -> `to_dto()` == original
-- FK constraints work
-- Indexes exist
-- Status transitions work
+All 18 `test_{module}_orm.py` files created and passing:
+- `from_dto()` -> persist -> query -> `to_dto()` round-trip verification
+- FK constraint enforcement tests
+- Index existence tests
+- Unique constraint tests
+- Status transition tests
 
-### Phase 5: Final Regression -- PENDING
+### Phase 4: Full Regression Gate -- DONE
 
-Run full test suite and confirm zero regressions.
+**4,052 tests pass, 0 failures, 0 errors** (up from 3,614 baseline).
 
 ---
 
@@ -136,20 +135,27 @@ Run full test suite and confirm zero regressions.
 6. **Table naming**: `{module}_{plural_entity}` (e.g., `ap_invoices`, `cash_bank_accounts`)
 7. **Sindri deconfliction**: No ORM models for Item, Location, StockLevel, PurchaseOrder, Company (Sindri owns these)
 8. **Reporting module**: Excluded from ORM (read-only derived data, no persistence needed)
-9. **Registry pattern**: `_orm_registry.py` with `import_all_orm_models()` called by `create_tables()`
+9. **Registry pattern**: `_orm_registry.py` with `create_all_tables()` as production entrypoint
+10. **Explicit test fixtures**: No autouse; every test declares parent entities it depends on
+11. **Architecture boundary**: `create_all_tables()` lives in `finance_modules/_orm_registry.py`, not kernel
+12. **Kernel guard**: `create_tables(kernel_only=False)` rejects incomplete schema unless `kernel_only=True`
 
 ## Key Files Created/Modified
 
-- `finance_modules/_orm_registry.py` -- NEW: imports all orm.py modules
-- `finance_kernel/db/engine.py` -- MODIFIED: calls `import_all_orm_models()` in `create_tables()`
-- `finance_modules/*/orm.py` (17 files) -- NEW: ORM models for each module
-- `finance_services/orm.py` -- NEW: Period close ORM models
+**New files (37):**
+- `finance_modules/*/orm.py` (17 files) -- ORM models for each module
+- `finance_services/orm.py` -- Period close ORM models
+- `finance_modules/_orm_registry.py` -- Registry + `create_all_tables()`
+- `tests/modules/test_*_orm.py` (18 files) -- ORM round-trip tests
 
-## Resume Instructions
+**Modified files (30+):**
+- `finance_kernel/db/engine.py` -- kernel guard, removed illegal import
+- `finance_modules/*/service.py` (17 files) -- session.add() wiring
+- `tests/conftest.py` -- production orchestration path
+- `tests/modules/conftest.py` -- parent entity fixtures
+- `tests/modules/test_*_service.py` (20+ files) -- fixture dependencies
 
-1. Read this file first
-2. Run: `python3 -c "from finance_modules._orm_registry import import_all_orm_models; import_all_orm_models(); print('OK')"` to verify imports
-3. Run: `python3 -m pytest tests/ -v --tb=short` to check for regressions
-4. Fix any import errors in orm.py files (field name mismatches with models.py)
-5. Begin Phase 3 (service wiring) starting with AP as the reference implementation
-6. Reference `plans/MODULE_ORM_PERSISTENCE_PLAN.md` for detailed model specs
+## Next Steps
+
+- **Phase 5:** Commit all uncommitted work in correct order
+- Archive this plan to `plans/archive/`

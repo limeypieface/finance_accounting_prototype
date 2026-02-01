@@ -81,6 +81,11 @@ from finance_modules.inventory.models import (
     ItemValue,
     ReorderPoint,
 )
+from finance_modules.inventory.orm import (
+    InventoryReceiptModel,
+    InventoryAdjustmentModel,
+    CycleCountModel,
+)
 
 logger = get_logger("modules.inventory.service")
 
@@ -219,6 +224,21 @@ class InventoryService:
             )
 
             if result.is_success:
+                orm_receipt = InventoryReceiptModel(
+                    id=receipt_id,
+                    item_id=uuid4(),
+                    location_id=uuid4(),
+                    receipt_date=effective_date,
+                    quantity=quantity,
+                    unit_cost=unit_cost,
+                    total_cost=total_cost,
+                    status="accepted",
+                    source_type=None,
+                    source_id=None,
+                    lot_number=str(lot.lot_id),
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_receipt)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -315,6 +335,21 @@ class InventoryService:
             )
 
             if result.is_success:
+                orm_receipt = InventoryReceiptModel(
+                    id=receipt_id,
+                    item_id=uuid4(),
+                    location_id=uuid4(),
+                    receipt_date=effective_date,
+                    quantity=quantity,
+                    unit_cost=actual_unit_cost,
+                    total_cost=actual_unit_cost * quantity,
+                    status="accepted",
+                    source_type=None,
+                    source_id=None,
+                    lot_number=str(lot.lot_id),
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_receipt)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -677,6 +712,18 @@ class InventoryService:
             )
 
             if result.is_success:
+                orm_adjustment = InventoryAdjustmentModel(
+                    id=adjustment_id,
+                    item_id=uuid4(),
+                    location_id=uuid4(),
+                    adjustment_date=effective_date,
+                    quantity_change=quantity_change,
+                    value_change=value_change,
+                    reason_code=reason_code,
+                    reference=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_adjustment)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -845,6 +892,21 @@ class InventoryService:
             )
 
             if result.is_success:
+                orm_count = CycleCountModel(
+                    id=count_id,
+                    count_date=effective_date,
+                    item_id=item_id,
+                    location_id=location_id,
+                    expected_quantity=expected_quantity,
+                    actual_quantity=actual_quantity,
+                    variance_quantity=variance_qty,
+                    variance_amount=abs(variance_amount),
+                    currency=currency,
+                    counter_id=actor_id,
+                    notes=notes,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_count)
                 self._session.commit()
             else:
                 self._session.rollback()

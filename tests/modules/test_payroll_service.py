@@ -16,6 +16,7 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
+from tests.modules.conftest import TEST_PAY_PERIOD_ID
 from finance_modules.payroll.service import PayrollService
 
 
@@ -74,6 +75,7 @@ class TestPayrollServiceIntegration:
 
     def test_record_payroll_run_posts(
         self, payroll_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party, test_pay_period,
     ):
         """Record a payroll run through the real pipeline."""
         result = payroll_service.record_payroll_run(
@@ -82,6 +84,7 @@ class TestPayrollServiceIntegration:
             gross_pay=Decimal("5000.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            pay_period_id=TEST_PAY_PERIOD_ID,
             federal_tax=Decimal("750.00"),
             state_tax=Decimal("250.00"),
             fica=Decimal("382.50"),
@@ -94,6 +97,7 @@ class TestPayrollServiceIntegration:
 
     def test_record_payroll_tax_posts(
         self, payroll_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party, test_pay_period,
     ):
         """Record payroll tax deposit through the real pipeline."""
         result = payroll_service.record_payroll_tax(
@@ -110,6 +114,7 @@ class TestPayrollServiceIntegration:
 
     def test_allocate_labor_costs_posts(
         self, payroll_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party, test_pay_period,
     ):
         """Allocate labor costs across cost centers through the real pipeline."""
         result = payroll_service.allocate_labor_costs(
@@ -158,6 +163,7 @@ class TestPayrollServiceIntegration:
 
     def test_record_payroll_payment_posts(
         self, payroll_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party, test_pay_period,
     ):
         """Record net payroll payment through the real pipeline."""
         result = payroll_service.record_payroll_payment(
@@ -173,6 +179,7 @@ class TestPayrollServiceIntegration:
 
     def test_record_benefits_payment_posts(
         self, payroll_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party, test_pay_period,
     ):
         """Record benefits payment through the real pipeline."""
         result = payroll_service.record_benefits_payment(
@@ -189,6 +196,7 @@ class TestPayrollServiceIntegration:
 
     def test_record_regular_hours_posts(
         self, payroll_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party, test_pay_period,
     ):
         """Record regular timesheet hours through the real pipeline."""
         result = payroll_service.record_regular_hours(
@@ -206,6 +214,7 @@ class TestPayrollServiceIntegration:
 
     def test_record_overtime_posts(
         self, payroll_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party, test_pay_period,
     ):
         """Record overtime hours through the real pipeline."""
         result = payroll_service.record_overtime(
@@ -223,6 +232,7 @@ class TestPayrollServiceIntegration:
 
     def test_record_pto_posts(
         self, payroll_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party, test_pay_period,
     ):
         """Record PTO hours through the real pipeline."""
         result = payroll_service.record_pto(

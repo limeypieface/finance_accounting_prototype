@@ -17,6 +17,7 @@ import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.expense.service import ExpenseService
+from tests.modules.conftest import TEST_EMPLOYEE_ID, TEST_EXPENSE_REPORT_ID
 
 
 # =============================================================================
@@ -76,6 +77,7 @@ class TestExpenseServiceIntegration:
 
     def test_record_expense_posts(
         self, expense_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party,
     ):
         """Record a single expense through the real pipeline."""
         result = expense_service.record_expense(
@@ -92,6 +94,7 @@ class TestExpenseServiceIntegration:
 
     def test_record_expense_report_posts(
         self, expense_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party,
     ):
         """Record a multi-line expense report through the real pipeline."""
         result = expense_service.record_expense_report(
@@ -103,6 +106,7 @@ class TestExpenseServiceIntegration:
             ],
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            employee_id=TEST_EMPLOYEE_ID,
         )
 
         assert result.status == ModulePostingStatus.POSTED
@@ -111,6 +115,7 @@ class TestExpenseServiceIntegration:
 
     def test_record_reimbursement_posts(
         self, expense_service, current_period, test_actor_id, deterministic_clock,
+        test_expense_report,
     ):
         """Record employee reimbursement through the real pipeline."""
         result = expense_service.record_reimbursement(
@@ -118,6 +123,8 @@ class TestExpenseServiceIntegration:
             amount=Decimal("650.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            employee_id=TEST_EMPLOYEE_ID,
+            report_id=TEST_EXPENSE_REPORT_ID,
         )
 
         assert result.status == ModulePostingStatus.POSTED
@@ -126,6 +133,7 @@ class TestExpenseServiceIntegration:
 
     def test_record_card_statement_posts(
         self, expense_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party,
     ):
         """Record corporate card statement through the real pipeline."""
         result = expense_service.record_card_statement(
@@ -144,6 +152,7 @@ class TestExpenseServiceIntegration:
 
     def test_allocate_expense_posts(
         self, expense_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party,
     ):
         """Allocate expense across cost centers through the real pipeline."""
         from finance_engines.allocation import AllocationTarget
@@ -175,6 +184,7 @@ class TestExpenseServiceIntegration:
 
     def test_record_card_payment_posts(
         self, expense_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party,
     ):
         """Record corporate card payment through the real pipeline."""
         result = expense_service.record_card_payment(
@@ -190,6 +200,7 @@ class TestExpenseServiceIntegration:
 
     def test_issue_advance_posts(
         self, expense_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party,
     ):
         """Issue a travel advance through the real pipeline."""
         result = expense_service.issue_advance(
@@ -205,6 +216,7 @@ class TestExpenseServiceIntegration:
 
     def test_clear_advance_posts(
         self, expense_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party,
     ):
         """Clear a travel advance against an expense report through the real pipeline."""
         result = expense_service.clear_advance(
@@ -221,6 +233,7 @@ class TestExpenseServiceIntegration:
 
     def test_record_receipt_match_posts(
         self, expense_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party,
     ):
         """Match an expense receipt to a card transaction through the real pipeline."""
         match_result, posting_result = expense_service.record_receipt_match(

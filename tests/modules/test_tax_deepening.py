@@ -38,6 +38,7 @@ from finance_modules.tax.models import (
     TemporaryDifference,
 )
 from finance_modules.tax.service import TaxService
+from tests.modules.conftest import TEST_TAX_JURISDICTION_ID
 
 
 # =============================================================================
@@ -206,7 +207,7 @@ class TestDeferredTax:
         assert td.deferred_amount == Decimal("4200.00")
 
     def test_record_dta_posts(
-        self, tax_service, current_period, test_actor_id, deterministic_clock,
+        self, tax_service, current_period, test_actor_id, test_tax_jurisdiction, deterministic_clock,
     ):
         dta, result = tax_service.record_deferred_tax_asset(
             source="bad_debt_allowance",
@@ -220,7 +221,7 @@ class TestDeferredTax:
         assert dta.net_amount == Decimal("5000.00")
 
     def test_record_dta_with_valuation_allowance(
-        self, tax_service, current_period, test_actor_id, deterministic_clock,
+        self, tax_service, current_period, test_actor_id, test_tax_jurisdiction, deterministic_clock,
     ):
         dta, result = tax_service.record_deferred_tax_asset(
             source="warranty_reserve",
@@ -234,7 +235,7 @@ class TestDeferredTax:
         assert dta.net_amount == Decimal("7000.00")
 
     def test_record_dtl_posts(
-        self, tax_service, current_period, test_actor_id, deterministic_clock,
+        self, tax_service, current_period, test_actor_id, test_tax_jurisdiction, deterministic_clock,
     ):
         dtl, result = tax_service.record_deferred_tax_liability(
             source="depreciation",
@@ -276,7 +277,7 @@ class TestMultiJurisdiction:
     """Tests for record_multi_jurisdiction_tax."""
 
     def test_multi_jurisdiction_posts(
-        self, tax_service, current_period, test_actor_id, deterministic_clock,
+        self, tax_service, current_period, test_actor_id, test_tax_jurisdiction, deterministic_clock,
     ):
         jurisdictions = [
             {"jurisdiction": "CA", "taxable_amount": "100000", "tax_rate": "0.0884", "tax_amount": "8840"},
@@ -286,6 +287,7 @@ class TestMultiJurisdiction:
             jurisdictions=jurisdictions,
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            jurisdiction_id=TEST_TAX_JURISDICTION_ID,
         )
         assert result.status == ModulePostingStatus.POSTED
         assert summary["total_tax"] == Decimal("12265")
@@ -335,7 +337,7 @@ class TestTaxAdjustment:
     """Tests for record_tax_adjustment."""
 
     def test_adjustment_posts(
-        self, tax_service, current_period, test_actor_id, deterministic_clock,
+        self, tax_service, current_period, test_actor_id, test_tax_jurisdiction, deterministic_clock,
     ):
         result = tax_service.record_tax_adjustment(
             period="2023-Q4",

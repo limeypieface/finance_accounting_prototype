@@ -73,6 +73,14 @@ from finance_engines.allocation import (
 )
 from finance_engines.variance import VarianceCalculator, VarianceResult
 from finance_modules.assets.models import AssetTransfer, AssetRevaluation
+from finance_modules.assets.orm import (
+    AssetDisposalModel,
+    AssetModel,
+    AssetRevaluationModel,
+    AssetTransferModel,
+    DepreciationComponentModel,
+    DepreciationScheduleModel,
+)
 
 logger = get_logger("modules.assets.service")
 
@@ -141,6 +149,7 @@ class FixedAssetService:
         cost: Decimal,
         effective_date: date,
         actor_id: UUID,
+        category_id: UUID,
         asset_class: str | None = None,
         useful_life_months: int = 60,
         payment_method: str = "CASH",
@@ -178,6 +187,28 @@ class FixedAssetService:
             )
 
             if result.is_success:
+                orm_asset = AssetModel(
+                    id=asset_id,
+                    asset_number=str(asset_id),
+                    description=description or "",
+                    category_id=category_id,
+                    acquisition_date=effective_date,
+                    in_service_date=effective_date,
+                    acquisition_cost=cost,
+                    salvage_value=Decimal("0"),
+                    useful_life_months=useful_life_months,
+                    accumulated_depreciation=Decimal("0"),
+                    net_book_value=cost,
+                    status="in_service",
+                    location_id=None,
+                    department_id=None,
+                    custodian_id=None,
+                    serial_number=None,
+                    purchase_order_id=None,
+                    vendor_id=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_asset)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -278,6 +309,17 @@ class FixedAssetService:
             )
 
             if result.is_success:
+                orm_schedule = DepreciationScheduleModel(
+                    id=uuid4(),
+                    asset_id=asset_id,
+                    period_date=effective_date,
+                    depreciation_amount=amount,
+                    accumulated_depreciation=amount,  # incremental; caller tracks cumulative
+                    net_book_value=Decimal("0"),  # placeholder; caller tracks actual
+                    is_posted=True,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_schedule)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -355,6 +397,23 @@ class FixedAssetService:
             )
 
             if result.is_success:
+                gain_loss = Decimal("0")
+                if book_value is not None:
+                    gain_loss = proceeds - book_value
+                orm_disposal = AssetDisposalModel(
+                    id=uuid4(),
+                    asset_id=asset_id,
+                    disposal_date=effective_date,
+                    disposal_type=disposal_type.lower(),
+                    proceeds=proceeds,
+                    accumulated_depreciation_at_disposal=(
+                        accumulated_depreciation or Decimal("0")
+                    ),
+                    net_book_value_at_disposal=book_value or Decimal("0"),
+                    gain_loss=gain_loss,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_disposal)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -590,13 +649,24 @@ class FixedAssetService:
                 currency=currency,
             )
 
+            transfer_record_id = uuid4()
             if result.is_success:
+                orm_transfer = AssetTransferModel(
+                    id=transfer_record_id,
+                    asset_id=asset_id,
+                    transfer_date=effective_date,
+                    from_cost_center=from_cost_center,
+                    to_cost_center=to_cost_center,
+                    transferred_by=actor_id,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_transfer)
                 self._session.commit()
             else:
                 self._session.rollback()
 
             transfer = AssetTransfer(
-                id=uuid4(),
+                id=transfer_record_id,
                 asset_id=asset_id,
                 transfer_date=effective_date,
                 from_cost_center=from_cost_center,
@@ -688,13 +758,24 @@ class FixedAssetService:
                 currency=currency,
             )
 
+            reval_record_id = uuid4()
             if result.is_success:
+                orm_reval = AssetRevaluationModel(
+                    id=reval_record_id,
+                    asset_id=asset_id,
+                    revaluation_date=effective_date,
+                    old_carrying_value=old_carrying_value,
+                    new_fair_value=new_fair_value,
+                    revaluation_surplus=surplus,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_reval)
                 self._session.commit()
             else:
                 self._session.rollback()
 
             revaluation = AssetRevaluation(
-                id=uuid4(),
+                id=reval_record_id,
                 asset_id=asset_id,
                 revaluation_date=effective_date,
                 old_carrying_value=old_carrying_value,
@@ -757,6 +838,17 @@ class FixedAssetService:
             )
 
             if result.is_success:
+                orm_component = DepreciationComponentModel(
+                    id=uuid4(),
+                    asset_id=asset_id,
+                    component_name=component_name,
+                    cost=amount,
+                    useful_life_months=0,  # placeholder; caller tracks actual
+                    depreciation_method="straight_line",
+                    accumulated_depreciation=amount,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_component)
                 self._session.commit()
             else:
                 self._session.rollback()

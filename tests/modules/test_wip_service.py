@@ -17,6 +17,7 @@ import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.wip.service import WipService
+from tests.modules.conftest import TEST_WORK_ORDER_ID, TEST_OPERATION_ID
 
 
 # =============================================================================
@@ -75,6 +76,7 @@ class TestWipServiceIntegration:
 
     def test_record_material_issue_posts(
         self, wip_service, current_period, test_actor_id, deterministic_clock,
+        test_work_order, test_operation,
     ):
         """Record material issued to a job through the real pipeline."""
         result = wip_service.record_material_issue(
@@ -93,11 +95,14 @@ class TestWipServiceIntegration:
 
     def test_record_labor_charge_posts(
         self, wip_service, current_period, test_actor_id, deterministic_clock,
+        test_work_order, test_operation,
     ):
         """Record labor charged to a job through the real pipeline."""
         result = wip_service.record_labor_charge(
             charge_id=uuid4(),
             job_id="JOB-100",
+            work_order_id=TEST_WORK_ORDER_ID,
+            operation_id=TEST_OPERATION_ID,
             hours=Decimal("40"),
             rate=Decimal("50.00"),
             effective_date=deterministic_clock.now().date(),
@@ -110,10 +115,12 @@ class TestWipServiceIntegration:
 
     def test_record_overhead_allocation_posts(
         self, wip_service, current_period, test_actor_id, deterministic_clock,
+        test_work_order, test_operation,
     ):
         """Record overhead applied to a job through the real pipeline."""
         result = wip_service.record_overhead_allocation(
             job_id="JOB-100",
+            work_order_id=TEST_WORK_ORDER_ID,
             allocation_amount=Decimal("800.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
@@ -127,6 +134,7 @@ class TestWipServiceIntegration:
 
     def test_complete_job_posts(
         self, wip_service, current_period, test_actor_id, deterministic_clock,
+        test_work_order, test_operation,
     ):
         """Complete a job and transfer to finished goods through the real pipeline."""
         result = wip_service.complete_job(
@@ -143,6 +151,7 @@ class TestWipServiceIntegration:
 
     def test_record_labor_variance(
         self, wip_service, current_period, test_actor_id, deterministic_clock,
+        test_work_order, test_operation,
     ):
         """Record labor efficiency variance through the real pipeline."""
         variance_result, posting_result = wip_service.record_labor_variance(
@@ -161,6 +170,7 @@ class TestWipServiceIntegration:
 
     def test_record_material_variance(
         self, wip_service, current_period, test_actor_id, deterministic_clock,
+        test_work_order, test_operation,
     ):
         """Record material usage variance through the real pipeline."""
         variance_result, posting_result = wip_service.record_material_variance(
@@ -179,6 +189,7 @@ class TestWipServiceIntegration:
 
     def test_record_overhead_variance_posts(
         self, wip_service, current_period, test_actor_id, deterministic_clock,
+        test_work_order, test_operation,
     ):
         """Record overhead variance through the real pipeline."""
         variance_result, posting_result = wip_service.record_overhead_variance(
@@ -196,6 +207,7 @@ class TestWipServiceIntegration:
 
     def test_record_scrap_posts(
         self, wip_service, current_period, test_actor_id, deterministic_clock,
+        test_work_order, test_operation,
     ):
         """Record scrap on a work order through the real pipeline."""
         result = wip_service.record_scrap(
@@ -214,6 +226,7 @@ class TestWipServiceIntegration:
 
     def test_record_rework_posts(
         self, wip_service, current_period, test_actor_id, deterministic_clock,
+        test_work_order, test_operation,
     ):
         """Record rework costs on a work order through the real pipeline."""
         result = wip_service.record_rework(

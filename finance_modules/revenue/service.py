@@ -79,6 +79,13 @@ from finance_modules.revenue.models import (
     SSPAllocation,
     TransactionPrice,
 )
+from finance_modules.revenue.orm import (
+    ContractModificationModel,
+    PerformanceObligationModel,
+    RevenueContractModel,
+    SSPAllocationModel,
+    TransactionPriceModel,
+)
 
 logger = get_logger("modules.revenue.service")
 
@@ -169,7 +176,7 @@ class RevenueRecognitionService:
             "total_consideration": str(total_consideration),
         })
 
-        return RevenueContract(
+        contract = RevenueContract(
             id=contract_id,
             customer_id=customer_id,
             contract_number=contract_number,
@@ -180,6 +187,12 @@ class RevenueRecognitionService:
             status=ContractStatus.IDENTIFIED,
             currency=currency,
         )
+
+        orm_contract = RevenueContractModel.from_dto(contract, created_by_id=customer_id)
+        self._session.add(orm_contract)
+        self._session.commit()
+
+        return contract
 
     # =========================================================================
     # Step 2: Identify Performance Obligations
@@ -231,6 +244,11 @@ class RevenueRecognitionService:
             "contract_id": str(contract_id),
             "obligation_count": len(obligations),
         })
+
+        for ob in obligations:
+            orm_ob = PerformanceObligationModel.from_dto(ob, created_by_id=contract_id)
+            self._session.add(orm_ob)
+        self._session.commit()
 
         return tuple(obligations)
 
@@ -284,7 +302,7 @@ class RevenueRecognitionService:
             "total_transaction_price": str(total),
         })
 
-        return TransactionPrice(
+        txn_price = TransactionPrice(
             id=uuid4(),
             contract_id=contract_id,
             base_price=base_price,
@@ -294,6 +312,12 @@ class RevenueRecognitionService:
             consideration_payable=consideration_payable,
             total_transaction_price=total,
         )
+
+        orm_price = TransactionPriceModel.from_dto(txn_price, created_by_id=contract_id)
+        self._session.add(orm_price)
+        self._session.commit()
+
+        return txn_price
 
     # =========================================================================
     # Step 4: Allocate Transaction Price
@@ -412,6 +436,9 @@ class RevenueRecognitionService:
             )
 
             if result.is_success:
+                for alloc in allocations:
+                    orm_alloc = SSPAllocationModel.from_dto(alloc, created_by_id=actor_id)
+                    self._session.add(orm_alloc)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -584,6 +611,8 @@ class RevenueRecognitionService:
             )
 
             if result.is_success:
+                orm_mod = ContractModificationModel.from_dto(modification, created_by_id=actor_id)
+                self._session.add(orm_mod)
                 self._session.commit()
             else:
                 self._session.rollback()

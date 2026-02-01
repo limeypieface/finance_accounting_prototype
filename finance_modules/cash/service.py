@@ -69,6 +69,12 @@ from finance_modules.cash.models import (
     PaymentFile,
     ReconciliationMatch,
 )
+from finance_modules.cash.orm import (
+    BankStatementLineModel,
+    BankStatementModel,
+    BankTransactionModel,
+    ReconciliationModel,
+)
 
 logger = get_logger("modules.cash.service")
 
@@ -139,6 +145,7 @@ class CashService:
         amount: Decimal,
         effective_date: date,
         actor_id: UUID,
+        bank_account_id: UUID,
         currency: str = "USD",
         bank_account_code: str | None = None,
         payer_name: str | None = None,
@@ -188,6 +195,20 @@ class CashService:
             )
 
             if result.is_success:
+                orm_txn = BankTransactionModel(
+                    id=receipt_id,
+                    bank_account_id=bank_account_id,
+                    transaction_date=effective_date,
+                    amount=amount,
+                    transaction_type="deposit",
+                    reference=reference or "",
+                    description=description or "",
+                    external_id=None,
+                    reconciled=False,
+                    matched_journal_line_id=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_txn)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -207,6 +228,7 @@ class CashService:
         amount: Decimal,
         effective_date: date,
         actor_id: UUID,
+        bank_account_id: UUID,
         destination_type: str = "EXPENSE",
         currency: str = "USD",
         bank_account_code: str | None = None,
@@ -262,6 +284,20 @@ class CashService:
             )
 
             if result.is_success:
+                orm_txn = BankTransactionModel(
+                    id=disbursement_id,
+                    bank_account_id=bank_account_id,
+                    transaction_date=effective_date,
+                    amount=amount,
+                    transaction_type="withdrawal",
+                    reference=reference or "",
+                    description=description or "",
+                    external_id=None,
+                    reconciled=False,
+                    matched_journal_line_id=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_txn)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -281,6 +317,7 @@ class CashService:
         amount: Decimal,
         effective_date: date,
         actor_id: UUID,
+        bank_account_id: UUID,
         currency: str = "USD",
         bank_account_code: str | None = None,
         description: str | None = None,
@@ -322,6 +359,20 @@ class CashService:
             )
 
             if result.is_success:
+                orm_txn = BankTransactionModel(
+                    id=fee_id,
+                    bank_account_id=bank_account_id,
+                    transaction_date=effective_date,
+                    amount=amount,
+                    transaction_type="fee",
+                    reference="",
+                    description=description or "",
+                    external_id=None,
+                    reconciled=False,
+                    matched_journal_line_id=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_txn)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -341,6 +392,7 @@ class CashService:
         amount: Decimal,
         effective_date: date,
         actor_id: UUID,
+        bank_account_id: UUID,
         currency: str = "USD",
         bank_account_code: str | None = None,
         description: str | None = None,
@@ -382,6 +434,20 @@ class CashService:
             )
 
             if result.is_success:
+                orm_txn = BankTransactionModel(
+                    id=interest_id,
+                    bank_account_id=bank_account_id,
+                    transaction_date=effective_date,
+                    amount=amount,
+                    transaction_type="interest",
+                    reference="",
+                    description=description or "",
+                    external_id=None,
+                    reconciled=False,
+                    matched_journal_line_id=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_txn)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -401,6 +467,7 @@ class CashService:
         amount: Decimal,
         effective_date: date,
         actor_id: UUID,
+        bank_account_id: UUID,
         from_bank_account_code: str | None = None,
         to_bank_account_code: str | None = None,
         currency: str = "USD",
@@ -446,6 +513,20 @@ class CashService:
             )
 
             if result.is_success:
+                orm_txn = BankTransactionModel(
+                    id=transfer_id,
+                    bank_account_id=bank_account_id,
+                    transaction_date=effective_date,
+                    amount=amount,
+                    transaction_type="transfer_out",
+                    reference="",
+                    description=description or "",
+                    external_id=None,
+                    reconciled=False,
+                    matched_journal_line_id=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_txn)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -589,6 +670,7 @@ class CashService:
         entries: Sequence[dict[str, Any]],
         effective_date: date,
         actor_id: UUID,
+        bank_account_id: UUID,
         bank_account_code: str | None = None,
         currency: str = "USD",
         description: str | None = None,
@@ -667,6 +749,20 @@ class CashService:
             # Post reconciliation adjustment if non-zero
             if net_adjustment == Decimal("0"):
                 # No adjustment needed -- commit link graph changes only
+                orm_recon = ReconciliationModel(
+                    id=statement_id,
+                    bank_account_id=bank_account_id,
+                    statement_date=effective_date,
+                    statement_balance=Decimal("0"),
+                    book_balance=Decimal("0"),
+                    adjusted_book_balance=Decimal("0"),
+                    variance=Decimal("0"),
+                    status="completed",
+                    completed_by_id=actor_id,
+                    completed_at=effective_date,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_recon)
                 self._session.commit()
                 return ModulePostingResult(
                     status=ModulePostingStatus.POSTED,
@@ -694,6 +790,20 @@ class CashService:
             )
 
             if result.is_success:
+                orm_recon = ReconciliationModel(
+                    id=statement_id,
+                    bank_account_id=bank_account_id,
+                    statement_date=effective_date,
+                    statement_balance=Decimal("0"),
+                    book_balance=Decimal("0"),
+                    adjusted_book_balance=abs(net_adjustment),
+                    variance=net_adjustment,
+                    status="completed",
+                    completed_by_id=actor_id,
+                    completed_at=effective_date,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_recon)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -713,6 +823,7 @@ class CashService:
         format: str,
         bank_account_id: UUID,
         statement_date: date,
+        actor_id: UUID,
     ) -> tuple[BankStatement, list[BankStatementLine]]:
         """
         Parse a bank statement into structured records.
@@ -766,6 +877,33 @@ class CashService:
             line_count=len(lines),
             format=format.upper(),
         )
+
+        # Persist ORM models
+        orm_statement = BankStatementModel(
+            id=statement.id,
+            bank_account_id=bank_account_id,
+            statement_date=statement_date,
+            opening_balance=Decimal("0"),
+            closing_balance=total_amount,
+            line_count=len(lines),
+            format=format.upper(),
+            currency="USD",
+            created_by_id=actor_id,
+        )
+        self._session.add(orm_statement)
+
+        for line in lines:
+            orm_line = BankStatementLineModel(
+                id=line.id,
+                statement_id=orm_statement.id,
+                transaction_date=line.transaction_date,
+                amount=line.amount,
+                reference=line.reference,
+                description=line.description,
+                transaction_type=line.transaction_type,
+                created_by_id=actor_id,
+            )
+            self._session.add(orm_line)
 
         logger.info("bank_statement_imported", extra={
             "format": format,

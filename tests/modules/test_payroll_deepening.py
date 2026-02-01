@@ -21,6 +21,7 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
+from tests.modules.conftest import TEST_PAYROLL_EMPLOYEE_ID
 from finance_modules.payroll.helpers import (
     calculate_federal_withholding,
     calculate_fica,
@@ -208,10 +209,11 @@ class TestBenefitsDeduction:
 
     def test_benefits_deduction_posts(
         self, payroll_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party, test_pay_period, test_payroll_employee,
     ):
         """Benefits deduction posts successfully."""
         deduction, result = payroll_service.record_benefits_deduction(
-            employee_id=uuid4(),
+            employee_id=TEST_PAYROLL_EMPLOYEE_ID,
             plan_name="401k",
             employee_amount=Decimal("500.00"),
             effective_date=deterministic_clock.now().date(),
@@ -254,10 +256,11 @@ class TestEmployerContribution:
 
     def test_employer_contribution_posts(
         self, payroll_service, current_period, test_actor_id, deterministic_clock,
+        test_employee_party, test_pay_period, test_payroll_employee,
     ):
         """Employer contribution posts successfully."""
         contribution, result = payroll_service.record_employer_contribution(
-            employee_id=uuid4(),
+            employee_id=TEST_PAYROLL_EMPLOYEE_ID,
             plan_name="401k Match",
             amount=Decimal("250.00"),
             effective_date=deterministic_clock.now().date(),

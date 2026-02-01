@@ -99,6 +99,11 @@ from finance_modules.payroll.models import (
     EmployerContribution,
     WithholdingResult,
 )
+from finance_modules.payroll.orm import (
+    BenefitsDeductionModel,
+    EmployerContributionModel,
+    PayrollRunModel,
+)
 
 logger = get_logger("modules.payroll.service")
 
@@ -176,6 +181,7 @@ class PayrollService:
         gross_pay: Decimal,
         effective_date: date,
         actor_id: UUID,
+        pay_period_id: UUID | None = None,
         currency: str = "USD",
         department: str | None = None,
         federal_tax: Decimal | None = None,
@@ -228,6 +234,24 @@ class PayrollService:
             )
 
             if result.is_success:
+                withholdings_total = sum(
+                    w for w in (federal_tax, state_tax, fica, benefits) if w is not None
+                )
+                orm_model = PayrollRunModel(
+                    id=run_id,
+                    pay_period_id=pay_period_id or run_id,
+                    run_date=effective_date,
+                    total_gross=gross_pay,
+                    total_taxes=Decimal(str(
+                        sum(w for w in (federal_tax, state_tax, fica) if w is not None)
+                    )),
+                    total_deductions=Decimal(str(withholdings_total)),
+                    total_net=gross_pay - withholdings_total,
+                    employee_count=1,
+                    status="draft",
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_model)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -851,6 +875,8 @@ class PayrollService:
             )
 
             if result.is_success:
+                orm_model = BenefitsDeductionModel.from_dto(deduction, created_by_id=actor_id)
+                self._session.add(orm_model)
                 self._session.commit()
             else:
                 self._session.rollback()

@@ -57,7 +57,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4, uuid5, NAMESPACE_DNS
 
 from sqlalchemy.orm import Session
 
@@ -91,6 +91,7 @@ from finance_modules.contracts.models import (
     CostDisallowance,
     Subcontract,
 )
+from finance_modules.contracts.orm import ContractBillingModel, ContractFundingModel
 
 logger = get_logger("modules.contracts.service")
 
@@ -297,6 +298,23 @@ class GovernmentContractsService:
             )
 
             if result.is_success:
+                contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+                orm_billing = ContractBillingModel(
+                    id=uuid4(),
+                    contract_id=contract_uuid,
+                    billing_number=f"{contract_id}-{billing_period}",
+                    billing_type=billing_type,
+                    billing_period=billing_period,
+                    billing_date=effective_date,
+                    direct_costs=billing_result.total_direct_cost.amount,
+                    indirect_costs=billing_result.total_indirect_cost.amount,
+                    fee_amount=billing_result.fee_amount.amount,
+                    total_amount=billing_result.net_billing.amount,
+                    currency=currency,
+                    status="draft",
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_billing)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -356,6 +374,21 @@ class GovernmentContractsService:
             )
 
             if result.is_success:
+                contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+                orm_funding = ContractFundingModel(
+                    id=uuid4(),
+                    contract_id=contract_uuid,
+                    funding_action_number=modification_number or f"{contract_id}-{action_type}",
+                    funding_type=action_type.lower(),
+                    amount=amount,
+                    cumulative_funded=amount,
+                    currency=currency,
+                    effective_date=effective_date,
+                    modification_number=modification_number,
+                    authorized_by=actor_id,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_funding)
                 self._session.commit()
             else:
                 self._session.rollback()

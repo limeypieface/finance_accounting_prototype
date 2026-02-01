@@ -382,24 +382,9 @@ def full_setup(session, clock):
 
     Returns (session, post_simple, post_engine).
     """
-    from finance_kernel.db.engine import create_tables, drop_tables, get_session
+    from finance_kernel.db.engine import drop_tables, get_session
     from finance_kernel.db.immutability import register_immutability_listeners
-
-    # ALL models must be imported BEFORE create_tables()
-    import finance_kernel.models.account                # noqa: F401
-    import finance_kernel.models.journal                # noqa: F401
-    import finance_kernel.models.event                  # noqa: F401
-    import finance_kernel.models.audit_event            # noqa: F401
-    import finance_kernel.models.fiscal_period          # noqa: F401
-    import finance_kernel.models.economic_link          # noqa: F401
-    import finance_kernel.models.economic_event         # noqa: F401
-    import finance_kernel.models.interpretation_outcome # noqa: F401
-    import finance_kernel.models.party                  # noqa: F401
-    import finance_kernel.models.contract               # noqa: F401
-    import finance_kernel.models.dimensions             # noqa: F401
-    import finance_kernel.models.exchange_rate          # noqa: F401
-    import finance_kernel.models.subledger             # noqa: F401
-    import finance_kernel.services.sequence_service     # noqa: F401
+    from finance_modules._orm_registry import create_all_tables
 
     _kill_orphaned()
     time.sleep(0.3)
@@ -413,7 +398,7 @@ def full_setup(session, clock):
         except Exception:
             pass
 
-    create_tables(install_triggers=True)
+    create_all_tables(install_triggers=True)
     register_immutability_listeners()
 
     new_session = get_session()

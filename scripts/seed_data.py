@@ -74,10 +74,10 @@ def main() -> int:
 
     from finance_kernel.db.engine import (
         init_engine_from_url,
-        create_tables,
         drop_tables,
         get_session,
     )
+    from finance_modules._orm_registry import create_all_tables
     from finance_kernel.db.immutability import register_immutability_listeners
     from finance_kernel.domain.clock import DeterministicClock
     from finance_kernel.models.account import Account, AccountType, NormalBalance
@@ -124,7 +124,7 @@ def main() -> int:
         except Exception:
             pass  # tables may not exist yet
 
-    create_tables(install_triggers=True)
+    create_all_tables(install_triggers=True)
     register_immutability_listeners()
 
     session = get_session()

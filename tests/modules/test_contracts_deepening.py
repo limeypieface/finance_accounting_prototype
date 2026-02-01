@@ -106,6 +106,7 @@ class TestContractModification:
 
     def test_modification_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         mod, result = contracts_service.record_contract_modification(
             contract_id="FA8750-21-C-0001",
@@ -130,6 +131,7 @@ class TestSubcontractCost:
 
     def test_subcontract_cost_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         sub, result = contracts_service.record_subcontract_cost(
             contract_id="FA8750-21-C-0001",
@@ -154,6 +156,7 @@ class TestEquitableAdjustment:
 
     def test_equitable_adjustment_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         result = contracts_service.record_equitable_adjustment(
             contract_id="FA8750-21-C-0001",
@@ -224,6 +227,7 @@ class TestCostDisallowance:
 
     def test_disallowance_posts(
         self, contracts_service, current_period, test_actor_id, deterministic_clock,
+        test_customer_party,
     ):
         dis, result = contracts_service.record_cost_disallowance(
             contract_id="FA8750-21-C-0001",

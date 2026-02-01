@@ -90,6 +90,12 @@ from finance_modules.ap.models import (
     PaymentRunStatus,
     VendorHold,
 )
+from finance_modules.ap.orm import (
+    APInvoiceModel,
+    APPaymentModel,
+    APPaymentRunModel,
+    APVendorHoldModel,
+)
 
 logger = get_logger("modules.ap.service")
 
@@ -224,6 +230,21 @@ class APService:
             )
 
             if result.is_success:
+                orm_invoice = APInvoiceModel(
+                    id=invoice_id,
+                    vendor_id=vendor_id,
+                    invoice_number=invoice_number or str(invoice_id),
+                    invoice_date=effective_date,
+                    due_date=due_date or effective_date,
+                    currency=currency,
+                    subtotal=amount - (tax_amount or Decimal("0")),
+                    tax_amount=tax_amount or Decimal("0"),
+                    total_amount=amount,
+                    status="draft",
+                    po_id=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_invoice)
                 self._session.commit()
                 logger.info("ap_record_invoice_committed", extra={
                     "invoice_id": str(invoice_id),
@@ -248,8 +269,8 @@ class APService:
         amount: Decimal,
         effective_date: date,
         actor_id: UUID,
+        vendor_id: UUID,
         currency: str = "USD",
-        vendor_id: UUID | None = None,
         payment_method: str | None = None,
         reference: str | None = None,
         discount_amount: Decimal | None = None,
@@ -323,6 +344,22 @@ class APService:
             )
 
             if result.is_success:
+                import json as _json
+                orm_payment = APPaymentModel(
+                    id=payment_id,
+                    vendor_id=vendor_id,
+                    payment_date=effective_date,
+                    payment_method=payment_method or "ach",
+                    amount=amount,
+                    currency=currency,
+                    reference=reference or str(payment_id),
+                    status="draft",
+                    invoice_ids_json=_json.dumps([str(invoice_id)]),
+                    discount_taken=discount_amount or Decimal("0"),
+                    bank_account_id=bank_account_id,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_payment)
                 self._session.commit()
                 logger.info("ap_record_payment_committed", extra={
                     "payment_id": str(payment_id),
@@ -569,6 +606,9 @@ class APService:
             )
 
             if result.is_success:
+                existing = self._session.get(APInvoiceModel, invoice_id)
+                if existing is not None:
+                    existing.status = "cancelled"
                 self._session.commit()
                 logger.info("ap_cancel_invoice_committed", extra={
                     "invoice_id": str(invoice_id),
@@ -639,6 +679,21 @@ class APService:
             )
 
             if result.is_success:
+                orm_invoice = APInvoiceModel(
+                    id=invoice_id,
+                    vendor_id=vendor_id,
+                    invoice_number=str(invoice_id),
+                    invoice_date=effective_date,
+                    due_date=effective_date,
+                    currency=currency,
+                    subtotal=amount - (tax_amount or Decimal("0")),
+                    tax_amount=tax_amount or Decimal("0"),
+                    total_amount=amount,
+                    status="draft",
+                    po_id=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_invoice)
                 self._session.commit()
                 logger.info("ap_record_inventory_invoice_committed", extra={
                     "invoice_id": str(invoice_id),
@@ -945,7 +1000,7 @@ class APService:
             "total_amount": str(total),
         })
 
-        return PaymentRun(
+        run = PaymentRun(
             id=run_id,
             payment_date=payment_date,
             currency=currency,
@@ -954,6 +1009,20 @@ class APService:
             line_count=len(invoices),
             created_by=actor_id,
         )
+
+        orm_run = APPaymentRunModel(
+            id=run_id,
+            payment_date=payment_date,
+            currency=currency,
+            status="draft",
+            total_amount=total,
+            line_count=len(invoices),
+            created_by=actor_id,
+            created_by_id=actor_id,
+        )
+        self._session.add(orm_run)
+
+        return run
 
     def execute_payment_run(
         self,
@@ -1097,7 +1166,7 @@ class APService:
             "hold_date": hold_date.isoformat(),
         })
 
-        return VendorHold(
+        hold = VendorHold(
             id=hold_id,
             vendor_id=vendor_id,
             reason=reason,
@@ -1105,6 +1174,19 @@ class APService:
             held_by=actor_id,
             status=HoldStatus.ACTIVE,
         )
+
+        orm_hold = APVendorHoldModel(
+            id=hold_id,
+            vendor_id=vendor_id,
+            reason=reason,
+            hold_date=hold_date,
+            held_by=actor_id,
+            status="active",
+            created_by_id=actor_id,
+        )
+        self._session.add(orm_hold)
+
+        return hold
 
     def release_vendor_hold(
         self,
@@ -1128,6 +1210,12 @@ class APService:
             "vendor_id": str(hold.vendor_id),
             "release_date": release_date.isoformat(),
         })
+
+        existing = self._session.get(APVendorHoldModel, hold.id)
+        if existing is not None:
+            existing.status = "released"
+            existing.released_date = release_date
+            existing.released_by = actor_id
 
         from dataclasses import replace
         return replace(

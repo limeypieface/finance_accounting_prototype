@@ -17,6 +17,7 @@ import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.ar.service import ARService
+from tests.modules.conftest import TEST_CUSTOMER_ID
 
 
 # =============================================================================
@@ -73,12 +74,12 @@ class TestARServiceIntegration:
     """Integration tests calling real AR service methods through the posting pipeline."""
 
     def test_record_invoice_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Record a customer invoice through the real pipeline."""
         result = ar_service.record_invoice(
             invoice_id=uuid4(),
-            customer_id=uuid4(),
+            customer_id=TEST_CUSTOMER_ID,
             amount=Decimal("10000.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
@@ -89,12 +90,12 @@ class TestARServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_payment_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Record a customer payment through the real pipeline."""
         result = ar_service.record_payment(
             payment_id=uuid4(),
-            customer_id=uuid4(),
+            customer_id=TEST_CUSTOMER_ID,
             amount=Decimal("10000.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
@@ -105,7 +106,7 @@ class TestARServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_apply_payment_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Apply payment to invoices through the real pipeline."""
         result = ar_service.apply_payment(
@@ -132,12 +133,12 @@ class TestARServiceIntegration:
         assert report.item_count == 0
 
     def test_record_receipt_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Record a customer receipt (unapplied cash) through the real pipeline."""
         result = ar_service.record_receipt(
             receipt_id=uuid4(),
-            customer_id=uuid4(),
+            customer_id=TEST_CUSTOMER_ID,
             amount=Decimal("5000.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
@@ -148,12 +149,12 @@ class TestARServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_credit_memo_return_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Record a customer return credit memo through the real pipeline."""
         result = ar_service.record_credit_memo(
             memo_id=uuid4(),
-            customer_id=uuid4(),
+            customer_id=TEST_CUSTOMER_ID,
             amount=Decimal("1500.00"),
             reason_code="RETURN",
             effective_date=deterministic_clock.now().date(),
@@ -165,7 +166,7 @@ class TestARServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_write_off_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Write off an uncollectible receivable through the real pipeline."""
         result = ar_service.record_write_off(
@@ -182,7 +183,7 @@ class TestARServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_bad_debt_provision_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Record a bad debt provision through the real pipeline."""
         result = ar_service.record_bad_debt_provision(
@@ -198,7 +199,7 @@ class TestARServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_deferred_revenue_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Record deferred revenue through the real pipeline."""
         result = ar_service.record_deferred_revenue(
@@ -214,7 +215,7 @@ class TestARServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_recognize_deferred_revenue_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Recognize deferred revenue through the real pipeline."""
         result = ar_service.recognize_deferred_revenue(
@@ -231,7 +232,7 @@ class TestARServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_refund_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Record a customer refund through the real pipeline."""
         result = ar_service.record_refund(

@@ -76,6 +76,7 @@ from finance_modules.project.models import (
     ProjectBudget,
     WBSElement,
 )
+from finance_modules.project.orm import ProjectCostEntryModel, ProjectModel
 
 logger = get_logger("modules.project.service")
 
@@ -135,9 +136,10 @@ class ProjectService:
         start_date: date | None = None,
         end_date: date | None = None,
         currency: str = "USD",
+        actor_id: UUID | None = None,
     ) -> Project:
         """Create a project (no posting, setup only)."""
-        return Project(
+        project = Project(
             id=uuid4(),
             name=name,
             project_type=project_type,
@@ -146,6 +148,10 @@ class ProjectService:
             end_date=end_date,
             currency=currency,
         )
+        orm_project = ProjectModel.from_dto(project, created_by_id=actor_id or uuid4())
+        self._session.add(orm_project)
+        self._session.commit()
+        return project
 
     # =========================================================================
     # Cost Recording
@@ -181,6 +187,20 @@ class ProjectService:
                 description=description,
             )
             if result.is_success:
+                orm_cost = ProjectCostEntryModel(
+                    id=uuid4(),
+                    project_id=project_id,
+                    phase_id=None,
+                    cost_type=cost_type,
+                    description=description,
+                    amount=amount,
+                    currency=currency,
+                    period=wbs_code,
+                    entry_date=effective_date,
+                    source_event_id=None,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_cost)
                 self._session.commit()
             else:
                 self._session.rollback()

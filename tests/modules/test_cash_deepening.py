@@ -35,6 +35,7 @@ from finance_modules.cash.models import (
     ReconciliationMatch,
 )
 from finance_modules.cash.service import CashService
+from tests.modules.conftest import TEST_BANK_ACCOUNT_ID
 
 
 # =============================================================================
@@ -194,13 +195,14 @@ class TestNACHAFormatter:
 class TestStatementImport:
     """Tests for import_bank_statement."""
 
-    def test_import_mt940(self, cash_service):
+    def test_import_mt940(self, cash_service, test_bank_account, test_actor_id):
         data = "2024-01-15|1500.00|REF001|Deposit|CREDIT\n2024-01-16|200.00|REF002|Fee|DEBIT"
         stmt, lines = cash_service.import_bank_statement(
             raw_data=data,
             format="MT940",
-            bank_account_id=uuid4(),
+            bank_account_id=TEST_BANK_ACCOUNT_ID,
             statement_date=date(2024, 1, 31),
+            actor_id=test_actor_id,
         )
         assert isinstance(stmt, BankStatement)
         assert stmt.line_count == 2
@@ -208,13 +210,14 @@ class TestStatementImport:
         assert len(lines) == 2
         assert all(isinstance(l, BankStatementLine) for l in lines)
 
-    def test_import_unsupported_format(self, cash_service):
+    def test_import_unsupported_format(self, cash_service, test_bank_account, test_actor_id):
         with pytest.raises(ValueError, match="Unsupported format"):
             cash_service.import_bank_statement(
                 raw_data="data",
                 format="CSV",
-                bank_account_id=uuid4(),
+                bank_account_id=TEST_BANK_ACCOUNT_ID,
                 statement_date=date(2024, 1, 31),
+                actor_id=test_actor_id,
             )
 
 
@@ -227,7 +230,7 @@ class TestAutoReconciliation:
     """Tests for auto_reconcile."""
 
     def test_auto_reconcile_all_matched(
-        self, cash_service, current_period, test_actor_id, deterministic_clock,
+        self, cash_service, current_period, test_actor_id, test_bank_account, deterministic_clock,
     ):
         """All lines match — no adjustment posting needed."""
         lines = [
@@ -249,7 +252,7 @@ class TestAutoReconciliation:
         assert matches[0].match_method == "auto_amount"
 
     def test_auto_reconcile_with_variance(
-        self, cash_service, current_period, test_actor_id, deterministic_clock,
+        self, cash_service, current_period, test_actor_id, test_bank_account, deterministic_clock,
     ):
         """Unmatched lines produce variance posting."""
         lines = [
@@ -342,7 +345,7 @@ class TestNSFReturn:
     """Tests for record_nsf_return."""
 
     def test_nsf_return_posts(
-        self, cash_service, current_period, test_actor_id, deterministic_clock,
+        self, cash_service, current_period, test_actor_id, test_bank_account, deterministic_clock,
     ):
         """NSF return posts Dr AR / Cr Cash."""
         result = cash_service.record_nsf_return(

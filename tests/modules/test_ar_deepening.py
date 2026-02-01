@@ -118,7 +118,7 @@ class TestGenerateDunningLetters:
     """Tests for generate_dunning_letters service method."""
 
     def test_dunning_letters_generated(
-        self, ar_service, deterministic_clock, test_actor_id,
+        self, ar_service, deterministic_clock, test_actor_id, test_customer_party,
     ):
         """Dunning letters are generated for overdue customers."""
         overdue_customers = [
@@ -140,7 +140,7 @@ class TestGenerateDunningLetters:
         assert results[2].level == DunningLevel.SECOND_NOTICE
 
     def test_dunning_skips_current_customers(
-        self, ar_service, deterministic_clock, test_actor_id,
+        self, ar_service, deterministic_clock, test_actor_id, test_customer_party,
     ):
         """Customers with 0 days overdue are skipped."""
         overdue_customers = [
@@ -156,7 +156,7 @@ class TestGenerateDunningLetters:
         assert results == []
 
     def test_dunning_empty_list(
-        self, ar_service, deterministic_clock, test_actor_id,
+        self, ar_service, deterministic_clock, test_actor_id, test_customer_party,
     ):
         """Empty overdue list returns empty results."""
         results = ar_service.generate_dunning_letters(
@@ -177,7 +177,7 @@ class TestAutoApplyPayment:
     """Tests for auto_apply_payment service method."""
 
     def test_auto_apply_payment_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Auto-apply posts via existing apply_payment (FIFO)."""
         open_invoices = [
@@ -207,7 +207,7 @@ class TestCreditManagement:
     """Tests for check_credit_limit and update_credit_limit."""
 
     def test_check_credit_limit_approved(
-        self, ar_service, test_actor_id,
+        self, ar_service, test_actor_id, test_customer_party,
     ):
         """Order within credit limit is approved."""
         decision = ar_service.check_credit_limit(
@@ -223,7 +223,7 @@ class TestCreditManagement:
         assert "Within limit" in decision.reason
 
     def test_check_credit_limit_rejected(
-        self, ar_service, test_actor_id,
+        self, ar_service, test_actor_id, test_customer_party,
     ):
         """Order exceeding credit limit is rejected."""
         decision = ar_service.check_credit_limit(
@@ -239,7 +239,7 @@ class TestCreditManagement:
         assert "exceeds limit" in decision.reason
 
     def test_update_credit_limit_returns_decision(
-        self, ar_service, test_actor_id,
+        self, ar_service, test_actor_id, test_customer_party,
     ):
         """update_credit_limit returns a CreditDecision."""
         decision = ar_service.update_credit_limit(
@@ -266,7 +266,7 @@ class TestAutoWriteOffSmallBalances:
     """Tests for auto_write_off_small_balances service method."""
 
     def test_auto_write_off_posts_qualifying_invoices(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Invoices below threshold are written off."""
         small_invoices = [
@@ -285,7 +285,7 @@ class TestAutoWriteOffSmallBalances:
         assert all(r.status == ModulePostingStatus.POSTED for r in results)
 
     def test_auto_write_off_skips_above_threshold(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Invoices above threshold are not written off."""
         invoices = [
@@ -302,7 +302,7 @@ class TestAutoWriteOffSmallBalances:
         assert results == []
 
     def test_auto_write_off_empty_list(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Empty invoice list returns empty results."""
         results = ar_service.auto_write_off_small_balances(
@@ -324,7 +324,7 @@ class TestRecordFinanceCharge:
     """Tests for record_finance_charge service method."""
 
     def test_record_finance_charge_posts(
-        self, ar_service, current_period, test_actor_id, deterministic_clock,
+        self, ar_service, current_period, test_actor_id, test_customer_party, deterministic_clock,
     ):
         """Finance charge posts via ar.finance_charge profile."""
         result = ar_service.record_finance_charge(

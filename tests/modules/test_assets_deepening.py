@@ -22,6 +22,7 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
+from tests.modules.conftest import TEST_ASSET_ID
 from finance_modules.assets.helpers import (
     calculate_impairment_loss,
     double_declining_balance,
@@ -238,6 +239,7 @@ class TestMassDepreciation:
 
     def test_mass_depreciation_posts(
         self, asset_service, current_period, test_actor_id, deterministic_clock,
+        test_asset_category,
     ):
         """Batch depreciation posts for all assets."""
         assets = [
@@ -263,10 +265,11 @@ class TestAssetTransfer:
 
     def test_transfer_posts(
         self, asset_service, current_period, test_actor_id, deterministic_clock,
+        test_asset,
     ):
         """Asset transfer posts successfully."""
         transfer, result = asset_service.record_asset_transfer(
-            asset_id=uuid4(),
+            asset_id=TEST_ASSET_ID,
             from_cost_center="CC100",
             to_cost_center="CC200",
             transfer_value=Decimal("45000.00"),
@@ -314,10 +317,11 @@ class TestRevaluation:
 
     def test_revaluation_posts(
         self, asset_service, current_period, test_actor_id, deterministic_clock,
+        test_asset,
     ):
         """Revaluation surplus posts successfully."""
         reval, result = asset_service.record_revaluation(
-            asset_id=uuid4(),
+            asset_id=TEST_ASSET_ID,
             old_carrying_value=Decimal("40000.00"),
             new_fair_value=Decimal("55000.00"),
             effective_date=deterministic_clock.now().date(),
@@ -338,10 +342,11 @@ class TestComponentDepreciation:
 
     def test_component_depreciation_posts(
         self, asset_service, current_period, test_actor_id, deterministic_clock,
+        test_asset,
     ):
         """Component depreciation posts successfully."""
         result = asset_service.record_component_depreciation(
-            asset_id=uuid4(),
+            asset_id=TEST_ASSET_ID,
             component_name="Engine",
             amount=Decimal("500.00"),
             effective_date=deterministic_clock.now().date(),

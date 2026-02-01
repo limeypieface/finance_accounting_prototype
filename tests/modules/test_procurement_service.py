@@ -22,6 +22,7 @@ import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.procurement.service import ProcurementService
+from tests.modules.conftest import TEST_EMPLOYEE_ID
 
 
 # =============================================================================
@@ -80,6 +81,7 @@ class TestProcurementServiceIntegration:
 
     def test_create_purchase_order_posts(
         self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party,
     ):
         """Create a purchase order through the real pipeline."""
         result = procurement_service.create_purchase_order(
@@ -98,6 +100,7 @@ class TestProcurementServiceIntegration:
 
     def test_receive_goods_posts(
         self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party,
     ):
         """Receive goods against a PO through the real pipeline."""
         result = procurement_service.receive_goods(
@@ -116,6 +119,7 @@ class TestProcurementServiceIntegration:
 
     def test_record_price_variance_posts(
         self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party,
     ):
         """Record purchase price variance through the real pipeline."""
         result = procurement_service.record_price_variance(
@@ -135,6 +139,7 @@ class TestProcurementServiceIntegration:
 
     def test_record_commitment_posts(
         self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party,
     ):
         """Record a purchase commitment (memo) through the real pipeline."""
         result = procurement_service.record_commitment(
@@ -152,6 +157,7 @@ class TestProcurementServiceIntegration:
 
     def test_relieve_commitment_posts(
         self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party,
     ):
         """Relieve a purchase commitment (memo reversal) through the real pipeline."""
         result = procurement_service.relieve_commitment(
@@ -177,10 +183,11 @@ class TestRequisition:
 
     def test_create_requisition_posts(
         self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party, test_employee_party,
     ):
         result = procurement_service.create_requisition(
             requisition_id=uuid4(),
-            requester_id=test_actor_id,
+            requester_id=TEST_EMPLOYEE_ID,
             items=[
                 {"description": "Laptops", "quantity": "10", "estimated_unit_cost": "1200.00"},
             ],
@@ -198,6 +205,7 @@ class TestRequisitionConversion:
 
     def test_convert_requisition_to_po_posts(
         self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party,
     ):
         result = procurement_service.convert_requisition_to_po(
             requisition_id=uuid4(),
@@ -218,6 +226,7 @@ class TestPOAmendment:
 
     def test_amend_purchase_order_adjusts_encumbrance(
         self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party,
     ):
         po_version, result = procurement_service.amend_purchase_order(
             po_id=uuid4(),
@@ -242,6 +251,7 @@ class TestReceiptMatch:
 
     def test_match_receipt_to_po_posts(
         self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party,
     ):
         match_result, posting_result = procurement_service.match_receipt_to_po(
             receipt_id=uuid4(),
@@ -288,6 +298,7 @@ class TestQuantityVariance:
 
     def test_record_quantity_variance_posts(
         self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party,
     ):
         result = procurement_service.record_quantity_variance(
             receipt_id=uuid4(),

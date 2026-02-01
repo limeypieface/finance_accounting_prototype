@@ -23,6 +23,7 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
+from tests.modules.conftest import TEST_LESSEE_ID, TEST_LEASE_ID
 from finance_modules.lease.calculations import (
     build_amortization_schedule,
     calculate_rou_adjustment,
@@ -250,7 +251,7 @@ class TestInitialRecognition:
     """Tests for record_initial_recognition."""
 
     def test_finance_initial_recognition(
-        self, lease_service, current_period, test_actor_id,
+        self, lease_service, current_period, test_actor_id, test_lessee_party,
     ):
         """Finance lease initial recognition posts ROU + liability."""
         rou, liability, result = lease_service.record_initial_recognition(
@@ -261,6 +262,7 @@ class TestInitialRecognition:
             lease_term_months=60,
             commencement_date=date(2024, 1, 1),
             actor_id=test_actor_id,
+            lessee_id=TEST_LESSEE_ID,
         )
 
         assert result.status == ModulePostingStatus.POSTED
@@ -271,7 +273,7 @@ class TestInitialRecognition:
         assert rou.initial_value > Decimal("0")
 
     def test_operating_initial_recognition(
-        self, lease_service, current_period, test_actor_id,
+        self, lease_service, current_period, test_actor_id, test_lessee_party,
     ):
         """Operating lease initial recognition posts ROU + liability."""
         rou, liability, result = lease_service.record_initial_recognition(
@@ -282,6 +284,7 @@ class TestInitialRecognition:
             lease_term_months=36,
             commencement_date=date(2024, 1, 1),
             actor_id=test_actor_id,
+            lessee_id=TEST_LESSEE_ID,
         )
 
         assert result.status == ModulePostingStatus.POSTED
@@ -297,11 +300,11 @@ class TestPeriodicOperations:
     """Tests for periodic payment, interest, amortization."""
 
     def test_periodic_payment_posts(
-        self, lease_service, current_period, test_actor_id, deterministic_clock,
+        self, lease_service, current_period, test_actor_id, deterministic_clock, test_lease,
     ):
         """Lease payment posts Dr Liability / Cr Cash."""
         result = lease_service.record_periodic_payment(
-            lease_id=uuid4(),
+            lease_id=TEST_LEASE_ID,
             payment_amount=Decimal("2000.00"),
             payment_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
@@ -309,7 +312,7 @@ class TestPeriodicOperations:
         assert result.status == ModulePostingStatus.POSTED
 
     def test_interest_accrual_posts(
-        self, lease_service, current_period, test_actor_id, deterministic_clock,
+        self, lease_service, current_period, test_actor_id, deterministic_clock, test_lessee_party,
     ):
         """Interest accrual posts Dr Interest / Cr Liability."""
         result = lease_service.accrue_interest(
@@ -321,7 +324,7 @@ class TestPeriodicOperations:
         assert result.status == ModulePostingStatus.POSTED
 
     def test_finance_amortization_posts(
-        self, lease_service, current_period, test_actor_id, deterministic_clock,
+        self, lease_service, current_period, test_actor_id, deterministic_clock, test_lessee_party,
     ):
         """Finance lease amortization posts."""
         result = lease_service.record_amortization(
@@ -334,7 +337,7 @@ class TestPeriodicOperations:
         assert result.status == ModulePostingStatus.POSTED
 
     def test_operating_amortization_posts(
-        self, lease_service, current_period, test_actor_id, deterministic_clock,
+        self, lease_service, current_period, test_actor_id, deterministic_clock, test_lessee_party,
     ):
         """Operating lease amortization posts."""
         result = lease_service.record_amortization(
@@ -356,11 +359,11 @@ class TestLeaseModificationAndTermination:
     """Tests for modify_lease and terminate_early."""
 
     def test_modification_posts(
-        self, lease_service, current_period, test_actor_id,
+        self, lease_service, current_period, test_actor_id, test_lease,
     ):
         """Lease modification remeasurement posts."""
         modification, result = lease_service.modify_lease(
-            lease_id=uuid4(),
+            lease_id=TEST_LEASE_ID,
             modification_date=date(2024, 1, 1),
             remeasurement_amount=Decimal("5000.00"),
             actor_id=test_actor_id,
@@ -370,7 +373,7 @@ class TestLeaseModificationAndTermination:
         assert isinstance(modification, LeaseModification)
 
     def test_early_termination_posts(
-        self, lease_service, current_period, test_actor_id,
+        self, lease_service, current_period, test_actor_id, test_lessee_party,
     ):
         """Early termination derecognizes ROU and liability."""
         result = lease_service.terminate_early(

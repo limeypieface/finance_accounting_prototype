@@ -17,6 +17,7 @@ import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.ap.service import APService
+from tests.modules.conftest import TEST_VENDOR_ID
 
 
 # =============================================================================
@@ -72,12 +73,12 @@ class TestAPServiceIntegration:
     """Integration tests calling real AP service methods through the posting pipeline."""
 
     def test_record_invoice_posts(
-        self, ap_service, current_period, test_actor_id, deterministic_clock,
+        self, ap_service, current_period, test_actor_id, test_vendor_party, deterministic_clock,
     ):
         """Record a vendor invoice through the real pipeline."""
         result = ap_service.record_invoice(
             invoice_id=uuid4(),
-            vendor_id=uuid4(),
+            vendor_id=TEST_VENDOR_ID,
             amount=Decimal("5000.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
@@ -88,7 +89,7 @@ class TestAPServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_payment_posts(
-        self, ap_service, current_period, test_actor_id, deterministic_clock,
+        self, ap_service, current_period, test_actor_id, test_vendor_party, deterministic_clock,
     ):
         """Record a vendor payment through the real pipeline."""
         result = ap_service.record_payment(
@@ -97,7 +98,7 @@ class TestAPServiceIntegration:
             amount=Decimal("5000.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
-            vendor_id=uuid4(),
+            vendor_id=TEST_VENDOR_ID,
         )
 
         assert result.status == ModulePostingStatus.POSTED
@@ -105,7 +106,7 @@ class TestAPServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_payment_with_discount_posts(
-        self, ap_service, current_period, test_actor_id, deterministic_clock,
+        self, ap_service, current_period, test_actor_id, test_vendor_party, deterministic_clock,
     ):
         """Record a vendor payment with early payment discount through the real pipeline."""
         result = ap_service.record_payment(
@@ -114,7 +115,7 @@ class TestAPServiceIntegration:
             amount=Decimal("4900.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
-            vendor_id=uuid4(),
+            vendor_id=TEST_VENDOR_ID,
             discount_amount=Decimal("100.00"),
         )
 
@@ -134,7 +135,7 @@ class TestAPServiceIntegration:
         assert report.item_count == 0
 
     def test_cancel_invoice_posts(
-        self, ap_service, current_period, test_actor_id, deterministic_clock,
+        self, ap_service, current_period, test_actor_id, test_vendor_party, deterministic_clock,
     ):
         """Cancel a vendor invoice through the real pipeline."""
         result = ap_service.cancel_invoice(
@@ -149,12 +150,12 @@ class TestAPServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_inventory_invoice_posts(
-        self, ap_service, current_period, test_actor_id, deterministic_clock,
+        self, ap_service, current_period, test_actor_id, test_vendor_party, deterministic_clock,
     ):
         """Record a vendor inventory invoice through the real pipeline."""
         result = ap_service.record_inventory_invoice(
             invoice_id=uuid4(),
-            vendor_id=uuid4(),
+            vendor_id=TEST_VENDOR_ID,
             amount=Decimal("3000.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
@@ -165,7 +166,7 @@ class TestAPServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_accrual_posts(
-        self, ap_service, current_period, test_actor_id, deterministic_clock,
+        self, ap_service, current_period, test_actor_id, test_vendor_party, deterministic_clock,
     ):
         """Record an AP accrual through the real pipeline."""
         result = ap_service.record_accrual(
@@ -182,7 +183,7 @@ class TestAPServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_reverse_accrual_posts(
-        self, ap_service, current_period, test_actor_id, deterministic_clock,
+        self, ap_service, current_period, test_actor_id, test_vendor_party, deterministic_clock,
     ):
         """Reverse an AP accrual through the real pipeline."""
         result = ap_service.reverse_accrual(
@@ -199,7 +200,7 @@ class TestAPServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_record_prepayment_posts(
-        self, ap_service, current_period, test_actor_id, deterministic_clock,
+        self, ap_service, current_period, test_actor_id, test_vendor_party, deterministic_clock,
     ):
         """Record a vendor prepayment through the real pipeline."""
         result = ap_service.record_prepayment(
@@ -215,7 +216,7 @@ class TestAPServiceIntegration:
         assert len(result.journal_entry_ids) > 0
 
     def test_apply_prepayment_posts(
-        self, ap_service, current_period, test_actor_id, deterministic_clock,
+        self, ap_service, current_period, test_actor_id, test_vendor_party, deterministic_clock,
     ):
         """Apply a vendor prepayment to an invoice through the real pipeline."""
         result = ap_service.apply_prepayment(

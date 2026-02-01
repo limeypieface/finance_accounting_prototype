@@ -17,6 +17,7 @@ import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.assets.service import FixedAssetService
+from tests.modules.conftest import TEST_ASSET_CATEGORY_ID, TEST_ASSET_ID
 
 
 # =============================================================================
@@ -73,6 +74,7 @@ class TestFixedAssetServiceIntegration:
 
     def test_record_asset_acquisition_posts(
         self, assets_service, current_period, test_actor_id, deterministic_clock,
+        test_asset_category,
     ):
         """Record asset acquisition through the real pipeline."""
         result = assets_service.record_asset_acquisition(
@@ -80,6 +82,7 @@ class TestFixedAssetServiceIntegration:
             cost=Decimal("50000.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
+            category_id=TEST_ASSET_CATEGORY_ID,
             asset_class="MACHINERY",
             useful_life_months=60,
         )
@@ -90,10 +93,11 @@ class TestFixedAssetServiceIntegration:
 
     def test_record_depreciation_posts(
         self, assets_service, current_period, test_actor_id, deterministic_clock,
+        test_asset,
     ):
         """Record periodic depreciation through the real pipeline."""
         result = assets_service.record_depreciation(
-            asset_id=uuid4(),
+            asset_id=TEST_ASSET_ID,
             amount=Decimal("833.33"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
@@ -105,6 +109,7 @@ class TestFixedAssetServiceIntegration:
 
     def test_record_cip_capitalized_posts(
         self, assets_service, current_period, test_actor_id, deterministic_clock,
+        test_asset_category,
     ):
         """Capitalize CIP to a fixed asset through the real pipeline."""
         result = assets_service.record_cip_capitalized(
@@ -121,10 +126,11 @@ class TestFixedAssetServiceIntegration:
 
     def test_record_disposal_gain_posts(
         self, assets_service, current_period, test_actor_id, deterministic_clock,
+        test_asset,
     ):
         """Record asset disposal at a gain through the real pipeline."""
         result = assets_service.record_disposal(
-            asset_id=uuid4(),
+            asset_id=TEST_ASSET_ID,
             proceeds=Decimal("25000.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
@@ -139,10 +145,11 @@ class TestFixedAssetServiceIntegration:
 
     def test_record_disposal_loss_posts(
         self, assets_service, current_period, test_actor_id, deterministic_clock,
+        test_asset,
     ):
         """Record asset disposal at a loss through the real pipeline."""
         result = assets_service.record_disposal(
-            asset_id=uuid4(),
+            asset_id=TEST_ASSET_ID,
             proceeds=Decimal("15000.00"),
             effective_date=deterministic_clock.now().date(),
             actor_id=test_actor_id,
@@ -157,6 +164,7 @@ class TestFixedAssetServiceIntegration:
 
     def test_record_impairment_posts(
         self, assets_service, current_period, test_actor_id, deterministic_clock,
+        test_asset_category,
     ):
         """Record asset impairment through the real pipeline."""
         _, result = assets_service.record_impairment(
@@ -172,6 +180,7 @@ class TestFixedAssetServiceIntegration:
 
     def test_record_scrap_posts(
         self, assets_service, current_period, test_actor_id, deterministic_clock,
+        test_asset_category,
     ):
         """Record asset scrapping through the real pipeline."""
         result = assets_service.record_scrap(

@@ -76,6 +76,10 @@ from finance_modules.gl.models import (
     TranslationMethod,
     TranslationResult,
 )
+from finance_modules.gl.orm import (
+    AccountReconciliationModel,
+    RecurringEntryModel,
+)
 
 logger = get_logger("modules.gl.service")
 
@@ -805,6 +809,9 @@ class GeneralLedgerService:
             )
 
             if result.is_success:
+                orm_entry = RecurringEntryModel.from_dto(template, created_by_id=actor_id)
+                orm_entry.last_generated_date = effective_date
+                self._session.add(orm_entry)
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -895,7 +902,7 @@ class GeneralLedgerService:
             "reconciled_by": str(actor_id),
         })
 
-        return AccountReconciliation(
+        recon = AccountReconciliation(
             id=reconciliation_id,
             account_id=account_id,
             period=period,
@@ -905,6 +912,12 @@ class GeneralLedgerService:
             notes=notes,
             balance_confirmed=balance_confirmed,
         )
+
+        orm_recon = AccountReconciliationModel.from_dto(recon, created_by_id=actor_id)
+        self._session.add(orm_recon)
+        self._session.commit()
+
+        return recon
 
     # =========================================================================
     # Multi-Currency: Translation
