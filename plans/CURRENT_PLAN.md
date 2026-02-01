@@ -35,7 +35,7 @@ config time.
 
 ## 2. ERP Data Ingestion System
 
-**Status:** NOT STARTED -- plan approved (v2), awaiting implementation
+**Status:** NOT STARTED -- plan approved (v3), awaiting implementation
 **Full plan:** `plans/ERP_INGESTION_PLAN.md`
 
 Design and implement a configuration-driven ERP data ingestion system with
@@ -51,14 +51,14 @@ logging (LogContext) and hash-chained audit trail (AuditorService).
 | 2 | Source adapters (CSV, JSON) | pending | -- |
 | 3 | Import mapping config (YAML schema) | pending | -- |
 | 4 | Mapping engine + test harness (pure) | pending | Phases 0, 3 |
-| 5 | Validation pipeline | pending | Phases 0, 4 |
+| 5 | Validation pipeline (with intra-batch dependency resolution) | pending | Phases 0, 4 |
 | 6 | Import service (with structured logging) | pending | Phases 1, 2, 4, 5 |
-| 7 | Promotion service (preflight graph, event stream, audit) | pending | Phases 1, 6 |
+| 7 | Promotion service (SAVEPOINT atomicity, preflight graph, skip_blocked, event stream, audit) | pending | Phases 1, 6 |
 | 8 | Entity promoters | pending | Phase 7 |
-| 9 | Tests (~240 across 13 files) | pending | All phases |
+| 9 | Tests (~260 across 13 files) | pending | All phases |
 
-**Invariants:** IM-1 through IM-14 (see full plan)
-**Key decisions:** 16 decisions documented (see full plan)
+**Invariants:** IM-1 through IM-16 (see full plan)
+**Key decisions:** 19 decisions documented (see full plan)
 
 ---
 
