@@ -1,9 +1,37 @@
 """
-Service layer for Party operations.
+PartyService -- customer, supplier, employee, and intercompany entity management.
 
-Manages customers, suppliers, employees, and intercompany entities.
+Responsibility:
+    Provides CRUD operations for parties (customers, suppliers, employees,
+    intercompany entities).  Enforces transaction eligibility rules:
+    active/frozen/closed status checks, credit limit validation, and
+    party code uniqueness.
 
-R3 Compliance: Returns PartyInfo DTOs instead of ORM entities.
+Architecture position:
+    Kernel > Services -- imperative shell.
+    Called by ModulePostingService for actor authorization (G14) and
+    by module-level guards for party eligibility checks.
+
+Invariants enforced:
+    R3  -- Returns frozen ``PartyInfo`` DTOs, never ORM entities
+           (no leaked mutable state).
+    R7  -- Flush-only: never commits or rolls back the session.
+    G14 -- Actor authorization: ``validate_can_transact()`` is the
+           canonical guard that posting pipeline calls before accepting
+           charges for a party.
+
+Failure modes:
+    - PartyNotFoundError: Party lookup by ID or code fails.
+    - PartyFrozenError: Transaction attempted against a FROZEN party.
+    - PartyInactiveError: Transaction attempted against a CLOSED or
+      inactive party.
+
+Audit relevance:
+    Party creation, freeze/unfreeze, and close operations are
+    significant state changes.  Callers are expected to record audit
+    events for these transitions.  The ``validate_can_transact()``
+    guard is invoked on every posting pipeline call via
+    ModulePostingService.
 """
 
 from __future__ import annotations
@@ -58,14 +86,26 @@ class PartyInfo:
 
 class PartyService(BaseService[Party]):
     """
-    Service for managing parties.
+    Service for managing parties (customers, suppliers, employees).
 
-    Handles CRUD operations for customers, suppliers, employees,
-    and intercompany entities. Enforces business rules for party
-    status, credit limits, and transaction eligibility.
+    Contract:
+        Accepts party identifiers (UUID or party_code) and returns
+        frozen ``PartyInfo`` DTOs.  Mutation methods (create, update,
+        freeze, close) flush changes within the caller's transaction.
 
-    R3 Compliance: All public methods return PartyInfo DTOs,
-    not ORM Party entities.
+    Guarantees:
+        - R3: All public methods return immutable ``PartyInfo`` DTOs,
+          not ORM entities.
+        - G14: ``validate_can_transact()`` enforces actor authorization
+          at the posting boundary.
+        - R7: Session is flushed but never committed.
+        - Credit limit enforcement via ``check_credit_limit()``.
+
+    Non-goals:
+        - Does NOT manage the transaction boundary (caller's responsibility).
+        - Does NOT query AR subledger for actual outstanding balance
+          (caller provides ``current_balance`` to ``check_credit_limit``).
+        - Does NOT emit audit events directly (caller's responsibility).
     """
 
     def _to_dto(self, party: Party) -> PartyInfo:
@@ -182,6 +222,17 @@ class PartyService(BaseService[Party]):
     ) -> PartyInfo:
         """
         Create a new party.
+
+        Preconditions:
+            - ``party_code`` is a unique, non-empty string.
+            - ``name`` is a non-empty string.
+            - If ``credit_limit`` is provided, ``credit_currency`` should
+              also be provided (ISO 4217, R16).
+
+        Postconditions:
+            - A new ``Party`` row is flushed with status ACTIVE and
+              ``is_active=True``.
+            - Returns a frozen ``PartyInfo`` DTO (R3).
 
         Args:
             party_code: Unique identifier (e.g., "CUST-001", "SUPP-ABC").
@@ -355,6 +406,15 @@ class PartyService(BaseService[Party]):
         Validate that a party can transact, raising if not.
 
         Guards check this before accepting transactions for a party.
+        This is the canonical G14 enforcement point.
+
+        Preconditions:
+            - ``party_code`` is a non-empty string.
+
+        Postconditions:
+            - Returns ``PartyInfo`` only if ``party.is_active=True`` AND
+              ``party.status == ACTIVE``.
+            - On any failure, raises a typed exception (no silent pass).
 
         Args:
             party_code: Party code to validate.
@@ -364,8 +424,8 @@ class PartyService(BaseService[Party]):
 
         Raises:
             PartyNotFoundError: If party doesn't exist.
-            PartyFrozenError: If party is frozen.
-            PartyInactiveError: If party is inactive.
+            PartyFrozenError: If party is frozen (G14).
+            PartyInactiveError: If party is inactive or closed (G14).
         """
         party = self._get_by_code(party_code)
 

@@ -1,12 +1,39 @@
 """
-Subledger posting bridge — creates SubledgerEntry records from AccountingIntent.
+finance_services.subledger_posting -- Subledger posting bridge.
 
-This module lives in finance_services/ because it imports from finance_engines/,
-which finance_kernel/ must not do (architecture boundary). PostingOrchestrator
-delegates to this module rather than importing finance_engines directly.
+Responsibility:
+    Create SubledgerEntry records from AccountingIntent after a journal
+    write succeeds.  Bridges the kernel's AccountingIntent to the
+    engine's SubledgerEntry via convention-based entity_id resolution.
 
-SL-G1: All subledger entries are created in the same transaction as the
-journal write — if any entry fails, the entire transaction rolls back.
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    This module lives in finance_services/ because it imports from
+    finance_engines/, which finance_kernel/ must not do (architecture
+    boundary).  PostingOrchestrator delegates to this module rather
+    than importing finance_engines directly.
+
+Invariants enforced:
+    - SL-G1 (atomicity): all subledger entries are created in the same
+      transaction as the journal write.  If any entry fails, the entire
+      transaction rolls back.
+    - SL-G2 (GL linkage): every SubledgerEntry is linked to its
+      journal_entry_id via the gl_entry_id parameter.
+    - SL-G9 (canonical types): SubledgerType enum is used for all
+      type dispatch.
+
+Failure modes:
+    - SubledgerType(ledger_intent.ledger_id) raises ValueError for
+      non-subledger ledger_ids; these are silently skipped (continue).
+    - Missing subledger service for a recognized type: logged as warning,
+      entry skipped.
+    - Missing entity_id in payload: logged as warning, entry skipped.
+    - Missing journal_entry_id for ledger: logged as warning, entry skipped.
+
+Audit relevance:
+    Every subledger entry post is logged with subledger_type, entity_id,
+    direction, amount, currency, and event_id.  Missing entity_ids are
+    logged as warnings for audit follow-up.
 
 Phase 7 (config) will replace the convention-based entity_id resolution
 with declarative entity_id_field on LedgerEffect.

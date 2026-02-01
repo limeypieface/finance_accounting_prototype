@@ -1,10 +1,40 @@
 """
-Travel & Expense (T&E) Module.
+Travel & Expense Module (``finance_modules.expense``).
 
-Handles expense reports, approvals, reimbursements, and corporate card reconciliation.
+Responsibility
+--------------
+Thin ERP glue for the travel-and-expense cycle: expense reports, line-item
+categorization, policy compliance validation, manager approvals,
+reimbursements, corporate card transaction matching, mileage, and per diem.
+
+Architecture position
+---------------------
+**Modules layer** -- declarative profiles, workflows, config schemas, and a
+service facade that delegates all journal posting to ``finance_kernel`` via
+``ModulePostingService``.
+
+Invariants enforced
+-------------------
+* R4  -- Double-entry balance guaranteed by kernel posting pipeline.
+* R7  -- Transaction boundary owned by ``ExpenseService``.
+* R14 -- No ``if/switch`` on event_type; profile dispatch via where-clauses.
+* R15 -- New expense event types require only a new profile + registration.
+* L1  -- Account ROLES used in profiles; COA resolution at posting time.
+
+Failure modes
+-------------
+* ``ModulePostingResult.is_success == False`` -- guard rejection, missing
+  profile, or kernel validation error.
+* Policy validation helpers raise ``ValueError`` for invalid inputs.
+
+Audit relevance
+---------------
+Every expense posting produces an immutable journal entry with full
+provenance through the kernel audit chain (R11).  Policy violation records
+support SOX internal controls over employee reimbursements.
 
 Total: ~150 lines of module-specific code.
-Policy validation uses shared rules engine.
+Policy validation uses pure helper functions in ``helpers.py``.
 """
 
 from finance_modules.expense.models import (

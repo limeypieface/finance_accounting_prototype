@@ -1,14 +1,36 @@
 """
-Trace bundle assembly selector.
+Module: finance_kernel.selectors.trace_selector
+Responsibility: Read-only trace bundle assembly.  Reconstructs the complete
+    lifecycle of any financial artifact (event, journal entry, economic link)
+    by querying existing ledger tables, event records, audit events, economic
+    links, interpretation outcomes, and structured logs.
+Architecture position: Kernel > Selectors.  May import from models/ and
+    selectors/base.py.  MUST NOT import from services/ (except Clock protocol)
+    or outer layers.
 
-Reconstructs the complete lifecycle of any financial artifact by querying
-existing ledger tables, event records, audit events, economic links,
-interpretation outcomes, and structured logs.
+Invariants enforced:
+    R1  -- Payload hash verification: _verify_payload_hash() recomputes the
+           hash and compares against the stored value.
+    R4  -- Balance verification: _verify_balance() confirms debits == credits
+           per currency per entry.
+    R11 -- Audit chain integrity: _verify_audit_segment() confirms monotonically
+           increasing sequence numbers in the audit trail.
+    R21 -- Reproducibility: _extract_reproducibility() captures reference snapshot
+           versions for deterministic replay verification (L4).
+    R24 -- Bundle hash: Each TraceBundle includes a deterministic SHA-256 hash
+           of its contents for tamper detection.
 
-DTOs are defined inline following the pattern established by
-journal_selector.py and ledger_selector.py.
+Failure modes:
+    - Missing data is NEVER invented or inferred.  If a fact cannot be found,
+      a MissingFact record is appended to the bundle's missing_facts tuple.
+    - LogQueryPort failures are caught and recorded as MissingFact entries.
 
-Zero new persistent storage. Everything derives from existing infrastructure.
+Audit relevance:
+    TraceSelector is the primary audit investigation tool.  Given any financial
+    artifact, it reconstructs the full chain: source event -> interpretation ->
+    journal entries -> economic links -> audit trail -> integrity verification.
+    The resulting TraceBundle is a self-contained audit package that can be
+    exported for external review.
 """
 
 from dataclasses import asdict, dataclass, replace
@@ -241,11 +263,23 @@ class LogQueryPort(Protocol):
 
 class TraceSelector(BaseSelector[JournalEntry]):
     """
-    Read-only trace bundle assembler.
+    Read-only trace bundle assembler for audit investigation.
 
-    Reconstructs the complete lifecycle of any financial artifact
-    from existing ledger tables, event records, audit events,
-    economic links, and structured logs. Zero new persistent storage.
+    Contract:
+        Given any financial artifact identifier, assembles a TraceBundle
+        containing the complete lifecycle: origin event, journal entries,
+        interpretation outcome, economic links, audit trail, structured logs,
+        reproducibility snapshot, conflicts, and integrity verification.
+
+    Guarantees:
+        - Zero new persistent storage: everything derives from existing tables.
+        - Missing data is always explicit via MissingFact records.
+        - Bundle includes a deterministic SHA-256 hash for tamper detection.
+        - Read-only: No mutations are performed.
+
+    Non-goals:
+        - This selector does NOT modify any data or create audit events.
+        - Structured log queries are optional (LogQueryPort is not required).
     """
 
     def __init__(
@@ -263,13 +297,24 @@ class TraceSelector(BaseSelector[JournalEntry]):
     # -----------------------------------------------------------------------
 
     def trace_by_event_id(self, event_id: UUID) -> TraceBundle:
-        """Trace by source event ID. Uses uq_event_id index."""
+        """Trace by source event ID.
+
+        Preconditions: event_id is a valid UUID.
+        Postconditions: Returns a complete TraceBundle anchored on the given
+            event.  If the event does not exist, bundle.origin is None and
+            a MissingFact is recorded.
+        """
         artifact = ArtifactIdentifier("event", event_id)
         entry_ids = self._find_entry_ids_by_event(event_id)
         return self._assemble_bundle(artifact, event_id, entry_ids)
 
     def trace_by_journal_entry_id(self, entry_id: UUID) -> TraceBundle:
-        """Trace by journal entry ID. Uses primary key index."""
+        """Trace by journal entry ID.
+
+        Preconditions: entry_id is a valid UUID.
+        Postconditions: Returns a complete TraceBundle anchored on the given
+            journal entry.  Resolves the source event via entry.source_event_id.
+        """
         artifact = ArtifactIdentifier("journal_entry", entry_id)
         entry = self.session.execute(
             select(JournalEntry).where(JournalEntry.id == entry_id)
@@ -281,7 +326,14 @@ class TraceSelector(BaseSelector[JournalEntry]):
     def trace_by_artifact_ref(
         self, artifact_type: str, artifact_id: UUID
     ) -> TraceBundle:
-        """Trace by arbitrary artifact reference. Uses link indexes."""
+        """Trace by arbitrary artifact reference.
+
+        Preconditions: artifact_type is a string identifying the artifact kind
+            (e.g., "event", "journal_entry", "invoice", "payment").
+        Postconditions: Resolves the event and journal entries via economic
+            links, then assembles a full TraceBundle.  For "event" and
+            "journal_entry" types, delegates to the specialized methods.
+        """
         if artifact_type == "event":
             return self.trace_by_event_id(artifact_id)
         if artifact_type == "journal_entry":
@@ -301,7 +353,13 @@ class TraceSelector(BaseSelector[JournalEntry]):
         event_id: UUID | None,
         entry_ids: list[UUID],
     ) -> TraceBundle:
-        """Assemble a complete trace bundle from existing data."""
+        """Assemble a complete trace bundle from existing data.
+
+        Postconditions: Returns a TraceBundle with all available data resolved
+            from existing tables.  Missing data is recorded as MissingFact
+            entries.  The bundle hash is computed deterministically over all
+            contents.
+        """
         missing: list[MissingFact] = []
 
         # Step 1: Canonical event (Priority 2)
@@ -887,7 +945,11 @@ class TraceSelector(BaseSelector[JournalEntry]):
     # -----------------------------------------------------------------------
 
     def _verify_payload_hash(self, event: Event | None) -> bool | None:
-        """Verify event payload hash matches stored hash."""
+        """Verify event payload hash matches stored hash.
+
+        INVARIANT R1/R2: Recomputes the payload hash and compares against
+        the stored payload_hash.  Returns None if no event is available.
+        """
         if event is None or event.payload is None:
             return None
         recomputed = hash_payload(event.payload)
@@ -896,7 +958,11 @@ class TraceSelector(BaseSelector[JournalEntry]):
     def _verify_balance(
         self, entries: list[JournalEntrySnapshot],
     ) -> bool | None:
-        """Verify all journal entries are balanced (debits == credits per currency)."""
+        """Verify all journal entries are balanced (debits == credits per currency).
+
+        INVARIANT R4: Every posted journal entry MUST have debits == credits
+        per currency.  Returns False if any entry is unbalanced.
+        """
         if not entries:
             return None
 
@@ -921,7 +987,11 @@ class TraceSelector(BaseSelector[JournalEntry]):
     def _verify_audit_segment(
         self, audit_entries: list[TimelineEntry],
     ) -> bool | None:
-        """Verify audit trail segment has monotonically increasing sequences."""
+        """Verify audit trail segment has monotonically increasing sequences.
+
+        INVARIANT R5/R9: Audit event sequences must be strictly monotonically
+        increasing.  Returns False if any sequence is out of order.
+        """
         if not audit_entries:
             return None
 

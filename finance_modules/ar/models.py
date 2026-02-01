@@ -1,7 +1,31 @@
 """
-Accounts Receivable Domain Models.
+Accounts Receivable Domain Models (``finance_modules.ar.models``).
 
-The nouns of accounts receivable: customers, invoices, receipts.
+Responsibility
+--------------
+Frozen dataclass value objects representing the nouns of accounts receivable:
+customers, invoices, credit memos, receipts, dunning records, auto-apply
+rules, and credit decisions.
+
+Architecture position
+---------------------
+**Modules layer** -- pure data definitions with ZERO I/O.  Consumed by
+``ARService`` and returned to callers.  No dependency on kernel services,
+database, or engines.
+
+Invariants enforced
+-------------------
+* All models are ``frozen=True`` (immutable after construction).
+* All monetary fields use ``Decimal`` -- NEVER ``float``.
+
+Failure modes
+-------------
+* Construction with invalid enum values raises ``ValueError``.
+
+Audit relevance
+---------------
+* ``DunningHistory`` records track collection escalation for compliance.
+* ``CreditDecision`` records track credit limit changes with reasons.
 """
 
 from dataclasses import dataclass, field
@@ -167,3 +191,51 @@ class CreditMemo:
     status: CreditMemoStatus = CreditMemoStatus.DRAFT
     original_invoice_id: UUID | None = None  # if related to specific invoice
     applied_to_invoice_id: UUID | None = None
+
+
+class DunningLevel(Enum):
+    """Dunning severity levels for collection letters."""
+    REMINDER = "reminder"
+    FIRST_NOTICE = "first_notice"
+    SECOND_NOTICE = "second_notice"
+    FINAL_NOTICE = "final_notice"
+    COLLECTION = "collection"
+
+
+@dataclass(frozen=True)
+class DunningHistory:
+    """Record of a dunning letter sent to a customer."""
+    id: UUID
+    customer_id: UUID
+    level: DunningLevel
+    sent_date: date
+    as_of_date: date
+    total_overdue: Decimal
+    invoice_count: int
+    currency: str = "USD"
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
+class CreditDecision:
+    """Result of a credit limit check or update."""
+    id: UUID
+    customer_id: UUID
+    decision_date: date
+    previous_limit: Decimal | None
+    new_limit: Decimal | None
+    order_amount: Decimal | None = None
+    approved: bool = True
+    reason: str | None = None
+    decided_by: UUID | None = None
+
+
+@dataclass(frozen=True)
+class AutoApplyRule:
+    """Rule for automatic payment application."""
+    id: UUID
+    name: str
+    priority: int
+    match_field: str  # "invoice_number", "amount", "customer_reference"
+    tolerance: Decimal = Decimal("0")
+    is_active: bool = True

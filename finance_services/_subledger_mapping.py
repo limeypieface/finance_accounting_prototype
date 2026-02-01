@@ -1,8 +1,27 @@
 """
-Shared mapping helpers for subledger services.
+finance_services._subledger_mapping -- Shared mapping helpers for subledger services.
 
-Converts between ORM models, selector DTOs, and engine value objects.
-These functions handle the F16 naming convention (journal_entry_id ↔ gl_entry_id).
+Responsibility:
+    Convert between ORM models (SubledgerEntryModel), selector DTOs, and
+    engine value objects (SubledgerEntry).  These functions handle the F16
+    naming convention (journal_entry_id in ORM vs gl_entry_id in engine VO).
+
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    Internal helper (underscore-prefixed); not part of the public API.
+
+Invariants enforced:
+    - F16 naming convention: ORM uses ``journal_entry_id``; the engine value
+      object uses ``gl_entry_id``.  Mapping is the single translation point.
+
+Failure modes:
+    - AttributeError if the source model/DTO schema changes without updating
+      the mapping functions.
+
+Audit relevance:
+    - Incorrect mapping would silently corrupt the subledger-to-GL linkage.
+      Any change here must be reviewed against both the ORM model schema and
+      the engine SubledgerEntry frozen dataclass.
 """
 
 from finance_engines.subledger import (
@@ -14,7 +33,18 @@ from finance_kernel.models.subledger import SubledgerEntryModel
 
 
 def model_to_entry(model: SubledgerEntryModel) -> SubledgerEntry:
-    """Convert ORM model to engine value object."""
+    """Convert ORM model to engine value object.
+
+    Preconditions:
+        model is a fully-loaded SubledgerEntryModel (not detached/expired).
+
+    Postconditions:
+        Returns a frozen SubledgerEntry with gl_entry_id mapped from
+        model.journal_entry_id (F16).
+
+    Raises:
+        AttributeError: If the model is missing expected columns.
+    """
     debit = Money.of(model.debit_amount, model.currency) if model.debit_amount else None
     credit = Money.of(model.credit_amount, model.currency) if model.credit_amount else None
 
@@ -43,7 +73,19 @@ def model_to_entry(model: SubledgerEntryModel) -> SubledgerEntry:
 
 
 def dto_to_entry(dto) -> SubledgerEntry:
-    """Convert SubledgerEntryDTO to engine value object."""
+    """Convert SubledgerEntryDTO to engine value object.
+
+    Preconditions:
+        dto has the SubledgerEntryDTO attribute surface (from
+        finance_kernel.selectors.subledger_selector).
+
+    Postconditions:
+        Returns a frozen SubledgerEntry with gl_entry_id mapped from
+        dto.journal_entry_id (F16).
+
+    Raises:
+        AttributeError: If the DTO is missing expected fields.
+    """
     debit = Money.of(dto.debit_amount, dto.currency) if dto.debit_amount else None
     credit = Money.of(dto.credit_amount, dto.currency) if dto.credit_amount else None
 

@@ -1,8 +1,39 @@
 """
-Cost Lot Domain Objects for ValuationLayer.
+finance_engines.valuation.cost_lot -- Cost lot domain objects for the ValuationLayer.
 
-Immutable value objects representing cost lots, layers, and consumption results.
-These are pure domain objects with no I/O dependencies.
+Responsibility:
+    Define immutable value objects for inventory cost lots, layers,
+    layer consumption details, consumption results, and standard cost
+    variance tracking.  These model the FIFO/LIFO/specific/standard
+    cost flow through inventory.
+
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values (Money, Quantity) and
+    finance_kernel/domain/economic_link (ArtifactRef, EconomicLink).
+    The stateful ValuationService lives in finance_services/.
+
+Invariants enforced:
+    - Positive lot quantity: CostLot.__post_init__ rejects quantity <= 0.
+    - Non-negative cost: CostLot.__post_init__ rejects negative costs.
+    - R6 (replay safety): all value objects are frozen dataclasses.
+    - Consumption non-empty: ConsumptionResult.create rejects empty
+      consumption lists.
+    - EconomicLink trail: ConsumptionResult records CONSUMED_BY links
+      for every layer consumed.
+
+Failure modes:
+    - ValueError from CostLot.__post_init__ if quantity <= 0 or cost < 0.
+    - ValueError from ConsumptionResult.create if consumptions list is empty.
+    - Division-by-zero safe: unit_cost returns Money.zero when quantity is 0;
+      average_unit_cost returns Money.zero when total_quantity is 0.
+
+Audit relevance:
+    Cost lots are the foundation for COGS calculations and inventory
+    valuation.  Each lot's source_ref traces back to the receiving event.
+    Consumption links (CONSUMED_BY) provide a complete audit trail from
+    issuance back to receipt.  Standard cost variances are tracked
+    explicitly in StandardCostResult.
 """
 
 from __future__ import annotations
@@ -101,7 +132,17 @@ class CostLot:
         cost_method: CostMethod = CostMethod.FIFO,
         metadata: Mapping[str, Any] | None = None,
     ) -> CostLot:
-        """Factory method to create a new cost lot."""
+        """Factory method to create a new cost lot.
+
+        Preconditions:
+            quantity.value > 0 and total_cost >= 0.
+
+        Postconditions:
+            Returns a frozen CostLot with unit_cost = total_cost / quantity.
+
+        Raises:
+            ValueError: If quantity <= 0 or total_cost < 0 (via __post_init__).
+        """
         logger.info("cost_lot_created", extra={
             "lot_id": str(lot_id),
             "item_id": item_id,
@@ -175,7 +216,14 @@ class CostLayer:
         remaining_quantity: Quantity,
         consumption_count: int = 0,
     ) -> CostLayer:
-        """Create a layer from a lot with calculated remaining."""
+        """Create a layer from a lot with calculated remaining.
+
+        Preconditions:
+            remaining_quantity.value >= 0 (may be 0 for depleted lots).
+
+        Postconditions:
+            remaining_value is computed as remaining_quantity * lot.unit_cost.
+        """
         # Calculate remaining value based on remaining quantity and unit cost
         remaining_value = Money.of(
             remaining_quantity.value * lot.unit_cost.amount,
@@ -190,7 +238,13 @@ class CostLayer:
 
     @classmethod
     def full_lot(cls, lot: CostLot) -> CostLayer:
-        """Create a layer representing a full (unconsumed) lot."""
+        """Create a layer representing a full (unconsumed) lot.
+
+        Postconditions:
+            remaining_quantity == lot.original_quantity,
+            remaining_value == lot.original_cost,
+            consumption_count == 0.
+        """
         return cls(
             lot=lot,
             remaining_quantity=lot.original_quantity,

@@ -1,14 +1,45 @@
 """
-General Ledger Module Service - Orchestrates GL operations via engines + kernel.
+General Ledger Module Service (``finance_modules.gl.service``).
 
-Thin glue layer that:
-1. Calls VarianceCalculator for budget vs actual analysis
-2. Calls ModulePostingService for journal entry creation
+Responsibility
+--------------
+Orchestrates GL operations -- manual journal entries, accruals, reversals,
+recurring entries, intercompany eliminations, currency revaluation and
+translation, account reconciliation, and period close tasks -- by
+delegating pure computation to ``finance_engines`` and journal persistence
+to ``finance_kernel.services.module_posting_service``.
 
-All computation lives in engines. All posting lives in kernel.
-This service owns the transaction boundary (R7 compliance).
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue.  ``GeneralLedgerService`` is the sole
+public entry point for GL operations.  It composes stateless engines
+(``VarianceCalculator``) and the kernel ``ModulePostingService``.
 
-Usage:
+Invariants enforced
+-------------------
+* R7  -- Each public method owns the transaction boundary
+          (``commit`` on success, ``rollback`` on failure or exception).
+* R14 -- Event type selection is data-driven; no ``if/switch`` on
+          event_type inside the posting path.
+* L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
+* R4  -- Double-entry balance enforced downstream by ``JournalWriter``.
+* R12 -- Closed-period enforcement via kernel ``PeriodService``.
+
+Failure modes
+-------------
+* Guard rejection or kernel validation  -> ``ModulePostingResult`` with
+  ``is_success == False``; session rolled back.
+* Unexpected exception  -> session rolled back, exception re-raised.
+* Period lock violation  -> kernel rejects posting (R12/R13).
+
+Audit relevance
+---------------
+Structured log events emitted at operation start and commit/rollback for
+every public method, carrying entry IDs, amounts, and descriptions.  All
+journal entries feed the kernel audit chain (R11).
+
+Usage::
+
     service = GeneralLedgerService(session, role_resolver, clock)
     result = service.record_journal_entry(
         entry_id=uuid4(), description="Monthly accrual",
@@ -36,6 +67,15 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingStatus,
 )
 from finance_engines.variance import VarianceCalculator, VarianceResult
+from finance_modules.gl.models import (
+    AccountReconciliation,
+    PeriodCloseTask,
+    ReconciliationStatus,
+    RecurringEntry,
+    RevaluationResult,
+    TranslationMethod,
+    TranslationResult,
+)
 
 logger = get_logger("modules.gl.service")
 
@@ -43,6 +83,26 @@ logger = get_logger("modules.gl.service")
 class GeneralLedgerService:
     """
     Orchestrates general-ledger operations through engines and kernel.
+
+    Contract
+    --------
+    * Every posting method returns ``ModulePostingResult``; callers inspect
+      ``result.is_success`` to determine outcome.
+    * Non-posting helpers (``calculate_variance``, ``reconcile_account``,
+      etc.) return pure domain objects with no side-effects on the journal.
+
+    Guarantees
+    ----------
+    * Session is committed only on ``result.is_success``; otherwise rolled back.
+    * Engine writes and journal writes share a single transaction
+      (``ModulePostingService`` runs with ``auto_commit=False``).
+    * Clock is injectable for deterministic testing.
+
+    Non-goals
+    ---------
+    * Does NOT own account-code resolution (delegated to kernel via ROLES).
+    * Does NOT enforce fiscal-period locks directly (kernel ``PeriodService``
+      handles R12/R13).
 
     Engine composition:
     - VarianceCalculator: budget vs actual variance analysis
@@ -680,3 +740,348 @@ class GeneralLedgerService:
         except Exception:
             self._session.rollback()
             raise
+
+    # =========================================================================
+    # Recurring Entries
+    # =========================================================================
+
+    def generate_recurring_entry(
+        self,
+        template: RecurringEntry,
+        effective_date: date,
+        actor_id: UUID,
+        amount: Decimal | None = None,
+        currency: str = "USD",
+    ) -> ModulePostingResult:
+        """
+        Generate a journal entry from a recurring entry template.
+
+        Reads the RecurringEntry template and posts via gl.recurring_entry
+        profile. The template defines the description and frequency;
+        the amount is passed explicitly for each period generation.
+
+        Profile: gl.recurring_entry -> GLRecurringEntry
+        """
+        from uuid import uuid4 as _uuid4
+
+        if not template.is_active:
+            return ModulePostingResult(
+                status=ModulePostingStatus.GUARD_REJECTED,
+                event_id=_uuid4(),
+                journal_entry_ids=(),
+                message="Recurring entry template is inactive",
+            )
+
+        if template.end_date and effective_date > template.end_date:
+            return ModulePostingResult(
+                status=ModulePostingStatus.GUARD_REJECTED,
+                event_id=_uuid4(),
+                journal_entry_ids=(),
+                message="Effective date is past template end date",
+            )
+
+        posting_amount = amount if amount is not None else Decimal("0")
+
+        logger.info("gl_recurring_entry_started", extra={
+            "template_id": str(template.id),
+            "template_name": template.name,
+            "frequency": template.frequency,
+            "amount": str(posting_amount),
+        })
+
+        try:
+            result = self._poster.post_event(
+                event_type="gl.recurring_entry",
+                payload={
+                    "template_id": str(template.id),
+                    "template_name": template.name,
+                    "frequency": template.frequency,
+                    "description": template.description,
+                },
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=posting_amount,
+                currency=currency,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Retained Earnings Roll
+    # =========================================================================
+
+    def record_retained_earnings_roll(
+        self,
+        fiscal_year: int,
+        net_income: Decimal,
+        actor_id: UUID,
+        effective_date: date,
+        currency: str = "USD",
+    ) -> ModulePostingResult:
+        """
+        Roll prior year P&L to retained earnings.
+
+        Posts Dr Income Summary / Cr Retained Earnings for the net income
+        of the specified fiscal year. Distinct from year-end close which
+        handles the period close process; this specifically records the
+        retained earnings transfer.
+
+        Profile: gl.retained_earnings_roll -> GLRetainedEarningsRoll
+        """
+        posting_amount = abs(net_income)
+
+        logger.info("gl_retained_earnings_roll_started", extra={
+            "fiscal_year": fiscal_year,
+            "net_income": str(net_income),
+            "amount": str(posting_amount),
+        })
+
+        try:
+            result = self._poster.post_event(
+                event_type="gl.retained_earnings_roll",
+                payload={
+                    "fiscal_year": fiscal_year,
+                    "net_income": str(net_income),
+                },
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=posting_amount,
+                currency=currency,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Account Reconciliation
+    # =========================================================================
+
+    def reconcile_account(
+        self,
+        reconciliation_id: UUID,
+        account_id: UUID,
+        period: str,
+        balance_confirmed: Decimal,
+        actor_id: UUID,
+        reconciled_date: date,
+        notes: str | None = None,
+    ) -> AccountReconciliation:
+        """
+        Record a period-end account reconciliation sign-off.
+
+        No posting — pure domain record. Creates an AccountReconciliation
+        confirming that the specified account balance has been verified
+        for the given period.
+        """
+        logger.info("gl_account_reconciliation", extra={
+            "account_id": str(account_id),
+            "period": period,
+            "balance_confirmed": str(balance_confirmed),
+            "reconciled_by": str(actor_id),
+        })
+
+        return AccountReconciliation(
+            id=reconciliation_id,
+            account_id=account_id,
+            period=period,
+            reconciled_date=reconciled_date,
+            reconciled_by=actor_id,
+            status=ReconciliationStatus.RECONCILED,
+            notes=notes,
+            balance_confirmed=balance_confirmed,
+        )
+
+    # =========================================================================
+    # Multi-Currency: Translation
+    # =========================================================================
+
+    def translate_balances(
+        self,
+        entity_id: str,
+        period: str,
+        source_currency: str,
+        target_currency: str,
+        balance_amount: Decimal,
+        exchange_rate: Decimal,
+        method: TranslationMethod = TranslationMethod.CURRENT_RATE,
+    ) -> TranslationResult:
+        """
+        Translate account balances from source to target currency.
+
+        Pure calculation — no posting. Returns TranslationResult with
+        the translated amount and computed CTA.
+
+        For current rate method: amount * rate = translated, CTA = difference.
+        """
+        from uuid import uuid4 as _uuid4
+
+        translated = balance_amount * exchange_rate
+        cta = translated - balance_amount
+
+        logger.info("gl_translate_balances", extra={
+            "entity_id": entity_id,
+            "period": period,
+            "source_currency": source_currency,
+            "target_currency": target_currency,
+            "balance_amount": str(balance_amount),
+            "exchange_rate": str(exchange_rate),
+            "translated_amount": str(translated),
+            "cta_amount": str(cta),
+            "method": method.value,
+        })
+
+        return TranslationResult(
+            id=_uuid4(),
+            entity_id=entity_id,
+            period=period,
+            source_currency=source_currency,
+            target_currency=target_currency,
+            method=method,
+            translated_amount=translated,
+            cta_amount=cta,
+            exchange_rate=exchange_rate,
+        )
+
+    def record_cta(
+        self,
+        entity_id: str,
+        period: str,
+        cta_amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+        source_currency: str | None = None,
+    ) -> ModulePostingResult:
+        """
+        Record a Cumulative Translation Adjustment (CTA) to equity.
+
+        Posts via fx.translation_adjustment profile (Dr Unrealized FX Loss /
+        Cr CTA equity account). Typically called after translate_balances().
+
+        Profile: fx.translation_adjustment -> FXTranslationAdjustment
+        """
+        try:
+            posting_amount = abs(cta_amount)
+
+            logger.info("gl_record_cta_started", extra={
+                "entity_id": entity_id,
+                "period": period,
+                "cta_amount": str(cta_amount),
+                "posting_amount": str(posting_amount),
+                "source_currency": source_currency,
+            })
+
+            result = self._poster.post_event(
+                event_type="fx.translation_adjustment",
+                payload={
+                    "entity_id": entity_id,
+                    "period": period,
+                    "cta_amount": str(cta_amount),
+                    "source_currency": source_currency,
+                },
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=posting_amount,
+                currency=currency,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Multi-Currency: Period-End Revaluation
+    # =========================================================================
+
+    def run_period_end_revaluation(
+        self,
+        revaluation_entries: Sequence[dict],
+        effective_date: date,
+        actor_id: UUID,
+        period: str | None = None,
+        currency: str = "USD",
+    ) -> RevaluationResult:
+        """
+        Run period-end FX revaluation for multiple currencies.
+
+        Loops existing record_fx_unrealized_gain/loss methods for each entry.
+        Each entry dict should have: original_currency, amount, is_gain (bool).
+
+        Returns RevaluationResult summarizing the run.
+        """
+        from uuid import uuid4 as _uuid4
+
+        total_gain = Decimal("0")
+        total_loss = Decimal("0")
+        entries_posted = 0
+
+        logger.info("gl_period_end_revaluation_started", extra={
+            "entry_count": len(revaluation_entries),
+            "effective_date": effective_date.isoformat(),
+            "period": period,
+        })
+
+        for entry in revaluation_entries:
+            amount = Decimal(str(entry["amount"]))
+            original_currency = entry.get("original_currency")
+            is_gain = entry.get("is_gain", True)
+
+            if is_gain:
+                result = self.record_fx_unrealized_gain(
+                    amount=amount,
+                    effective_date=effective_date,
+                    actor_id=actor_id,
+                    currency=currency,
+                    original_currency=original_currency,
+                )
+                if result.is_success:
+                    total_gain += amount
+                    entries_posted += 1
+            else:
+                result = self.record_fx_unrealized_loss(
+                    amount=amount,
+                    effective_date=effective_date,
+                    actor_id=actor_id,
+                    currency=currency,
+                    original_currency=original_currency,
+                )
+                if result.is_success:
+                    total_loss += amount
+                    entries_posted += 1
+
+        logger.info("gl_period_end_revaluation_completed", extra={
+            "total_gain": str(total_gain),
+            "total_loss": str(total_loss),
+            "entries_posted": entries_posted,
+        })
+
+        return RevaluationResult(
+            id=_uuid4(),
+            period=period or "",
+            revaluation_date=effective_date,
+            currencies_processed=len(revaluation_entries),
+            total_gain=total_gain,
+            total_loss=total_loss,
+            entries_posted=entries_posted,
+        )

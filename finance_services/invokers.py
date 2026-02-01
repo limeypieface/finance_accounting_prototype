@@ -1,9 +1,40 @@
 """
-Standard engine invoker registrations for the EngineDispatcher.
+finance_services.invokers -- Standard engine invoker registrations for the EngineDispatcher.
 
-Each invoker bridges the dispatcher's (payload, FrozenEngineParams) contract
-to a specific engine's API.  Invokers read relevant fields from the payload,
-merge with frozen configuration parameters, and call the pure engine function.
+Responsibility:
+    Each invoker bridges the EngineDispatcher's ``(payload, FrozenEngineParams)``
+    contract to a specific pure engine's API.  Invokers read relevant fields
+    from the event payload, merge with frozen configuration parameters, coerce
+    raw dict/JSON values into proper domain types (Money, Decimal, frozen
+    dataclasses), and call the pure engine function.
+
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    This module is the single location that couples the dispatcher to
+    concrete engine implementations.  Adding a new engine requires only
+    a new ``_invoke_*`` function and a ``dispatcher.register()`` call
+    inside ``register_standard_engines`` (R15 open/closed compliance).
+
+Invariants enforced:
+    - R14 (No central dispatch): engine selection is data-driven via
+      ``CompiledPolicy.required_engines``, not via if/switch on event_type.
+    - R15 (Open/closed compliance): adding a new engine is additive --
+      one new invoker function + one register call.
+    - R16 (ISO 4217): currency strings are propagated from payload/params;
+      Money.of validates currency at construction.
+    - Decimal safety: ``_money`` and ``_decimal`` helpers ensure no float
+      values leak into engine calls.
+
+Failure modes:
+    - ValueError from ``_invoke_*`` functions when required payload keys
+      are missing or have incompatible types.
+    - Engine-level exceptions propagate to the dispatcher, which records
+      them in the EngineTraceRecord.
+
+Audit relevance:
+    - Invoker fingerprint_fields are declared per-engine so that the
+      dispatcher can compute a deterministic input_fingerprint for the
+      trace record.
 
 Usage:
     from finance_services.invokers import register_standard_engines
@@ -32,19 +63,42 @@ from finance_services.engine_dispatcher import EngineDispatcher, EngineInvoker
 # ---------------------------------------------------------------------------
 
 def _money(value: Any) -> Any:
-    """Coerce a numeric value to Money if available, else Decimal."""
+    """Coerce a numeric value to Money if available, else Decimal.
+
+    Preconditions:
+        value is None, a Money instance, a dict with 'amount' key, or a
+        numeric/string convertible to Decimal.
+
+    Postconditions:
+        Returns Money (never float).  Currency defaults to 'USD' when
+        not specified.
+
+    Raises:
+        decimal.InvalidOperation: If value cannot be converted to Decimal.
+    """
     if value is None:
         return None
     from finance_kernel.domain.values import Money
     if isinstance(value, Money):
         return value
     if isinstance(value, dict) and "amount" in value:
+        # INVARIANT [R16]: currency propagated; defaults to 'USD' when not specified.
         return Money(amount=Decimal(str(value["amount"])), currency=value.get("currency", "USD"))
     return Money(amount=Decimal(str(value)), currency="USD")
 
 
 def _decimal(value: Any) -> Decimal:
-    """Coerce to Decimal."""
+    """Coerce to Decimal.
+
+    Preconditions:
+        value is None, a Decimal, or a numeric/string convertible to Decimal.
+
+    Postconditions:
+        Returns Decimal (never float).  None maps to Decimal('0').
+
+    Raises:
+        decimal.InvalidOperation: If value cannot be converted to Decimal.
+    """
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value)) if value is not None else Decimal("0")
@@ -193,7 +247,11 @@ def _invoke_tax(payload: dict, params: FrozenEngineParams) -> Any:
         if isinstance(rate_data, TaxRate):
             rates[code] = rate_data
         elif isinstance(rate_data, dict):
-            rates[code] = TaxRate(**rate_data)
+            # Coerce rate to Decimal since JSON-decoded payloads produce strings
+            coerced = dict(rate_data)
+            if "rate" in coerced and not isinstance(coerced["rate"], Decimal):
+                coerced["rate"] = _decimal(coerced["rate"])
+            rates[code] = TaxRate(**coerced)
 
     return calc.calculate(
         amount=_money(payload.get("amount")),
@@ -325,7 +383,22 @@ def _invoke_ice(payload: dict, params: FrozenEngineParams) -> Any:
 
 
 def register_standard_engines(dispatcher: EngineDispatcher) -> None:
-    """Register all standard engine invokers with the dispatcher."""
+    """Register all standard engine invokers with the dispatcher.
+
+    Preconditions:
+        dispatcher is a freshly-constructed EngineDispatcher (or one where
+        re-registration of the same names is acceptable).
+
+    Postconditions:
+        Seven engines are registered: variance, allocation, matching, tax,
+        allocation_cascade, billing, ice.
+
+    Raises:
+        ValueError: If an EngineInvoker's engine_name is inconsistent with
+        the registration key (caught by EngineDispatcher.register).
+    """
+    # INVARIANT [R15]: Open/closed compliance -- adding a new engine requires
+    # only a new _invoke_* function and a dispatcher.register() call here.
     dispatcher.register("variance", EngineInvoker(
         engine_name="variance",
         engine_version="1.0",

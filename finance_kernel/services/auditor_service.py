@@ -1,14 +1,31 @@
 """
-Auditor service - Audit trail creation and validation.
+AuditorService -- tamper-evident audit trail and hash chain maintenance.
 
-The Auditor is responsible for:
-- Creating tamper-evident audit events
-- Maintaining the hash chain
-- Validating audit chain integrity
-- Providing audit trail queries
+Responsibility:
+    Creates immutable, hash-chained audit events for every significant
+    state change in the kernel.  Provides chain validation for tamper
+    detection and trace queries for forensic review.
 
-All audit events are created within the same transaction as
-the operation being audited.
+Architecture position:
+    Kernel > Services -- imperative shell, called by IngestorService,
+    JournalWriter, PeriodService, and CorrectionService.
+
+Invariants enforced:
+    R9  -- Sequence monotonicity via SequenceService (never raw SQL max+1).
+    R11 -- Audit chain integrity: ``hash = H(payload_hash + prev_hash)``.
+           Every audit event carries a cryptographic link to its predecessor.
+    R1  -- Append-only: audit events are never modified or deleted (ORM +
+           DB trigger enforced on the AuditEvent model).
+
+Failure modes:
+    - AuditChainBrokenError: Recomputed hash does not match stored hash,
+      or prev_hash does not match the predecessor's hash.
+    - IntegrityError: Concurrent insert race on sequence counter.
+
+Audit relevance:
+    This IS the audit service.  All audit events emitted by peer services
+    flow through ``_create_audit_event()`` which enforces R11 hash chain
+    linkage before persisting.
 """
 
 from dataclasses import dataclass
@@ -68,15 +85,26 @@ class AuditTrace:
 
 class AuditorService:
     """
-    Service for creating and validating audit events.
+    Service for creating and validating tamper-evident audit events.
 
-    The Auditor maintains a hash chain linking all audit events.
-    Each event includes:
-    - A hash of its payload
-    - The hash of the previous event
-    - A computed hash of all the above
+    Contract:
+        Accepts domain-specific recording requests (event ingested,
+        journal posted, period closed, etc.) and creates append-only
+        ``AuditEvent`` rows with cryptographic hash chain linkage.
 
-    This makes any tampering detectable.
+    Guarantees:
+        - R11: Every audit event's ``hash`` is a deterministic function
+          of ``(entity_type, entity_id, action, payload_hash, prev_hash)``.
+          Tampering with any field is detectable by ``validate_chain()``.
+        - R9: Sequence numbers are allocated via ``SequenceService``
+          (locked counter row), never via the aggregate-max-plus-one
+          anti-pattern.
+        - R1: Audit events are append-only.  The ``AuditEvent`` model
+          is protected by ORM listeners and database triggers.
+
+    Non-goals:
+        - Does NOT call ``session.commit()`` -- caller controls boundaries.
+        - Does NOT interpret or act on audit events (that is forensic tooling).
     """
 
     def __init__(
@@ -119,6 +147,21 @@ class AuditorService:
         This is the internal method that actually creates the event.
         Public methods should use the domain-specific recording methods.
 
+        Preconditions:
+            - ``entity_type`` is a non-empty string.
+            - ``entity_id`` and ``actor_id`` are valid UUIDs.
+            - ``action`` is a valid ``AuditAction`` enum member.
+
+        Postconditions:
+            - A new ``AuditEvent`` row is flushed to the session with
+              a monotonically increasing ``seq`` (R9) and a valid
+              hash chain link (R11).
+            - ``event.hash == H(entity_type, entity_id, action,
+              payload_hash, prev_hash)`` (R11).
+
+        Raises:
+            IntegrityError: On concurrent sequence counter race.
+
         Args:
             entity_type: Type of entity being audited.
             entity_id: ID of the entity.
@@ -129,15 +172,17 @@ class AuditorService:
         Returns:
             The created AuditEvent.
         """
-        # Get sequence and previous hash
+        # INVARIANT: R9 -- Sequence monotonicity via locked counter row
         seq = self._sequence_service.next_value(SequenceService.AUDIT_EVENT)
+        assert seq > 0, "R9 violation: audit sequence must be strictly positive"
+
         prev_hash = self._get_last_hash()
 
         # Hash the payload
         payload_data = payload or {}
         computed_payload_hash = hash_payload(payload_data)
 
-        # Compute the event hash
+        # INVARIANT: R11 -- hash = H(payload_hash + prev_hash)
         event_hash = hash_audit_event(
             entity_type=entity_type,
             entity_id=str(entity_id),
@@ -145,6 +190,7 @@ class AuditorService:
             payload_hash=computed_payload_hash,
             prev_hash=prev_hash,
         )
+        assert event_hash, "R11 violation: event hash must be non-empty"
 
         # Create the audit event
         audit_event = AuditEvent(
@@ -160,6 +206,7 @@ class AuditorService:
             hash=event_hash,
         )
 
+        # INVARIANT: R1 -- Append-only: audit events are immutable once flushed
         self._session.add(audit_event)
         self._session.flush()
 
@@ -184,7 +231,14 @@ class AuditorService:
         producer: str,
         actor_id: UUID,
     ) -> AuditEvent:
-        """Record that an event was ingested."""
+        """
+        Record that an event was ingested.
+
+        Preconditions:
+            - ``event_id`` corresponds to a persisted Event row (or will
+              be persisted in the same transaction).
+            - ``event_type`` is a non-empty namespaced string.
+        """
         return self._create_audit_event(
             entity_type="Event",
             entity_id=event_id,
@@ -202,7 +256,13 @@ class AuditorService:
         reason: str,
         actor_id: UUID,
     ) -> AuditEvent:
-        """Record that an event was rejected."""
+        """
+        Record that an event was rejected.
+
+        Preconditions:
+            - ``event_id`` is the UUID of the rejected event.
+            - ``reason`` is a non-empty human-readable rejection reason.
+        """
         return self._create_audit_event(
             entity_type="Event",
             entity_id=event_id,
@@ -220,7 +280,14 @@ class AuditorService:
         actor_id: UUID,
         line_count: int,
     ) -> AuditEvent:
-        """Record that a journal entry was posted."""
+        """
+        Record that a journal entry was posted.
+
+        Preconditions:
+            - ``entry_id`` corresponds to a POSTED JournalEntry in the
+              same transaction.
+            - ``line_count`` is > 0 (a posted entry must have lines).
+        """
         return self._create_audit_event(
             entity_type="JournalEntry",
             entity_id=entry_id,
@@ -241,7 +308,14 @@ class AuditorService:
         reason: str,
         actor_id: UUID,
     ) -> AuditEvent:
-        """Record that a journal entry was reversed."""
+        """
+        Record that a journal entry was reversed.
+
+        Preconditions:
+            - ``entry_id`` is the new reversal entry (POSTED).
+            - ``original_entry_id`` is the entry being reversed (now REVERSED).
+            - ``reason`` is non-empty.
+        """
         return self._create_audit_event(
             entity_type="JournalEntry",
             entity_id=entry_id,
@@ -287,17 +361,97 @@ class AuditorService:
             },
         )
 
+    # Close lifecycle events
+
+    def record_close_begun(
+        self,
+        period_id: UUID,
+        period_code: str,
+        actor_id: UUID,
+        correlation_id: str,
+    ) -> AuditEvent:
+        """Record that a period close was initiated."""
+        return self._create_audit_event(
+            entity_type="FiscalPeriod",
+            entity_id=period_id,
+            action=AuditAction.CLOSE_BEGUN,
+            actor_id=actor_id,
+            payload={
+                "period_code": period_code,
+                "correlation_id": correlation_id,
+            },
+        )
+
+    def record_subledger_closed(
+        self,
+        period_id: UUID,
+        period_code: str,
+        subledger_type: str,
+        actor_id: UUID,
+    ) -> AuditEvent:
+        """Record that a subledger was closed for a period."""
+        return self._create_audit_event(
+            entity_type="SubledgerClose",
+            entity_id=period_id,
+            action=AuditAction.SUBLEDGER_CLOSED,
+            actor_id=actor_id,
+            payload={
+                "period_code": period_code,
+                "subledger_type": subledger_type,
+            },
+        )
+
+    def record_close_certified(
+        self,
+        period_id: UUID,
+        period_code: str,
+        actor_id: UUID,
+        certificate_data: dict[str, Any],
+    ) -> AuditEvent:
+        """Record the close certificate. Certificate data in payload."""
+        return self._create_audit_event(
+            entity_type="FiscalPeriod",
+            entity_id=period_id,
+            action=AuditAction.CLOSE_CERTIFIED,
+            actor_id=actor_id,
+            payload={
+                "period_code": period_code,
+                **certificate_data,
+            },
+        )
+
+    def record_close_cancelled(
+        self,
+        period_id: UUID,
+        period_code: str,
+        actor_id: UUID,
+        reason: str,
+    ) -> AuditEvent:
+        """Record that a close was cancelled."""
+        return self._create_audit_event(
+            entity_type="FiscalPeriod",
+            entity_id=period_id,
+            action=AuditAction.CLOSE_CANCELLED,
+            actor_id=actor_id,
+            payload={
+                "period_code": period_code,
+                "reason": reason,
+            },
+        )
+
     # Chain validation
 
     def validate_chain(self) -> bool:
         """
         Validate the entire audit chain.
 
-        Returns:
-            True if chain is valid.
+        Postconditions:
+            - Returns ``True`` only if every event's stored ``hash``
+              matches the recomputed value (R11) and every event's
+              ``prev_hash`` matches its predecessor's ``hash``.
 
         Raises:
-            AuditChainBrokenError: If chain validation fails.
+            AuditChainBrokenError: If chain validation fails at any point.
         """
         events = self._session.execute(
             select(AuditEvent).order_by(AuditEvent.seq)
@@ -306,7 +460,7 @@ class AuditorService:
         if not events:
             return True
 
-        # First event should have no prev_hash
+        # INVARIANT: R11 -- First event should have no prev_hash (chain genesis)
         if events[0].prev_hash is not None:
             logger.critical("audit_chain_broken", exc_info=True)
             raise AuditChainBrokenError(
@@ -315,7 +469,7 @@ class AuditorService:
                 events[0].prev_hash,
             )
 
-        # Validate each event's hash and chain linkage
+        # INVARIANT: R11 -- Validate each event's hash and chain linkage
         for i, event in enumerate(events):
             # Handle action which may be an AuditAction enum or a string
             action_value = (
@@ -339,7 +493,7 @@ class AuditorService:
                     event.hash,
                 )
 
-            # Validate chain linkage (except for first event)
+            # INVARIANT: R11 -- Validate chain linkage (except for first event)
             if i > 0:
                 expected_prev = events[i - 1].hash
                 if event.prev_hash != expected_prev:

@@ -1,14 +1,40 @@
 """
-Inventory Pure Functions.
+Inventory Pure Functions (``finance_modules.inventory.helpers``).
 
-Stateless calculations for ABC classification, reorder points, and EOQ.
-No I/O, no session, no clock — pure input/output.
+Responsibility
+--------------
+Stateless calculations for ABC classification, reorder points (ROP), and
+Economic Order Quantity (EOQ).  These are textbook inventory-management
+formulas with no side effects.
+
+Architecture
+------------
+Layer: **Modules** -- pure helper functions.  No I/O, no session, no clock,
+no database access.  May be called from the service layer or from tests.
+
+Invariants
+----------
+- All numeric inputs and outputs use ``Decimal`` (never ``float``) per R16/R17.
+- Each function validates its own preconditions and raises ``ValueError`` on
+  violation.
+
+Failure Modes
+-------------
+- ``classify_abc``: raises ``ValueError`` if ``items`` is empty or
+  ``a_pct + b_pct > 100``.
+- ``calculate_reorder_point``: raises ``ValueError`` on negative inputs.
+- ``calculate_eoq``: raises ``ValueError`` on non-positive inputs.
+
+Audit Relevance
+---------------
+None -- these are non-posting helper calculations.  Results may feed into
+downstream posting operations (e.g., cycle-count adjustments) but do not
+themselves create journal entries.
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
-from math import sqrt
 from typing import TYPE_CHECKING, Sequence
 
 if TYPE_CHECKING:
@@ -21,7 +47,16 @@ def classify_abc(
     b_pct: Decimal = Decimal("15"),
 ) -> dict[str, str]:
     """
-    Classify items into A/B/C categories by cumulative annual value.
+    Classify items into A/B/C categories by cumulative annual value (Pareto).
+
+    Preconditions:
+        - ``items`` is non-empty.
+        - ``a_pct >= 0``, ``b_pct >= 0``, and ``a_pct + b_pct <= 100``.
+
+    Postconditions:
+        - Returns a mapping ``{item_id: "A" | "B" | "C"}`` covering every
+          input item exactly once.
+        - If total value is zero, all items are classified as ``"C"``.
 
     Args:
         items: Sequence of ItemValue(item_id, annual_value).
@@ -72,7 +107,13 @@ def calculate_reorder_point(
     """
     Calculate reorder point (ROP).
 
-    ROP = (avg_daily_usage * lead_time_days) + safety_stock
+    Formula: ``ROP = (avg_daily_usage * lead_time_days) + safety_stock``
+
+    Preconditions:
+        - All inputs >= 0.
+
+    Postconditions:
+        - Returns a non-negative ``Decimal``.
 
     Args:
         avg_daily_usage: Average units consumed per day.
@@ -101,9 +142,15 @@ def calculate_eoq(
     holding_cost: Decimal,
 ) -> Decimal:
     """
-    Calculate Economic Order Quantity (EOQ).
+    Calculate Economic Order Quantity (EOQ) using the Wilson formula.
 
-    EOQ = sqrt(2 * D * S / H)
+    Formula: ``EOQ = sqrt(2 * D * S / H)``
+
+    Preconditions:
+        - All inputs > 0 (strictly positive).
+
+    Postconditions:
+        - Returns a positive ``Decimal`` rounded to 2 decimal places.
 
     Args:
         annual_demand: Annual demand in units (D).
@@ -124,5 +171,5 @@ def calculate_eoq(
         raise ValueError(f"holding_cost must be positive, got {holding_cost}")
 
     numerator = Decimal("2") * annual_demand * order_cost
-    eoq_float = sqrt(float(numerator / holding_cost))
-    return Decimal(str(round(eoq_float, 2)))
+    eoq = (numerator / holding_cost).sqrt()
+    return eoq.quantize(Decimal("0.01"))

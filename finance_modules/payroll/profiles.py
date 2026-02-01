@@ -1,9 +1,33 @@
 """
-Payroll Economic Profiles -- Kernel format.
+Payroll Economic Profiles (``finance_modules.payroll.profiles``).
 
-Merged authoritative profiles from kernel (guards, where-clauses) and module
-(line mappings, additional scenarios). Each profile is a kernel AccountingPolicy
-with companion ModuleLineMapping tuples for intent construction.
+Responsibility
+--------------
+Declares all ``AccountingPolicy`` instances and companion
+``ModuleLineMapping`` tuples for the payroll module.  Each profile maps a
+single event type to journal-line specifications using account ROLES.
+
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue (this layer).
+Profiles are registered into kernel registries by ``register()`` and
+resolved at posting time by the interpretation pipeline (L1).
+
+Invariants enforced
+-------------------
+* R14 -- No ``if/switch`` on event_type in the posting engine.
+* R15 -- Adding a new payroll event type requires ONLY a new profile.
+* L1  -- Account roles are resolved to COA codes at posting time.
+
+Failure modes
+-------------
+* Duplicate profile names cause ``register_rich_profile`` to raise.
+* Guard expression match causes REJECTED outcome.
+
+Audit relevance
+---------------
+* Profile version numbers support replay compatibility (R23).
+* Payroll profiles are SOX-critical for withholding traceability.
 
 Profiles:
     PayrollAccrual              -- Expense accrual: Dr Salary+Wage+Tax / Cr liabilities
@@ -455,6 +479,52 @@ LABOR_DISTRIBUTION_OVERHEAD_MAPPINGS = (
 )
 
 
+# --- Benefits Deduction -----------------------------------------------------
+
+PAYROLL_BENEFITS_DEDUCTED = AccountingPolicy(
+    name="PayrollBenefitsDeducted",
+    version=1,
+    trigger=PolicyTrigger(event_type="payroll.benefits_deduction"),
+    meaning=PolicyMeaning(
+        economic_type="PAYROLL_BENEFITS_DEDUCTION",
+        dimensions=("cost_center",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="SALARY_EXPENSE", credit_role="BENEFITS_PAYABLE"),
+    ),
+    effective_from=date(2024, 1, 1),
+    description="Employee benefits deduction from paycheck",
+)
+
+PAYROLL_BENEFITS_DEDUCTED_MAPPINGS = (
+    ModuleLineMapping(role="SALARY_EXPENSE", side="debit"),
+    ModuleLineMapping(role="BENEFITS_PAYABLE", side="credit"),
+)
+
+
+# --- Employer Contribution --------------------------------------------------
+
+PAYROLL_EMPLOYER_CONTRIBUTION = AccountingPolicy(
+    name="PayrollEmployerContribution",
+    version=1,
+    trigger=PolicyTrigger(event_type="payroll.employer_contribution"),
+    meaning=PolicyMeaning(
+        economic_type="PAYROLL_EMPLOYER_CONTRIBUTION",
+        dimensions=("cost_center",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="PAYROLL_TAX_EXPENSE", credit_role="BENEFITS_PAYABLE"),
+    ),
+    effective_from=date(2024, 1, 1),
+    description="Employer contribution to benefits plan",
+)
+
+PAYROLL_EMPLOYER_CONTRIBUTION_MAPPINGS = (
+    ModuleLineMapping(role="PAYROLL_TAX_EXPENSE", side="debit"),
+    ModuleLineMapping(role="BENEFITS_PAYABLE", side="credit"),
+)
+
+
 # =============================================================================
 # Profile + Mapping pairs for registration
 # =============================================================================
@@ -470,6 +540,8 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     (LABOR_DISTRIBUTION_DIRECT, LABOR_DISTRIBUTION_DIRECT_MAPPINGS),
     (LABOR_DISTRIBUTION_INDIRECT, LABOR_DISTRIBUTION_INDIRECT_MAPPINGS),
     (LABOR_DISTRIBUTION_OVERHEAD, LABOR_DISTRIBUTION_OVERHEAD_MAPPINGS),
+    (PAYROLL_BENEFITS_DEDUCTED, PAYROLL_BENEFITS_DEDUCTED_MAPPINGS),
+    (PAYROLL_EMPLOYER_CONTRIBUTION, PAYROLL_EMPLOYER_CONTRIBUTION_MAPPINGS),
 )
 
 

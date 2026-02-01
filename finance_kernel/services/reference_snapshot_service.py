@@ -1,14 +1,39 @@
 """
-Reference Snapshot Service - Captures and retrieves frozen economic reality.
+ReferenceSnapshotService -- captures and retrieves frozen economic reality.
 
-The ReferenceSnapshotService is responsible for:
-- Capturing current state of all reference data components
-- Computing content hashes for integrity
-- Issuing immutable snapshot_ids
-- Retrieving snapshots for replay
+Responsibility:
+    Captures the current state of all reference data components (COA,
+    dimension schemas, FX rates, rounding policy, tax rules, policy
+    registry, account roles) into an immutable ``ReferenceSnapshot``
+    with deterministic content hashes.  Provides snapshot retrieval
+    for replay and integrity validation for drift detection.
 
-This service bridges the database layer and the pure domain layer.
-All snapshot data is immutable once captured.
+Architecture position:
+    Kernel > Services -- imperative shell.
+    Called by InterpretationCoordinator during the posting pipeline
+    to freeze economic reality at posting time (R21).  Also called
+    during replay to verify determinism (L4).
+
+Invariants enforced:
+    R21 -- Reference snapshot determinism: every JournalEntry records
+           the snapshot version IDs at posting time.  This service
+           produces the snapshot that is attached to the entry.
+    L4  -- Replay determinism: replaying with a stored snapshot must
+           produce identical results.  ``validate_integrity()`` detects
+           any drift between the stored snapshot and current data.
+    R7  -- Flush-only: never commits or rolls back the session.
+
+Failure modes:
+    - SnapshotIntegrityError: Content hash mismatch detected during
+      ``validate_integrity()`` (reference data has changed since snapshot).
+    - Cache miss: ``get(snapshot_id)`` returns None if the snapshot was
+      not captured in this service instance's lifetime.
+
+Audit relevance:
+    Snapshots provide the forensic anchor for "what data was in effect
+    when this entry was posted."  Content hashes enable tamper detection.
+    Every snapshot is identified by a unique ``snapshot_id`` (UUID) and
+    records ``captured_at`` and ``captured_by``.
 
 Usage:
     service = ReferenceSnapshotService(session, clock)
@@ -48,10 +73,23 @@ class ReferenceSnapshotService:
     """
     Service for capturing and retrieving reference snapshots.
 
-    Captures the current state of reference data and creates immutable
-    snapshots that can be used for posting and replay.
+    Contract:
+        Accepts a ``SnapshotRequest`` and returns a frozen
+        ``ReferenceSnapshot`` with deterministic content hashes.
+        Provides retrieval by ``snapshot_id`` and integrity validation.
 
-    All operations are transactional within the caller's transaction boundary.
+    Guarantees:
+        - R21: Every captured snapshot includes a unique ``snapshot_id``,
+          ``captured_at`` timestamp, and content hash per component.
+        - L4: ``validate_integrity()`` detects any change in reference data
+          since the snapshot was taken by recomputing content hashes.
+        - Deterministic hashing: JSON serialization with ``sort_keys=True``
+          ensures the same data produces the same hash.
+
+    Non-goals:
+        - Does NOT persist snapshots to a database table (currently
+          in-memory cache; production would persist).
+        - Does NOT call ``session.commit()`` -- caller controls boundaries.
     """
 
     def __init__(
@@ -80,6 +118,16 @@ class ReferenceSnapshotService:
         Reads current state of all requested components, computes content
         hashes, and creates an immutable snapshot.
 
+        Preconditions:
+            - ``request.include_components`` is non-empty.
+            - ``request.requested_by`` is a valid actor identifier.
+
+        Postconditions:
+            - Returns a ``ReferenceSnapshot`` with a unique ``snapshot_id``
+              and one ``ComponentVersion`` per requested component.
+            - Each ``ComponentVersion`` has a deterministic ``content_hash`` (R21).
+            - The snapshot is cached for fast retrieval via ``get()``.
+
         Args:
             request: SnapshotRequest specifying what to capture.
 
@@ -95,11 +143,16 @@ class ReferenceSnapshotService:
             cv = self._capture_component(component_type, captured_at)
             component_versions.append(cv)
 
+        # INVARIANT: R21 -- Reference snapshot determinism: freeze all
+        # component versions with content hashes at capture time
         snapshot = ReferenceSnapshot(
             snapshot_id=snapshot_id,
             captured_at=captured_at,
             captured_by=request.requested_by,
             component_versions=tuple(component_versions),
+        )
+        assert len(snapshot.component_versions) == len(request.include_components), (
+            "R21 violation: snapshot must have one version per requested component"
         )
 
         # Cache for fast retrieval
@@ -439,6 +492,18 @@ class ReferenceSnapshotService:
         Validate that a snapshot still matches current data.
 
         Used to detect if reference data has changed since snapshot.
+        This is the L4 enforcement point: if any component's content
+        hash has drifted, replay would produce different results.
+
+        Preconditions:
+            - ``snapshot`` is a valid ``ReferenceSnapshot`` with at
+              least one ``ComponentVersion``.
+
+        Postconditions:
+            - Returns ``valid`` if and only if every component's
+              current content hash matches the stored hash (L4).
+            - Returns ``invalid`` with specific error details if any
+              component has drifted.
 
         Args:
             snapshot: The snapshot to validate.
@@ -451,6 +516,8 @@ class ReferenceSnapshotService:
         for cv in snapshot.component_versions:
             current = self._capture_component(cv.component_type, snapshot.captured_at)
 
+            # INVARIANT: L4 -- Replay determinism: hash drift means
+            # replaying with this snapshot would produce different results
             if current.content_hash != cv.content_hash:
                 errors.append(
                     SnapshotIntegrityError(

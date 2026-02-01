@@ -1,14 +1,40 @@
 """
-Configuration Validator.
+Configuration Validator (``finance_config.validator``).
 
-Validates an AccountingConfigurationSet at build time:
-  - All role bindings reference roles used by policies
-  - All policies have unique dispatch keys
-  - No overlapping effective ranges for same scope
-  - All engine configs have valid parameter ranges
-  - All guard/control expressions parse as restricted AST
-  - All capability_tags reference declared capabilities
-  - Disabling a capability warns if event types lose coverage
+Responsibility
+--------------
+Validates an ``AccountingConfigurationSet`` at build time, ensuring
+structural integrity before the configuration is compiled and deployed.
+
+Architecture position
+---------------------
+**Config layer** -- build-time validation.  Called by
+``finance_config.assembler`` after loading and before compilation.  Has
+no dependency on kernel, modules, or engines.
+
+Invariants enforced
+-------------------
+* Policy name uniqueness -- duplicate ``(name, version)`` pairs are errors.
+* Guard expression safety -- all guard/control expressions must pass the
+  restricted AST validator (``guard_ast.py``).
+* Role coverage -- GL roles referenced by policies should have bindings.
+* Capability consistency -- capability tags must reference declared
+  capabilities, and disabling a capability must not leave event types
+  without an admissible policy.
+* Ledger effect presence -- every policy must have at least one effect.
+
+Failure modes
+-------------
+* Validation errors (``ConfigValidationResult.errors``)  -> configuration
+  MUST NOT be compiled.
+* Validation warnings (``ConfigValidationResult.warnings``)  ->
+  configuration may be compiled but should be reviewed.
+
+Audit relevance
+---------------
+The validation result is a machine-readable record of configuration
+health.  Errors and warnings provide traceable evidence that guard
+expressions, role bindings, and capability settings have been reviewed.
 """
 
 from __future__ import annotations
@@ -22,7 +48,14 @@ from finance_config.schema import AccountingConfigurationSet
 
 @dataclass
 class ConfigValidationResult:
-    """Result of configuration validation."""
+    """
+    Result of configuration validation.
+
+    Contract
+    --------
+    * ``is_valid`` returns ``True`` only when ``errors`` is empty.
+    * Warnings do not block compilation but should be reviewed.
+    """
 
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -39,10 +72,14 @@ class ConfigValidationResult:
 
 
 def validate_configuration(config: AccountingConfigurationSet) -> ConfigValidationResult:
-    """Validate a configuration set.
+    """
+    Validate a configuration set.
 
-    Returns a ConfigValidationResult with errors and warnings.
-    A configuration with errors must not be compiled.
+    Preconditions:
+        - ``config`` must be a fully assembled ``AccountingConfigurationSet``.
+    Postconditions:
+        - Returns a ``ConfigValidationResult`` with errors and warnings.
+        - A configuration with errors MUST NOT be compiled.
     """
     result = ConfigValidationResult()
 

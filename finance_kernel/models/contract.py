@@ -1,18 +1,32 @@
 """
-Contract model for government contracts.
+Module: finance_kernel.models.contract
+Responsibility: ORM persistence for government and commercial contracts, with
+    DCAA compliance tracking for cost-reimbursement types.  Each Contract
+    carries identification, financial controls, period of performance, and
+    ICE reporting settings.  ContractLineItem (CLIN) breaks contracts into
+    billable work packages.
+Architecture position: Kernel > Models.  May import from db/base.py only.
+    MUST NOT import from services/, selectors/, domain/, or outer layers.
 
-Contract represents agreements with customers, especially government contracts
-subject to DCAA compliance requirements. Tracks:
-- Contract identification (number, DUNS, CAGE)
-- Contract type (cost-plus, FFP, T&M, etc.)
-- Funding and ceiling amounts
-- Period of performance
-- DCAA compliance settings
+Invariants enforced:
+    R10 -- contract_number is immutable once costs have been charged against
+           the contract.  Changing the number would break cost traceability.
+    Funding guard -- funded_amount cannot be reduced below incurred costs
+           (enforced at service layer, not ORM).
+    Ceiling guard -- ceiling_amount cannot be reduced below funded_amount
+           (enforced at service layer, not ORM).
 
-Hard invariants:
-- Contract numbers are immutable once costs are charged
-- Funding cannot be reduced below incurred costs
-- Ceiling amounts cannot be reduced below funded amounts
+Failure modes:
+    - IntegrityError on duplicate contract_number (uq_contract_number).
+    - Guard rejection (upstream) when can_accept_charges returns False.
+    - Guard rejection when funding would be exceeded.
+
+Audit relevance:
+    Contracts are the legal authority for cost accumulation in government
+    contracting.  DCAA auditors trace every cost charge back to a contract
+    and CLIN.  The contract_type determines timekeeping requirements,
+    allowability rules, and ICE reporting obligations.  funded_amount and
+    ceiling_amount are the financial controls that prevent unauthorized spending.
 """
 
 from datetime import date
@@ -88,13 +102,24 @@ class ICEReportingFrequency(str, Enum):
 
 class Contract(TrackedBase):
     """
-    Government contract with DCAA compliance tracking.
+    Government or commercial contract with DCAA compliance tracking.
 
-    Used for:
-    - Validating cost charges against contract type
-    - Tracking funded vs ceiling amounts
-    - Enforcing allowability per contract
-    - ICE reporting requirements
+    Contract:
+        Each Contract has a unique contract_number that is immutable once
+        costs have been charged.  The contract_type determines which DCAA
+        compliance rules apply.  Financial controls (funded_amount, ceiling_amount)
+        are guard inputs for cost charge admissibility.
+
+    Guarantees:
+        - contract_number is globally unique (uq_contract_number constraint).
+        - contract_type classifies the contract under FAR rules.
+        - status lifecycle: DRAFT -> ACTIVE -> SUSPENDED -> COMPLETED -> CLOSED.
+        - requires_timekeeping is True for cost-reimbursement types by default.
+
+    Non-goals:
+        - This model does NOT enforce funding limits at the ORM level; that is
+          the responsibility of ContractService.validate_funding().
+        - This model does NOT enforce ceiling limits; that is a service-layer guard.
     """
 
     __tablename__ = "contracts"
@@ -282,7 +307,12 @@ class Contract(TrackedBase):
 
     @property
     def is_cost_reimbursement(self) -> bool:
-        """Check if contract is cost-reimbursement type (DCAA intensive)."""
+        """Check if contract is cost-reimbursement type (DCAA intensive).
+
+        Postconditions: Returns True for CPFF, CPIF, CPAF, T&M, and LH types.
+            Cost-reimbursement contracts require DCAA-compliant timekeeping
+            and are subject to ICE reporting requirements.
+        """
         return self.contract_type in {
             ContractType.COST_PLUS_FIXED_FEE,
             ContractType.COST_PLUS_INCENTIVE_FEE,
@@ -293,7 +323,10 @@ class Contract(TrackedBase):
 
     @property
     def is_fixed_price(self) -> bool:
-        """Check if contract is fixed-price type."""
+        """Check if contract is fixed-price type.
+
+        Postconditions: Returns True for FFP, FPI, and FPAF types.
+        """
         return self.contract_type in {
             ContractType.FIRM_FIXED_PRICE,
             ContractType.FIXED_PRICE_INCENTIVE,
@@ -302,7 +335,12 @@ class Contract(TrackedBase):
 
     @property
     def can_accept_charges(self) -> bool:
-        """Check if contract can accept new cost charges."""
+        """Check if contract can accept new cost charges.
+
+        Postconditions: Returns True iff is_active is True AND status is ACTIVE.
+            Used by guards to reject cost charges against inactive or non-ACTIVE
+            contracts.
+        """
         return (
             self.is_active
             and self.status == ContractStatus.ACTIVE
@@ -310,7 +348,16 @@ class Contract(TrackedBase):
 
     @property
     def is_within_pop(self) -> bool:
-        """Check if current date is within period of performance."""
+        """Check if current date is within period of performance.
+
+        Postconditions: Returns True if today falls between start_date and
+            the period_of_performance_end (or end_date if POP end is not set).
+
+        NOTE: This property calls date.today() directly, which violates the
+        clock injection rule for domain code.  It is acceptable here because
+        Contract is a model (not domain), and callers requiring deterministic
+        dates should use ContractService with an injected Clock instead.
+        """
         today = date.today()
         if self.start_date and today < self.start_date:
             return False
@@ -323,10 +370,10 @@ class Contract(TrackedBase):
     def available_funding(self) -> Decimal:
         """Return the funded amount for this contract.
 
-        This is the total funding allocated to the contract. To calculate
-        funding remaining after incurred costs, use
-        ContractService.validate_funding() which accepts incurred_to_date
-        from the caller (consistent with R3: models don't perform I/O).
+        Postconditions: Returns funded_amount (the total obligated funding).
+            To calculate remaining funding after incurred costs, callers MUST
+            use ContractService.validate_funding() which accepts incurred_to_date
+            as a parameter (models do not perform I/O).
         """
         return self.funded_amount
 
@@ -338,14 +385,20 @@ class ContractLineItem(TrackedBase):
     """
     Contract Line Item (CLIN) for tracking costs at line-item level.
 
-    CLINs break down contracts into billable work packages:
-    - Direct labor by labor category
-    - Materials
-    - Travel
-    - Subcontracts
-    - Other direct costs (ODCs)
+    Contract:
+        Each CLIN belongs to exactly one Contract and has a unique line_number
+        within that contract.  CLINs break contracts into billable work packages
+        (labor, materials, travel, subcontracts, ODCs).
 
-    Each CLIN has its own funded amount and ceiling.
+    Guarantees:
+        - (contract_id, line_number) is unique (uq_contract_clin constraint).
+        - funded_amount and ceiling_amount provide CLIN-level financial controls.
+        - For labor CLINs: labor_category, hourly_rate, and estimated_hours
+          support T&M/LH billing calculations.
+
+    Non-goals:
+        - This model does NOT enforce CLIN-level funding limits at the ORM
+          level; that is a service-layer responsibility.
     """
 
     __tablename__ = "contract_line_items"

@@ -1,14 +1,31 @@
 """
-Posting strategy protocol and base implementation.
+PostingStrategy -- Pure event-to-journal transformation protocol.
 
-A PostingStrategy is a pure function that transforms an event into
-a proposed journal entry. It has NO side effects and NO access to:
-- Database
-- Clock/time
-- I/O
-- External services
+Responsibility:
+    Defines the abstract protocol and base implementation for posting
+    strategies.  A strategy transforms an EventEnvelope + ReferenceData
+    into a ProposedJournalEntry with zero side effects.
 
-All dependencies are passed in as ReferenceData.
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O, zero database,
+    zero clock, zero external services.
+
+Invariants enforced:
+    R4  -- Balance per currency (checked in _balance_and_round)
+    R5  -- At most one rounding line per entry
+    R14 -- No central dispatch; one strategy per event_type
+    R15 -- Adding a new event type requires only a new strategy
+    R16 -- ISO 4217 currency validation
+    R22 -- Only Bookkeeper may create is_rounding=True lines
+    R23 -- Strategy lifecycle governance (version ranges + replay policy)
+
+Failure modes:
+    StrategyResult.failure() with ValidationError (R18 codes).
+    Never raises for business rule violations.
+
+Audit relevance:
+    Strategy version is recorded on every ProposedJournalEntry so that
+    auditors can replay postings deterministically (R23, L4).
 """
 
 from abc import ABC, abstractmethod
@@ -85,12 +102,24 @@ class PostingStrategy(ABC):
     Each event type has its own strategy that knows how to
     transform that event into journal lines.
 
-    Strategies MUST be:
-    - Pure: No side effects
-    - Deterministic: Same input always produces same output
-    - Immutable: No internal state changes
+    Contract:
+        Subclasses implement ``propose()`` to transform an event into a
+        ``StrategyResult``.  One strategy per event_type (R14).
 
-    R23 Compliance: Strategies declare lifecycle metadata for replay governance.
+    Guarantees:
+        - Strategies MUST be pure, deterministic, and stateless.
+        - ``is_compatible_with_system_version()`` enforces R23 lifecycle.
+        - ``version`` is recorded for replay determinism.
+
+    Non-goals:
+        - Does NOT persist entries (services do that).
+        - Does NOT resolve account roles to COA (L1 / JournalWriter).
+        - Does NOT create rounding lines (R22 -- only Bookkeeper may).
+
+    Invariants enforced:
+        R14 -- One strategy per event_type (no if/switch on event_type).
+        R15 -- Open/closed: new event type = new strategy only.
+        R23 -- Lifecycle governance (version ranges + replay policy).
     """
 
     @property
@@ -190,8 +219,19 @@ class BasePostingStrategy(PostingStrategy):
     """
     Base implementation with common validation and transformation logic.
 
-    Subclasses only need to implement _compute_line_specs() to define
-    how the event payload maps to journal lines.
+    Contract:
+        Subclasses implement ``_compute_line_specs()`` to define how the
+        event payload maps to journal lines.  All other validation
+        (currency, accounts, dimensions, balance, rounding) is handled here.
+
+    Guarantees:
+        - R22: ``_validate_no_rounding_lines()`` rejects strategy-created
+          rounding lines.
+        - R4: ``_balance_and_round()`` checks balance per currency.
+        - R5: ``_validate_rounding_invariants()`` enforces at-most-one
+          rounding line and threshold.
+        - R16: ``_validate_currencies()`` validates ISO 4217 codes.
+        - R21: ``ProposedJournalEntry`` records reference snapshot versions.
     """
 
     @abstractmethod
@@ -252,8 +292,7 @@ class BasePostingStrategy(PostingStrategy):
                 )
             )
 
-        # R22: Validate strategy did not attempt to create rounding lines
-        # Only the Bookkeeper (_balance_and_round) may generate is_rounding=True lines
+        # INVARIANT: R22 -- only the Bookkeeper may generate is_rounding=True lines
         rounding_violation = self._validate_no_rounding_lines(line_specs)
         if rounding_violation:
             return StrategyResult.failure(rounding_violation)
@@ -289,7 +328,7 @@ class BasePostingStrategy(PostingStrategy):
         if rounding_errors:
             return StrategyResult.failure(*rounding_errors)
 
-        # 7. Create proposed entry (R21: Include reference snapshot versions)
+        # INVARIANT: R21 -- reference snapshot versions recorded for replay
         try:
             entry = ProposedJournalEntry(
                 event_envelope=event,

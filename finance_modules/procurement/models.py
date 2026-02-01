@@ -1,7 +1,32 @@
 """
-Procurement Domain Models.
+Procurement Domain Models (``finance_modules.procurement.models``).
 
-The nouns of procurement: requisitions, purchase orders, receipts.
+Responsibility
+--------------
+Frozen dataclass value objects representing the nouns of procurement:
+requisitions, purchase orders with version history, goods receipts,
+receipt matches, and supplier scores.
+
+Architecture position
+---------------------
+**Modules layer** -- pure data definitions with ZERO I/O.  Consumed by
+``ProcurementService`` and returned to callers.  No dependency on kernel
+services, database, or engines.
+
+Invariants enforced
+-------------------
+* All models are ``frozen=True`` (immutable after construction).
+* All monetary fields use ``Decimal`` -- NEVER ``float``.
+
+Failure modes
+-------------
+* Construction with invalid enum values raises ``ValueError``.
+
+Audit relevance
+---------------
+* ``PurchaseOrderVersion`` records maintain full PO change history.
+* ``ReceiptMatch`` records support three-way matching compliance.
+* ``SupplierScore`` records support vendor evaluation transparency.
 """
 
 from dataclasses import dataclass, field

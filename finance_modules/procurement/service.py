@@ -1,16 +1,48 @@
 """
-Procurement Service - Orchestrates procurement operations via engines + kernel.
+Procurement Module Service (``finance_modules.procurement.service``).
 
-Thin glue layer that:
-1. Calls VarianceCalculator for purchase price variance (PPV)
-2. Calls MatchingEngine for PO/receipt/invoice matching
-3. Calls LinkGraphService for tracking procurement document links
-4. Calls ModulePostingService for journal entry creation
+Responsibility
+--------------
+Orchestrates procurement operations -- purchase order creation, goods
+receipt, PO/receipt/invoice three-way matching, purchase price variance
+(PPV) analysis, supplier scoring, and document link tracking -- by
+delegating pure computation to ``finance_engines`` and journal persistence
+to ``finance_kernel.services.module_posting_service``.
 
-All computation lives in engines. All posting lives in kernel.
-This service owns the transaction boundary (R7 compliance).
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue.  ``ProcurementService`` is the sole
+public entry point for procurement operations.  It composes stateless
+engines (``VarianceCalculator``, ``MatchingEngine``), stateful engines
+(``LinkGraphService``), and the kernel ``ModulePostingService``.
 
-Usage:
+Invariants enforced
+-------------------
+* R7  -- Each public method owns the transaction boundary
+          (``commit`` on success, ``rollback`` on failure or exception).
+* R14 -- Event type selection is data-driven; no ``if/switch`` on
+          event_type inside the posting path.
+* L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
+* L5  -- Atomicity: link creation and journal posting share a single
+          transaction (``auto_commit=False``).
+
+Failure modes
+-------------
+* Guard rejection or kernel validation  -> ``ModulePostingResult`` with
+  ``is_success == False``; session rolled back.
+* Unexpected exception  -> session rolled back, exception re-raised.
+* Matching failure (e.g., tolerance exceeded)  -> ``MatchResult`` with
+  non-success status returned before posting.
+
+Audit relevance
+---------------
+Structured log events emitted at operation start and commit/rollback for
+every public method, carrying PO numbers, receipt IDs, amounts, and match
+results.  All journal entries feed the kernel audit chain (R11).
+Three-way matching results are tracked for SOX compliance.
+
+Usage::
+
     service = ProcurementService(session, role_resolver, clock)
     result = service.create_purchase_order(
         po_id=uuid4(), vendor_id="V-001",
@@ -21,7 +53,7 @@ Usage:
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from typing import Any, Sequence
 from uuid import UUID, uuid4
@@ -64,6 +96,26 @@ logger = get_logger("modules.procurement.service")
 class ProcurementService:
     """
     Orchestrates procurement operations through engines and kernel.
+
+    Contract
+    --------
+    * Every posting method returns ``ModulePostingResult``; callers inspect
+      ``result.is_success`` to determine outcome.
+    * Non-posting helpers (``score_supplier``, ``match_documents``, etc.)
+      return pure domain objects with no side-effects on the journal.
+
+    Guarantees
+    ----------
+    * Session is committed only on ``result.is_success``; otherwise rolled back.
+    * Engine link writes and journal writes share a single transaction
+      (``ModulePostingService`` runs with ``auto_commit=False``).
+    * Clock is injectable for deterministic testing.
+
+    Non-goals
+    ---------
+    * Does NOT own account-code resolution (delegated to kernel via ROLES).
+    * Does NOT enforce fiscal-period locks directly (kernel ``PeriodService``
+      handles R12/R13).
 
     Engine composition:
     - VarianceCalculator: purchase price variance (PPV) computation
@@ -322,7 +374,7 @@ class ProcurementService:
                 parent_ref=po_ref,
                 child_ref=receipt_ref,
                 creating_event_id=receipt_id,
-                created_at=datetime.utcnow(),
+                created_at=self._clock.now(),
                 metadata={
                     "po_id": str(po_id),
                     "receipt_id": str(receipt_id),
@@ -428,7 +480,7 @@ class ProcurementService:
                 parent_ref=po_ref,
                 child_ref=invoice_ref,
                 creating_event_id=invoice_id,
-                created_at=datetime.utcnow(),
+                created_at=self._clock.now(),
                 metadata={
                     "po_id": str(po_id),
                     "invoice_id": str(invoice_id),
@@ -576,7 +628,7 @@ class ProcurementService:
                 parent_ref=po_ref,
                 child_ref=req_ref,
                 creating_event_id=po_id,
-                created_at=datetime.utcnow(),
+                created_at=self._clock.now(),
                 metadata={
                     "requisition_id": str(requisition_id),
                     "po_id": str(po_id),
@@ -761,7 +813,7 @@ class ProcurementService:
                 parent_ref=po_ref,
                 child_ref=receipt_ref,
                 creating_event_id=receipt_id,
-                created_at=datetime.utcnow(),
+                created_at=self._clock.now(),
                 metadata={
                     "po_id": str(po_id),
                     "receipt_id": str(receipt_id),

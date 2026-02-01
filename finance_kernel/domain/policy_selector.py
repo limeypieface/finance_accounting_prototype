@@ -1,10 +1,28 @@
 """
-Profile Registry for runtime profile lookup.
+PolicySelector -- Runtime profile lookup and precedence resolution.
 
-Provides registration and matching of AccountingPolicys to events.
-Handles precedence resolution (P1) and effective date filtering.
+Responsibility:
+    Registers AccountingPolicy instances and finds the single matching
+    policy for a given event at runtime.  Handles where-clause dispatch,
+    effective date filtering, scope matching, and precedence resolution.
 
-This is a pure domain component - no I/O, no ORM.
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
+
+Invariants enforced:
+    P1 -- Exactly one profile matches any event, or the event is rejected
+    L2 -- No runtime ambiguity is allowed
+
+Failure modes:
+    - PolicyNotFoundError if no profile matches
+    - MultiplePoliciesMatchError if ambiguity cannot be resolved
+    - PolicyAlreadyRegisteredError if duplicate name+version
+    - UncompiledPolicyError if receipt doesn't match
+
+Audit relevance:
+    PolicySelector emits FINANCE_POLICY_TRACE structured logs documenting
+    which policies were admissible and which was selected, enabling auditors
+    to reconstruct the dispatch decision.
 """
 
 from __future__ import annotations
@@ -114,17 +132,25 @@ class PolicyAlreadyRegisteredError(Exception):
 
 class PolicySelector:
     """
-    Registry for AccountingPolicys with runtime lookup.
+    Registry for AccountingPolicy objects with runtime lookup.
 
-    Provides:
-    - Profile registration by name and version
-    - Finding matching profile for an event
-    - Precedence resolution (override > scope specificity > priority > stable key)
+    Contract:
+        ``find_for_event()`` returns exactly one ``AccountingPolicy`` or
+        raises (P1).
 
-    This is a pure domain component - no I/O, no ORM.
+    Guarantees:
+        - ``register()`` rejects duplicate name+version.
+        - ``find_for_event()`` applies: event_type filter, effective date
+          filter, scope filter, where-clause filter, precedence resolution.
+        - Emits FINANCE_POLICY_TRACE structured log for every dispatch.
 
-    Invariant P1: Exactly one profile matches or event is rejected.
-    Invariant L2: No runtime ambiguity is allowed.
+    Non-goals:
+        - Does NOT compile or validate profiles (PolicyCompiler does that).
+        - Does NOT persist to database (in-memory registry).
+
+    Invariants enforced:
+        P1 -- Exactly one profile matches or event is rejected.
+        L2 -- No runtime ambiguity is allowed.
     """
 
     # Class-level registry: name -> {version -> profile}

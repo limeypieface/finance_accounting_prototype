@@ -1,10 +1,34 @@
 """
-Contract Subledger Service.
+finance_services.subledger_contract -- Contract/WIP subledger service.
 
-Contract/WIP subledger — tracks cost incurrence, billing, and fees per contract.
-Entity type: Contract identifier.
+Responsibility:
+    Manage contract-level subledger entries linked to GL journal entries.
+    Track cost incurrence, billing, fees, reversals, and adjustments
+    per government contract.
 
-Used for government contracting (CPFF, T&M, FFP) and DCAA compliance.
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    Extends SubledgerService ABC with Contract/WIP-specific document type
+    validation.  Delegates to shared _post_entry/_get_balance helpers in
+    subledger_ap.
+    Entity type: Contract identifier (DCAA/FAR contract number).
+
+Invariants enforced:
+    - SL-G1 (single-sided entries): delegated to SubledgerEntry.__post_init__.
+    - SL-G2 (GL linkage): _post_entry stores journal_entry_id on the ORM model.
+    - Document type whitelist: only COST_INCURRENCE, BILLING, FEE,
+      REVERSAL, ADJUSTMENT are accepted.
+
+Failure modes:
+    - ValueError from post() if entry validation fails.
+    - ValueError from post() if source_document_type is not in
+      CONTRACT_DOCUMENT_TYPES.
+
+Audit relevance:
+    Contract subledger entries are the primary evidence for DCAA incurred
+    cost audits.  Every post is logged with entry_id, subledger_type,
+    entity_id (contract_id), and journal_entry_id.  Uses period-end
+    reconciliation (not real-time).
 """
 
 from __future__ import annotations
@@ -34,7 +58,19 @@ class ContractSubledgerService(SubledgerService):
     """
     Contract/WIP subledger service.
 
-    Manages contract-level subledger entries linked to GL journal entries.
+    Contract:
+        Manages contract-level subledger entries linked to GL journal entries.
+        Receives Session and Clock via constructor injection.
+    Guarantees:
+        - ``post`` validates entry fields and document type before persisting.
+        - ``get_balance`` returns a SubledgerBalance with debit-normal
+          convention (WIP is an asset).
+        - ``get_open_items`` returns only unreconciled entries.
+    Non-goals:
+        - Does not manage contract lifecycle (CLINs, modifications);
+          that is the Contracts module's responsibility.
+        - Does not perform DCAA compliance checks beyond the subledger.
+
     Uses period-end reconciliation (not real-time).
     """
 

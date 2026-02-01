@@ -1,9 +1,38 @@
 """
-Fixed Assets Economic Profiles — Kernel format.
+Fixed Assets Economic Profiles (``finance_modules.assets.profiles``).
 
-Merged authoritative profiles from kernel (guards, where-clauses, multi-ledger)
-and module (line mappings, additional scenarios). Each profile is a kernel
-AccountingPolicy with companion ModuleLineMapping tuples for intent construction.
+Responsibility
+--------------
+Declares all ``AccountingPolicy`` instances and companion
+``ModuleLineMapping`` tuples for the assets module.  Each profile maps a
+single event type to journal-line specifications using account ROLES
+(not COA codes).
+
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue (this layer).
+Profiles are registered into kernel registries by ``register()`` and
+resolved at posting time by the interpretation pipeline (L1).
+
+Invariants enforced
+-------------------
+* R14 -- No ``if/switch`` on event_type in the posting engine.
+* R15 -- Adding a new asset event type requires ONLY a new profile +
+         mapping + registration.
+* L1  -- Account roles are resolved to COA codes at posting time.
+
+Failure modes
+-------------
+* Duplicate profile names cause ``register_rich_profile`` to raise at
+  startup.
+* A guard expression evaluating to ``True`` causes the event to be
+  REJECTED with the declared ``reason_code``.
+
+Audit relevance
+---------------
+* Profile version numbers support replay compatibility (R23).
+* Guard conditions provide machine-readable rejection codes for
+  audit inspection.
 
 Profiles:
     AssetAcquisitionCash       — Cash purchase: Dr Fixed Asset / Cr Cash
@@ -335,6 +364,94 @@ ASSET_SCRAP_MAPPINGS = (
 )
 
 
+# --- Mass Depreciation ---
+ASSET_MASS_DEPRECIATION = AccountingPolicy(
+    name="AssetMassDepreciation",
+    version=1,
+    trigger=PolicyTrigger(event_type="asset.mass_depreciation"),
+    meaning=PolicyMeaning(
+        economic_type="ASSET_DEPRECIATION_BATCH",
+        dimensions=("cost_center",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="DEPRECIATION_EXPENSE", credit_role="ACCUMULATED_DEPRECIATION"),
+    ),
+    effective_from=date(2024, 1, 1),
+    description="Batch depreciation for multiple assets",
+)
+
+ASSET_MASS_DEPRECIATION_MAPPINGS = (
+    ModuleLineMapping(role="DEPRECIATION_EXPENSE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="ACCUMULATED_DEPRECIATION", side="credit", ledger="GL"),
+)
+
+
+# --- Asset Transfer ---
+ASSET_TRANSFERRED = AccountingPolicy(
+    name="AssetTransferred",
+    version=1,
+    trigger=PolicyTrigger(event_type="asset.transfer"),
+    meaning=PolicyMeaning(
+        economic_type="ASSET_TRANSFER",
+        dimensions=("cost_center",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="FIXED_ASSET", credit_role="FIXED_ASSET"),
+    ),
+    effective_from=date(2024, 1, 1),
+    description="Asset transfer between cost centers",
+)
+
+ASSET_TRANSFERRED_MAPPINGS = (
+    ModuleLineMapping(role="FIXED_ASSET", side="debit", ledger="GL"),
+    ModuleLineMapping(role="FIXED_ASSET", side="credit", ledger="GL"),
+)
+
+
+# --- Asset Revaluation ---
+ASSET_REVALUED = AccountingPolicy(
+    name="AssetRevalued",
+    version=1,
+    trigger=PolicyTrigger(event_type="asset.revaluation"),
+    meaning=PolicyMeaning(
+        economic_type="ASSET_REVALUATION",
+        dimensions=("cost_center",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="FIXED_ASSET", credit_role="GAIN_ON_DISPOSAL"),
+    ),
+    effective_from=date(2024, 1, 1),
+    description="IFRS asset revaluation to fair value",
+)
+
+ASSET_REVALUED_MAPPINGS = (
+    ModuleLineMapping(role="FIXED_ASSET", side="debit", ledger="GL"),
+    ModuleLineMapping(role="GAIN_ON_DISPOSAL", side="credit", ledger="GL"),
+)
+
+
+# --- Component Depreciation ---
+ASSET_COMPONENT_DEPRECIATION = AccountingPolicy(
+    name="AssetComponentDepreciation",
+    version=1,
+    trigger=PolicyTrigger(event_type="asset.component_depreciation"),
+    meaning=PolicyMeaning(
+        economic_type="ASSET_COMPONENT_DEPRECIATION",
+        dimensions=("cost_center",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="DEPRECIATION_EXPENSE", credit_role="ACCUMULATED_DEPRECIATION"),
+    ),
+    effective_from=date(2024, 1, 1),
+    description="Component-level depreciation",
+)
+
+ASSET_COMPONENT_DEPRECIATION_MAPPINGS = (
+    ModuleLineMapping(role="DEPRECIATION_EXPENSE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="ACCUMULATED_DEPRECIATION", side="credit", ledger="GL"),
+)
+
+
 # =============================================================================
 # Profile + Mapping pairs for registration
 # =============================================================================
@@ -348,6 +465,10 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     (ASSET_DISPOSAL_LOSS, ASSET_DISPOSAL_LOSS_MAPPINGS),
     (ASSET_IMPAIRMENT, ASSET_IMPAIRMENT_MAPPINGS),
     (ASSET_SCRAP, ASSET_SCRAP_MAPPINGS),
+    (ASSET_MASS_DEPRECIATION, ASSET_MASS_DEPRECIATION_MAPPINGS),
+    (ASSET_TRANSFERRED, ASSET_TRANSFERRED_MAPPINGS),
+    (ASSET_REVALUED, ASSET_REVALUED_MAPPINGS),
+    (ASSET_COMPONENT_DEPRECIATION, ASSET_COMPONENT_DEPRECIATION_MAPPINGS),
 )
 
 

@@ -1,10 +1,33 @@
 """
-Financial Report DTOs.
+Financial Reporting Domain Models (``finance_modules.reporting.models``).
 
-All report models are frozen dataclasses with Decimal amounts.
-These are pure data containers returned by the reporting service.
+Responsibility
+--------------
+Frozen dataclass value objects representing financial statement outputs:
+trial balance, income statement, balance sheet, cash flow statement,
+equity changes, segment reports, and multi-currency trial balance.
 
-Every monetary value uses Decimal -- NEVER float.
+Architecture position
+---------------------
+**Modules layer** -- pure data definitions with ZERO I/O.  Consumed by
+``ReportingService`` and returned to callers.  No dependency on kernel
+services, database, or engines.
+
+Invariants enforced
+-------------------
+* All models are ``frozen=True`` (immutable after construction).
+* All monetary fields use ``Decimal`` -- NEVER ``float``.
+
+Failure modes
+-------------
+* Construction with invalid enum values raises ``ValueError``.
+
+Audit relevance
+---------------
+* ``ReportMetadata`` records carry generation timestamp and parameters
+  for report reproducibility.
+* Financial statements are derived from the immutable journal and
+  support external audit review.
 """
 
 from __future__ import annotations
@@ -63,7 +86,7 @@ class ReportMetadata:
     period_start: date | None = None
     period_end: date | None = None
     comparative_date: date | None = None
-    dimensions_filter: dict | None = None
+    dimensions_filter: tuple[tuple[str, str], ...] | None = None
 
 
 # =========================================================================
@@ -311,3 +334,24 @@ class SegmentReport:
     dimension_name: str
     segments: tuple[SegmentData, ...]
     unallocated: SegmentData | None = None  # Lines without dimension value
+
+
+# =========================================================================
+# Multi-Currency Trial Balance
+# =========================================================================
+
+
+@dataclass(frozen=True)
+class MultiCurrencyTrialBalance:
+    """Trial balance across multiple currencies.
+
+    Aggregates per-currency trial balance reports into a single
+    container for multi-currency reporting needs.
+    """
+
+    metadata: ReportMetadata
+    currency_reports: tuple[TrialBalanceReport, ...]
+    currencies: tuple[str, ...]
+    total_debits_by_currency: tuple[tuple[str, Decimal], ...]
+    total_credits_by_currency: tuple[tuple[str, Decimal], ...]
+    all_balanced: bool  # True if every currency TB is balanced

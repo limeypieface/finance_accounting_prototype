@@ -1,15 +1,30 @@
 """
-Value types for the finance kernel.
+Module: finance_kernel.db.types
+Responsibility: Annotated type aliases and utility functions for financial-grade
+    column types.  Centralizes precision, rounding, and currency validation so
+    that every model and service uses identical type definitions.
+Architecture position: Kernel > DB.  May be imported by models/, domain/,
+    services/, and selectors/.  MUST NOT import from any of those layers.
 
-CRITICAL: No floats anywhere in the finance kernel.
-All monetary values use Decimal with explicit precision.
+Invariants enforced:
+    R16 -- ISO 4217 enforcement.  validate_currency() rejects any string that
+           is not a recognized 3-character ISO 4217 currency code.
+    R17 -- Precision-derived tolerance.  MONEY_DECIMAL_PLACES and
+           RATE_DECIMAL_PLACES define the canonical precision for monetary
+           amounts and exchange rates, respectively.  round_money() is the
+           ONLY sanctioned rounding function for financial values.
+    CRITICAL: No floats anywhere in the finance kernel.  All monetary amounts
+           use Decimal with explicit precision.
 
-Types defined here:
-- Money: decimal(38, 9) for monetary amounts
-- Currency: ISO 4217 currency code (3 chars)
-- Sequence: BigInteger for monotonic sequences
-- PayloadHash: Fixed-length hash string
-- Rate: decimal(38, 18) for exchange rates (higher precision)
+Failure modes:
+    - InvalidCurrencyError on invalid ISO 4217 code (R16).
+    - ValueError on non-numeric string passed to money_from_str().
+
+Audit relevance:
+    Type consistency is foundational for financial accuracy.  Every monetary
+    column in every model uses Money (Numeric(38, 9)), ensuring that amounts
+    are stored with identical precision system-wide.  The ISO_4217_CURRENCIES
+    set is the canonical validation source for currency codes.
 """
 
 from decimal import Decimal, ROUND_HALF_UP
@@ -53,6 +68,10 @@ def money_from_str(value: str) -> Decimal:
     """
     Create a Money value from string.
 
+    Preconditions: value is a string representation of a valid number.
+    Postconditions: Returns a Decimal (not rounded -- callers apply
+        rounding via round_money() if needed).
+
     Args:
         value: String representation of the amount.
 
@@ -91,7 +110,13 @@ def round_money(
     """
     Round a monetary value to specified decimal places.
 
-    This is the ONLY place rounding should occur for financial values.
+    INVARIANT R17: This is the ONLY sanctioned rounding function for
+    financial values in the entire system.  All other code MUST delegate
+    rounding to this function to ensure consistent precision handling.
+
+    Preconditions: value is a Decimal.
+    Postconditions: Returns value quantized to the specified decimal places
+        using the specified rounding mode.
 
     Args:
         value: The Decimal value to round.
@@ -151,6 +176,13 @@ class InvalidCurrencyError(ValueError):
 def validate_currency(currency: str) -> str:
     """
     Validate that a currency code is a valid ISO 4217 code.
+
+    INVARIANT R16: This is the canonical currency validation function.
+    All ingestion boundaries MUST call this before accepting a currency code.
+
+    Preconditions: currency is a non-empty string.
+    Postconditions: Returns the uppercase, trimmed currency code iff it is
+        a member of ISO_4217_CURRENCIES.
 
     Args:
         currency: The currency code to validate.

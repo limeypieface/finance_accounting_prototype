@@ -1,15 +1,45 @@
 """
-Fixed Assets Module Service - Orchestrates asset operations via engines + kernel.
+Fixed Assets Module Service (``finance_modules.assets.service``).
 
-Thin glue layer that:
-1. Calls VarianceCalculator for revaluation variances
-2. Calls AllocationEngine for impairment allocation
-3. Calls ModulePostingService for journal entry creation
+Responsibility
+--------------
+Orchestrates fixed-asset operations -- acquisitions, depreciation runs,
+impairment, revaluation, disposal, and transfers -- by delegating pure
+computation to ``finance_engines`` and journal persistence to
+``finance_kernel.services.module_posting_service``.
 
-All computation lives in engines. All posting lives in kernel.
-This service owns the transaction boundary (R7 compliance).
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue.  ``FixedAssetService`` is the sole
+public entry point for fixed-asset operations.  It composes stateless
+engines (``VarianceCalculator``, ``AllocationEngine``) and the kernel
+``ModulePostingService``.
 
-Usage:
+Invariants enforced
+-------------------
+* R7  -- Each public method owns the transaction boundary
+          (``commit`` on success, ``rollback`` on failure or exception).
+* R14 -- Event type selection is data-driven; no ``if/switch`` on
+          event_type inside the posting path.
+* L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
+* R4  -- Double-entry balance is enforced downstream by ``JournalWriter``.
+
+Failure modes
+-------------
+* Guard rejection or kernel validation  -> ``ModulePostingResult`` with
+  ``is_success == False``; session rolled back.
+* Unexpected exception  -> session rolled back, exception re-raised.
+* Engine errors (e.g., allocation with no targets)  -> propagate before
+  posting attempt.
+
+Audit relevance
+---------------
+Structured log events emitted at operation start and commit/rollback for
+every public method, carrying asset IDs, amounts, and depreciation
+parameters.  All journal entries feed the kernel audit chain (R11).
+
+Usage::
+
     service = FixedAssetService(session, role_resolver, clock)
     result = service.record_asset_acquisition(
         asset_id=uuid4(), cost=Decimal("50000.00"),
@@ -22,7 +52,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from typing import Sequence
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -42,6 +72,7 @@ from finance_engines.allocation import (
     AllocationTarget,
 )
 from finance_engines.variance import VarianceCalculator, VarianceResult
+from finance_modules.assets.models import AssetTransfer, AssetRevaluation
 
 logger = get_logger("modules.assets.service")
 
@@ -49,6 +80,26 @@ logger = get_logger("modules.assets.service")
 class FixedAssetService:
     """
     Orchestrates fixed-asset operations through engines and kernel.
+
+    Contract
+    --------
+    * Every posting method returns ``ModulePostingResult``; callers inspect
+      ``result.is_success`` to determine outcome.
+    * Non-posting helpers (``calculate_depreciation``, ``assess_impairment``,
+      etc.) return pure domain objects with no side-effects on the journal.
+
+    Guarantees
+    ----------
+    * Session is committed only on ``result.is_success``; otherwise rolled back.
+    * Engine writes and journal writes share a single transaction
+      (``ModulePostingService`` runs with ``auto_commit=False``).
+    * Clock is injectable for deterministic testing.
+
+    Non-goals
+    ---------
+    * Does NOT own account-code resolution (delegated to kernel via ROLES).
+    * Does NOT enforce fiscal-period locks directly (kernel ``PeriodService``
+      handles R12/R13).
 
     Engine composition:
     - VarianceCalculator: revaluation variances (book vs fair value)
@@ -420,6 +471,288 @@ class FixedAssetService:
                 effective_date=effective_date,
                 actor_id=actor_id,
                 amount=book_value,
+                currency=currency,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Mass Depreciation
+    # =========================================================================
+
+    def run_mass_depreciation(
+        self,
+        assets: list[dict],
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> list[ModulePostingResult]:
+        """
+        Run batch depreciation for multiple assets.
+
+        Each asset dict should have 'asset_id' and 'amount' keys.
+        Posts individual depreciation entries for each asset.
+
+        Args:
+            assets: List of dicts with asset_id and amount.
+            effective_date: Accounting effective date.
+            actor_id: Actor UUID.
+            currency: ISO 4217 currency code.
+
+        Returns:
+            List of ModulePostingResult, one per asset.
+        """
+        results: list[ModulePostingResult] = []
+        try:
+            for asset_data in assets:
+                asset_id = asset_data["asset_id"]
+                amount = Decimal(str(asset_data["amount"]))
+
+                result = self._poster.post_event(
+                    event_type="asset.mass_depreciation",
+                    payload={
+                        "asset_id": str(asset_id),
+                        "depreciation_amount": str(amount),
+                    },
+                    effective_date=effective_date,
+                    actor_id=actor_id,
+                    amount=amount,
+                    currency=currency,
+                )
+                results.append(result)
+
+            if all(r.is_success for r in results):
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return results
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Asset Transfer
+    # =========================================================================
+
+    def record_asset_transfer(
+        self,
+        asset_id: UUID,
+        from_cost_center: str,
+        to_cost_center: str,
+        transfer_value: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> tuple[AssetTransfer, ModulePostingResult]:
+        """
+        Record transfer of an asset between cost centers.
+
+        Posts Dr Fixed Asset (new CC) / Cr Fixed Asset (old CC).
+
+        Args:
+            asset_id: Asset UUID.
+            from_cost_center: Source cost center.
+            to_cost_center: Destination cost center.
+            transfer_value: Current book value being transferred.
+            effective_date: Accounting effective date.
+            actor_id: Actor UUID.
+            currency: ISO 4217 currency code.
+
+        Returns:
+            Tuple of (AssetTransfer, ModulePostingResult).
+        """
+        try:
+            logger.info("asset_transfer_started", extra={
+                "asset_id": str(asset_id),
+                "from": from_cost_center,
+                "to": to_cost_center,
+            })
+
+            result = self._poster.post_event(
+                event_type="asset.transfer",
+                payload={
+                    "asset_id": str(asset_id),
+                    "from_cost_center": from_cost_center,
+                    "to_cost_center": to_cost_center,
+                },
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=transfer_value,
+                currency=currency,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+
+            transfer = AssetTransfer(
+                id=uuid4(),
+                asset_id=asset_id,
+                transfer_date=effective_date,
+                from_cost_center=from_cost_center,
+                to_cost_center=to_cost_center,
+                transferred_by=actor_id,
+            )
+            return transfer, result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Impairment Testing
+    # =========================================================================
+
+    def test_impairment(
+        self,
+        asset_id: UUID,
+        carrying_value: Decimal,
+        fair_value: Decimal,
+    ) -> Decimal:
+        """
+        Test an asset for impairment.
+
+        Pure calculation — no posting, no session interaction.
+
+        Args:
+            asset_id: Asset UUID.
+            carrying_value: Current carrying value (cost - accum depr).
+            fair_value: Estimated fair value.
+
+        Returns:
+            Impairment loss amount (0 if no impairment).
+        """
+        from finance_modules.assets.helpers import calculate_impairment_loss
+        return calculate_impairment_loss(carrying_value, fair_value)
+
+    # =========================================================================
+    # Revaluation
+    # =========================================================================
+
+    def record_revaluation(
+        self,
+        asset_id: UUID,
+        old_carrying_value: Decimal,
+        new_fair_value: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> tuple[AssetRevaluation, ModulePostingResult]:
+        """
+        Record asset revaluation to fair value (IFRS).
+
+        Posts Dr Fixed Asset / Cr Revaluation Surplus (gain).
+
+        Args:
+            asset_id: Asset UUID.
+            old_carrying_value: Current carrying value.
+            new_fair_value: New fair value.
+            effective_date: Accounting effective date.
+            actor_id: Actor UUID.
+            currency: ISO 4217 currency code.
+
+        Returns:
+            Tuple of (AssetRevaluation, ModulePostingResult).
+        """
+        try:
+            surplus = new_fair_value - old_carrying_value
+
+            logger.info("asset_revaluation_started", extra={
+                "asset_id": str(asset_id),
+                "old_value": str(old_carrying_value),
+                "new_value": str(new_fair_value),
+                "surplus": str(surplus),
+            })
+
+            result = self._poster.post_event(
+                event_type="asset.revaluation",
+                payload={
+                    "asset_id": str(asset_id),
+                    "old_carrying_value": str(old_carrying_value),
+                    "new_fair_value": str(new_fair_value),
+                    "surplus": str(surplus),
+                },
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=abs(surplus),
+                currency=currency,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+
+            revaluation = AssetRevaluation(
+                id=uuid4(),
+                asset_id=asset_id,
+                revaluation_date=effective_date,
+                old_carrying_value=old_carrying_value,
+                new_fair_value=new_fair_value,
+                revaluation_surplus=surplus,
+            )
+            return revaluation, result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Component Depreciation
+    # =========================================================================
+
+    def record_component_depreciation(
+        self,
+        asset_id: UUID,
+        component_name: str,
+        amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> ModulePostingResult:
+        """
+        Record depreciation for a specific asset component.
+
+        Posts Dr Depreciation Expense / Cr Accumulated Depreciation.
+
+        Args:
+            asset_id: Asset UUID.
+            component_name: Name of the component being depreciated.
+            amount: Depreciation amount for this component.
+            effective_date: Accounting effective date.
+            actor_id: Actor UUID.
+            currency: ISO 4217 currency code.
+
+        Returns:
+            ModulePostingResult.
+        """
+        try:
+            logger.info("component_depreciation_started", extra={
+                "asset_id": str(asset_id),
+                "component": component_name,
+                "amount": str(amount),
+            })
+
+            result = self._poster.post_event(
+                event_type="asset.component_depreciation",
+                payload={
+                    "asset_id": str(asset_id),
+                    "component_name": component_name,
+                    "depreciation_amount": str(amount),
+                },
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=amount,
                 currency=currency,
             )
 

@@ -1,8 +1,36 @@
 """
-Travel & Expense Pure Functions.
+Expense Helpers (``finance_modules.expense.helpers``).
 
-Stateless calculations for mileage, per diem, and policy validation.
-No I/O, no session, no clock — pure input/output.
+Responsibility
+--------------
+Pure calculation functions for travel & expense processing: mileage
+reimbursement, per diem allowance, and expense-line policy validation.
+These are stateless functions with no side effects.
+
+Architecture position
+---------------------
+**Modules layer** -- pure helper functions.  No I/O, no session, no
+clock, no database access.  Called by ``ExpenseService`` or from tests.
+
+Invariants enforced
+-------------------
+* All numeric inputs and outputs use ``Decimal`` -- NEVER ``float``.
+* Negative miles or rates raise ``ValueError`` (explicit failure, R18).
+* Policy violations are returned as a list, never silently suppressed.
+
+Failure modes
+-------------
+* Negative miles or rate -> ``ValueError`` raised.
+* Zero or negative days -> ``ValueError`` raised.
+* Missing policy for a category -> line is silently skipped (no violation).
+
+Audit relevance
+---------------
+These functions produce intermediate values and compliance artifacts
+consumed by ``ExpenseService``.  Mileage rates must match IRS standard
+mileage rates for tax-deductible reimbursements.  Per diem rates must
+match GSA/CONUS rates for government contracts (FAR 31.205-46).  Policy
+violation records support internal controls over T&E spending.
 """
 
 from __future__ import annotations
@@ -25,15 +53,13 @@ def calculate_mileage(miles: Decimal, rate_per_mile: Decimal) -> Decimal:
     """
     Calculate mileage reimbursement.
 
-    Args:
-        miles: Number of miles driven (must be non-negative).
-        rate_per_mile: Rate per mile (e.g. Decimal("0.67")).
-
-    Returns:
-        Total mileage reimbursement amount.
-
+    Preconditions:
+        - ``miles`` is ``Decimal`` >= 0.
+        - ``rate_per_mile`` is ``Decimal`` >= 0.
+    Postconditions:
+        - Returns ``miles * rate_per_mile`` as ``Decimal``.
     Raises:
-        ValueError: If miles or rate_per_mile is negative.
+        ValueError: If ``miles`` or ``rate_per_mile`` is negative.
     """
     if miles < 0:
         raise ValueError(f"Miles must be non-negative, got {miles}")
@@ -52,18 +78,15 @@ def calculate_per_diem(
     """
     Calculate per diem allowance for a trip.
 
-    Args:
-        days: Number of travel days (must be positive).
-        rates: Per diem rates for the location.
-        include_meals: Whether to include meals allowance.
-        include_lodging: Whether to include lodging allowance.
-        include_incidentals: Whether to include incidentals allowance.
-
-    Returns:
-        Total per diem amount.
-
+    Preconditions:
+        - ``days`` is a positive integer (> 0).
+        - ``rates`` is a ``PerDiemRate`` with ``meals_rate``,
+          ``lodging_rate``, and ``incidentals_rate`` fields.
+    Postconditions:
+        - Returns total per diem as ``Decimal`` (daily rate * days).
+        - Only included components contribute to the daily rate.
     Raises:
-        ValueError: If days is not positive.
+        ValueError: If ``days`` is not positive.
     """
     if days <= 0:
         raise ValueError(f"Days must be positive, got {days}")
@@ -86,13 +109,15 @@ def validate_expense_against_policy(
     """
     Validate expense lines against category policies.
 
-    Args:
-        lines: Expense lines to validate.
-        policies: Mapping of category value -> ExpensePolicy.
-
-    Returns:
-        List of PolicyViolation for any violations found.
-        Empty list if all lines comply.
+    Preconditions:
+        - ``lines`` is a sequence of ``ExpenseLine`` objects.
+        - ``policies`` maps category value strings to ``ExpensePolicy``.
+    Postconditions:
+        - Returns a list of ``PolicyViolation`` for any violations found.
+        - Returns an empty list if all lines comply with their policies.
+        - Lines whose category has no matching policy are silently skipped.
+        - Checks: per-transaction limit, receipt requirement threshold,
+          and justification requirement.
     """
     from finance_modules.expense.models import PolicyViolation
 

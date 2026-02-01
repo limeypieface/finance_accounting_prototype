@@ -1,15 +1,33 @@
 """
-Finance Services - Stateful orchestration services.
+finance_services -- Package init and public API.
 
-Services compose pure engines with database sessions, LinkGraphService,
-and other I/O-dependent infrastructure. They are the only layer that
-may hold sessions, call LinkGraphService, or use wall-clock time.
+Responsibility:
+    Stateful orchestration services that compose pure calculation engines
+    (finance_engines/) with database sessions, LinkGraphService, and other
+    I/O-dependent infrastructure.  This is the **only** layer that may hold
+    database sessions, call LinkGraphService, or use wall-clock time.
 
-Dependency direction:
-    finance_services/ -> finance_engines/  (allowed)
-    finance_services/ -> finance_kernel/   (allowed)
-    finance_engines/  -> finance_services/ (FORBIDDEN)
-    finance_kernel/   -> finance_services/ (FORBIDDEN)
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+
+    Dependency direction (enforced by tests/architecture/test_kernel_boundary.py):
+        finance_services/ -> finance_engines/  (allowed)
+        finance_services/ -> finance_kernel/   (allowed)
+        finance_engines/  -> finance_services/ (FORBIDDEN)
+        finance_kernel/   -> finance_services/ (FORBIDDEN)
+
+Invariants enforced:
+    - Layer isolation: finance_kernel and finance_engines must never import
+      from this package.
+    - DI transparency: All kernel service wiring is centralised in
+      PostingOrchestrator; no service self-constructs dependencies.
+
+Failure modes:
+    - ImportError at startup if a service's dependency graph is broken.
+
+Audit relevance:
+    - This package is the canonical import surface for external consumers.
+      Changes to __all__ must be reviewed for backwards-compatibility.
 """
 
 from finance_kernel.logging_config import get_logger

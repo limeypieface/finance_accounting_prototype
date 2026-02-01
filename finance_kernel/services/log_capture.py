@@ -1,10 +1,32 @@
 """
-In-process structured log capture for audit traceability.
+LogCapture -- in-process structured log capture for audit traceability.
 
-LogCapture is a logging.Handler that collects all structured log records
-emitted by the finance_kernel logger hierarchy during a posting operation.
-It implements the LogQueryPort protocol defined in trace_selector.py,
-allowing TraceSelector to populate the timeline with decision-level detail.
+Responsibility:
+    Collects all structured log records emitted by the ``finance_kernel``
+    logger hierarchy during a posting operation.  Implements the
+    ``LogQueryPort`` protocol for ``TraceSelector`` to populate audit
+    timelines with decision-level detail.
+
+Architecture position:
+    Kernel > Services -- read-side infrastructure.
+    Attached to the ``finance_kernel`` logger hierarchy during posting
+    operations.  Does not persist data -- purely in-memory capture.
+
+Invariants enforced:
+    None directly.  LogCapture is an observability tool that assists
+    auditors in reviewing the decision journal for R11, L5, P15, and
+    other invariant enforcement.
+
+Failure modes:
+    - JSON parse failure during ``emit()``: Falls back to building a
+      dict directly from the ``LogRecord`` attributes.
+    - Query on empty capture: Returns empty list (not an error).
+
+Audit relevance:
+    LogCapture is the bridge between structured logging and the audit
+    trace system.  Every decision logged during posting (profile
+    selection, guard evaluation, role resolution, balance validation)
+    is captured and queryable by correlation_id, event_id, or trace_id.
 
 Usage::
 
@@ -38,13 +60,22 @@ class LogCapture(logging.Handler):
     """
     In-process log handler that captures structured log records.
 
-    Implements the LogQueryPort protocol from trace_selector.py:
-    - query_by_correlation_id(correlation_id) -> list[dict]
-    - query_by_event_id(event_id) -> list[dict]
-    - query_by_trace_id(trace_id) -> list[dict]
+    Contract:
+        Implements the ``LogQueryPort`` protocol from trace_selector.py:
+        - ``query_by_correlation_id(correlation_id)`` -> list[dict]
+        - ``query_by_event_id(event_id)`` -> list[dict]
+        - ``query_by_trace_id(trace_id)`` -> list[dict]
 
-    Records are stored as dicts with at minimum: ts, message,
-    and all structured extra fields from the log call.
+    Guarantees:
+        - Records are stored as dicts with at minimum: ``ts``, ``message``,
+          and all structured extra fields from the log call.
+        - The ``records`` property returns a read-only copy (no mutation
+          of internal state by callers).
+
+    Non-goals:
+        - Does NOT persist records to a database or file.
+        - Does NOT filter or transform records (captures all levels
+          at or above the configured level).
     """
 
     def __init__(self, level: int = logging.DEBUG):
@@ -131,14 +162,31 @@ class LogCapture(logging.Handler):
     # -----------------------------------------------------------------------
 
     def query_by_correlation_id(self, correlation_id: str) -> list[dict]:
-        """Return all records matching the given correlation_id."""
+        """Return all records matching the given correlation_id.
+
+        Preconditions:
+            - ``correlation_id`` is a non-empty string (typically a UUID).
+            - This handler has been ``install()``ed before the records
+              were emitted (records emitted before install are not captured).
+
+        Postconditions:
+            - Every returned dict has ``correlation_id`` matching the input.
+        """
         return [
             r for r in self._records
             if r.get("correlation_id") == correlation_id
         ]
 
     def query_by_event_id(self, event_id: str) -> list[dict]:
-        """Return all records matching the given event_id."""
+        """Return all records matching the given event_id.
+
+        Preconditions:
+            - ``event_id`` is a non-empty string (typically a UUID).
+
+        Postconditions:
+            - Every returned dict has ``event_id`` or ``source_event_id``
+              matching the input.
+        """
         return [
             r for r in self._records
             if r.get("event_id") == event_id
@@ -146,7 +194,14 @@ class LogCapture(logging.Handler):
         ]
 
     def query_by_trace_id(self, trace_id: str) -> list[dict]:
-        """Return all records matching the given trace_id."""
+        """Return all records matching the given trace_id.
+
+        Preconditions:
+            - ``trace_id`` is a non-empty string (typically a UUID).
+
+        Postconditions:
+            - Every returned dict has ``trace_id`` matching the input.
+        """
         return [
             r for r in self._records
             if r.get("trace_id") == trace_id

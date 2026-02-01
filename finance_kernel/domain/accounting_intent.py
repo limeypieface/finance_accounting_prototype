@@ -1,25 +1,32 @@
 """
-AccountingIntent - Contract between Economic and Finance layers.
+AccountingIntent -- Contract between Economic and Finance layers.
 
-The AccountingIntent is an immutable DTO emitted by the economic layer that
-describes what financial effects should occur. It contains:
-- Account roles (not COA accounts) - roles are resolved to accounts by the finance layer
-- Amounts and currency
-- Dimensions
-- Reference snapshot versions
+Responsibility:
+    Defines the immutable intermediate representation (IR) that bridges economic
+    interpretation and financial posting.  The economic layer emits an
+    AccountingIntent using account ROLES (not COA codes); the finance layer
+    resolves roles to COA accounts and atomically posts or rejects.
 
-The finance layer receives the intent and either:
-1. Atomically posts all required entries (POSTED)
-2. Deterministically blocks (BLOCKED) - e.g., missing COA mapping
-3. Deterministically rejects (REJECTED) - e.g., closed period
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
 
-Invariant L1: Every POSTED entry must resolve each role to exactly one COA account.
-Invariant L5: No journal rows without a matching POSTED outcome; no POSTED outcome without all journal rows.
+Invariants enforced:
+    L1  -- Every POSTED entry must resolve each role to exactly one COA account
+    L5  -- No journal rows without a POSTED outcome; no POSTED outcome without
+           all journal rows
+    R4  -- Amounts are always non-negative Decimals (side indicates direction)
+    P11 -- Multi-ledger postings from a single AccountingIntent are atomic
 
-Integration with foundational modules:
-- ReferenceSnapshot: Can convert from comprehensive snapshot
-- PolicyAuthority: Validates economic authority at intent formation
-- SubledgerControlContract: Can validate against control contracts
+Failure modes:
+    - ValueError on IntentLine with invalid side or negative amount
+    - ValueError on LedgerIntent with zero lines
+    - ValueError on AccountingIntent with zero ledger intents
+
+Audit relevance:
+    AccountingIntent is the authoritative record of what the interpretation
+    engine decided.  Auditors verify that every role was resolved (L1), that
+    postings and outcomes are 1-to-1 (L5), and that multi-ledger intents
+    were committed atomically (P11).
 """
 
 from dataclasses import dataclass, field
@@ -37,7 +44,15 @@ if TYPE_CHECKING:
 
 
 class IntentLineSide:
-    """Side of an intent line."""
+    """
+    Side of an intent line.
+
+    Contract:
+        Two valid values: ``"debit"`` and ``"credit"``.
+
+    Guarantees:
+        Values are lowercase strings matching the canonical representation.
+    """
 
     DEBIT = "debit"
     CREDIT = "credit"
@@ -49,7 +64,21 @@ class IntentLine:
     A single line in an accounting intent.
 
     Uses account_role (not account_code) because the economic layer
-    doesn't know specific COA accounts - only semantic roles.
+    doesn't know specific COA accounts -- only semantic roles.
+
+    Contract:
+        Callers supply a valid ``IntentLineSide``, a ``Money`` value, and an
+        account role string.  The finance layer resolves the role to a COA
+        account at posting time (L1).
+
+    Guarantees:
+        - ``side`` is always ``"debit"`` or ``"credit"`` (validated in ``__post_init__``).
+        - ``money.amount`` is always non-negative (R4).
+        - Instance is frozen / immutable after construction.
+
+    Non-goals:
+        - Does NOT resolve roles to COA accounts (that is the finance layer's job).
+        - Does NOT enforce balance across lines (that is ``LedgerIntent``'s concern).
 
     Attributes:
         account_role: Semantic role (e.g., "InventoryAsset", "GRNI")
@@ -78,10 +107,15 @@ class IntentLine:
         return self.money.currency.code
 
     def __post_init__(self) -> None:
+        # INVARIANT: R4 -- side must be a valid debit or credit literal
         if self.side not in (IntentLineSide.DEBIT, IntentLineSide.CREDIT):
             raise ValueError(f"Invalid side: {self.side}")
+        # INVARIANT: R4 -- amounts are always non-negative; side indicates direction
         if self.money.amount < Decimal("0"):
             raise ValueError("Amount must be non-negative")
+        assert isinstance(self.money.amount, Decimal), (
+            f"R4 violation: amount must be Decimal, got {type(self.money.amount)}"
+        )
 
     @classmethod
     def debit(
@@ -92,7 +126,20 @@ class IntentLine:
         dimensions: dict[str, str] | None = None,
         memo: str | None = None,
     ) -> "IntentLine":
-        """Create a debit line."""
+        """
+        Create a debit line.
+
+        Preconditions:
+            - ``amount`` is convertible to a non-negative ``Decimal``.
+            - ``currency`` is a valid ISO 4217 code (R16).
+
+        Postconditions:
+            - Returned ``IntentLine.side == "debit"``.
+            - ``IntentLine.money.amount >= 0``.
+
+        Raises:
+            ValueError: If ``amount`` is negative or ``side`` invariant fails.
+        """
         if isinstance(amount, str):
             amount = Decimal(amount)
         return cls(
@@ -112,7 +159,20 @@ class IntentLine:
         dimensions: dict[str, str] | None = None,
         memo: str | None = None,
     ) -> "IntentLine":
-        """Create a credit line."""
+        """
+        Create a credit line.
+
+        Preconditions:
+            - ``amount`` is convertible to a non-negative ``Decimal``.
+            - ``currency`` is a valid ISO 4217 code (R16).
+
+        Postconditions:
+            - Returned ``IntentLine.side == "credit"``.
+            - ``IntentLine.money.amount >= 0``.
+
+        Raises:
+            ValueError: If ``amount`` is negative or ``side`` invariant fails.
+        """
         if isinstance(amount, str):
             amount = Decimal(amount)
         return cls(
@@ -130,8 +190,19 @@ class LedgerIntent:
     Intent for a single ledger.
 
     A single EconomicEvent may produce intents for multiple ledgers
-    (e.g., GL and subledger). Each ledger intent is processed atomically
-    with the others.
+    (e.g., GL and subledger).  Each ledger intent is processed atomically
+    with the others (P11).
+
+    Contract:
+        Must contain at least one ``IntentLine``.
+
+    Guarantees:
+        - ``is_balanced()`` returns ``True`` iff debits == credits per currency (R4).
+        - Instance is frozen / immutable after construction.
+
+    Non-goals:
+        - Does NOT resolve roles to COA accounts.
+        - Does NOT persist lines (that is the JournalWriter's job).
 
     Attributes:
         ledger_id: Identifier for the target ledger (e.g., "GL", "AP", "AR")
@@ -247,9 +318,24 @@ class AccountingIntent:
     Contains all information needed for the finance layer to create
     journal entries.
 
-    Invariants:
-    - L1: Every role must resolve to exactly one COA account
-    - L5: All ledger intents are posted atomically or not at all
+    Contract:
+        Must contain at least one ``LedgerIntent``.
+
+    Guarantees:
+        - ``all_roles`` enumerates every account role that the finance layer
+          must resolve before posting (L1).
+        - ``all_balanced()`` checks that every contained ``LedgerIntent``
+          satisfies the double-entry invariant (R4).
+        - Instance is frozen / immutable.
+
+    Non-goals:
+        - Does NOT perform role-to-COA resolution (that is JournalWriter).
+        - Does NOT persist anything.
+
+    Invariants enforced:
+        L1  -- Every role must resolve to exactly one COA account.
+        L5  -- All ledger intents are posted atomically or not at all.
+        P11 -- Multi-ledger postings are atomic.
 
     Attributes:
         econ_event_id: The economic event that produced this intent
@@ -277,8 +363,12 @@ class AccountingIntent:
     metadata: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        # INVARIANT: P11 -- at least one ledger intent required for atomic posting
         if not self.ledger_intents:
             raise ValueError("AccountingIntent must have at least one ledger intent")
+        assert all(isinstance(li, LedgerIntent) for li in self.ledger_intents), (
+            "P11 violation: ledger_intents must contain only LedgerIntent instances"
+        )
 
     @property
     def ledger_ids(self) -> frozenset[str]:
@@ -380,6 +470,20 @@ class IntentResolutionResult:
     Result of resolving an AccountingIntent.
 
     Contains either successfully resolved lines or error information.
+
+    Contract:
+        Exactly one of ``success=True`` (with ``resolved_lines``) or
+        ``success=False`` (with ``error_code`` / ``error_message``) is set.
+
+    Guarantees:
+        - When ``success`` is ``True``, ``resolved_lines`` is a non-empty tuple
+          of ``ResolvedIntentLine``.
+        - When ``success`` is ``False``, ``error_code`` and ``error_message``
+          describe the failure; ``unresolved_roles`` lists roles that could not
+          be mapped (L1).
+
+    Non-goals:
+        - Does NOT retry resolution; the caller decides how to handle failures.
     """
 
     success: bool
@@ -415,6 +519,18 @@ class ResolvedIntentLine:
     An IntentLine with the account role resolved to a COA account.
 
     This is the output of role resolution, ready for persistence.
+
+    Contract:
+        Produced only by the JournalWriter after successful L1 resolution.
+
+    Guarantees:
+        - ``account_id`` and ``account_code`` refer to a valid, active COA entry.
+        - ``account_role`` is preserved for audit trail reconstruction.
+        - ``money.amount`` is non-negative (R4).
+
+    Non-goals:
+        - Does NOT verify the COA entry is still active at read time (snapshot
+          captures the state at posting time -- R21).
     """
 
     account_id: UUID

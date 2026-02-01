@@ -1,16 +1,38 @@
 """
-Financial Reporting Module.
+Financial Reporting Module (``finance_modules.reporting``).
 
+Responsibility
+--------------
 Read-only module that generates financial statements from the ledger:
-- Trial Balance
-- Balance Sheet (ASC 210 / IAS 1, classified)
-- Income Statement (single-step and multi-step)
-- Cash Flow Statement (indirect method, ASC 230 / IAS 7)
-- Statement of Changes in Equity
-- Segment Report (dimension-based)
+trial balance, balance sheet (ASC 210 / IAS 1, classified), income
+statement (single-step and multi-step), cash flow statement (indirect
+method, ASC 230 / IAS 7), statement of changes in equity, segment
+report (dimension-based), and multi-currency trial balance.
 
-Unlike other modules, this does NOT post journal entries.
-All transformations are pure functions in statements.py.
+Architecture position
+---------------------
+**Modules layer** -- pure read-only service with NO posting profiles.
+Unlike other modules, reporting does NOT post journal entries and has
+no ``AccountingPolicy`` registrations.  All statement generation is
+implemented as pure functions.
+
+Invariants enforced
+-------------------
+* No journal entries are created by this module (read-only guarantee).
+* Statement computations derive entirely from the immutable journal
+  (R6 -- no stored balances).
+
+Failure modes
+-------------
+* Missing account hierarchy data -> incomplete classification.
+* Period not found -> empty report with zero balances.
+
+Audit relevance
+---------------
+Financial statements are the primary output of the accounting system.
+Statement generation is deterministic and reproducible from the
+immutable journal.  Report metadata includes generation timestamp and
+period identifiers for audit trail purposes.
 """
 
 from finance_modules.reporting.config import ReportingConfig
@@ -26,6 +48,7 @@ from finance_modules.reporting.models import (
     IncomeStatementFormat,
     IncomeStatementReport,
     IncomeStatementSection,
+    MultiCurrencyTrialBalance,
     ReportMetadata,
     ReportType,
     SegmentData,
@@ -59,6 +82,7 @@ __all__ = [
     "EquityChangesReport",
     "SegmentData",
     "SegmentReport",
+    "MultiCurrencyTrialBalance",
     # Profiles (empty — read-only module)
     "REPORTING_PROFILES",
 ]

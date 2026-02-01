@@ -1,8 +1,40 @@
 """
-Correction Engine Domain Objects.
+finance_engines.correction.unwind -- Correction engine domain objects.
 
-Immutable value objects representing unwind plans, affected artifacts,
-and correction results. These are pure domain objects with no I/O dependencies.
+Responsibility:
+    Define immutable value objects for correction cascades: compensating
+    lines and entries, affected artifacts, unwind plans, and correction
+    results.  These model the complete lifecycle of a correction from
+    analysis (dry run) through execution.
+
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values and
+    finance_kernel/domain/economic_link (ArtifactRef, EconomicLink).
+    The stateful CorrectionService lives in finance_services/.
+
+Invariants enforced:
+    - R4 (double-entry balance): CompensatingEntry.__post_init__ validates
+      total debits == total credits for every compensating entry.
+    - R10 (posted immutability): corrections never mutate posted records;
+      they create compensating (reversal) entries.
+    - R19 (no silent correction): every correction produces explicit
+      compensating entries with full audit trail.
+    - EconomicLink graph acyclicity: AffectedArtifact.path_from_root
+      tracks the traversal path to detect and prevent cycles.
+
+Failure modes:
+    - ValueError from CompensatingEntry.__post_init__ if lines list is
+      empty or if debits != credits.
+    - ValueError from UnwindPlan.__post_init__ if affected_artifacts is
+      empty or if the first artifact is not the root.
+
+Audit relevance:
+    Correction results are first-class audit artifacts: they record the
+    plan (what was analyzed), the journal entries created (compensating
+    entries), the economic links created (CORRECTED_BY, REVERSED_BY),
+    the actor, and the execution timestamp.  Blocked artifacts are
+    explicitly recorded with block_reason for audit review.
 """
 
 from __future__ import annotations
@@ -44,7 +76,14 @@ class CompensatingLine:
     """
     A single line in a compensating journal entry.
 
-    Represents the reversal of an original posting line.
+    Contract:
+        Frozen dataclass representing the reversal of an original posting line.
+    Guarantees:
+        - ``reverse_line`` flips debit/credit and preserves amount/account.
+        - ``is_credit`` is the logical negation of ``is_debit``.
+    Non-goals:
+        - Does not validate that the account_id exists in the COA; that is
+          the service layer's responsibility.
     """
 
     account_id: str
@@ -68,7 +107,16 @@ class CompensatingLine:
         original_line_id: UUID,
         memo: str | None = None,
     ) -> CompensatingLine:
-        """Create a line that reverses the original."""
+        """Create a line that reverses the original.
+
+        Preconditions:
+            original_amount is a valid Money (non-None).
+            original_line_id is the UUID of the line being reversed.
+
+        Postconditions:
+            Returns a CompensatingLine with is_debit flipped from the
+            original, preserving account_id and amount.
+        """
         return cls(
             account_id=original_account_id,
             amount=original_amount,
@@ -83,7 +131,17 @@ class CompensatingEntry:
     """
     A journal entry that compensates (reverses) an original entry.
 
-    Contains the lines needed to reverse the GL impact of an affected artifact.
+    Contract:
+        Frozen dataclass containing the lines needed to reverse the GL
+        impact of an affected artifact.
+    Guarantees:
+        - __post_init__ validates at least one line exists and that
+          total debits == total credits (R4).
+        - ``create_reversal`` produces a balanced entry by flipping
+          every original line's debit/credit.
+    Non-goals:
+        - Does not assign journal entry IDs or sequences; that is the
+          JournalWriter's responsibility at persistence time.
     """
 
     artifact_ref: ArtifactRef       # What we're reversing
@@ -102,7 +160,7 @@ class CompensatingEntry:
                 "original_entry_id": str(self.original_entry_id),
             })
             raise ValueError("Compensating entry must have at least one line")
-        # Validate debits = credits
+        # INVARIANT [R4]: double-entry balance -- debits must equal credits.
         total_debits = sum(
             line.amount.amount for line in self.lines if line.is_debit
         )
@@ -143,7 +201,22 @@ class CompensatingEntry:
         correction_type: CorrectionType = CorrectionType.VOID,
         memo: str | None = None,
     ) -> CompensatingEntry:
-        """Create a reversal entry from original lines."""
+        """Create a reversal entry from original lines.
+
+        Preconditions:
+            original_lines is non-empty and each tuple contains
+            (account_id, amount, is_debit, line_id).  The original lines
+            must themselves be balanced (debits == credits).
+
+        Postconditions:
+            Returns a CompensatingEntry whose lines are the mirror image
+            of original_lines (every debit becomes credit and vice versa).
+            The result is guaranteed balanced by __post_init__.
+
+        Raises:
+            ValueError: If the resulting entry is unbalanced (should not
+            happen if original_lines were balanced).
+        """
         logger.info("compensating_reversal_created", extra={
             "artifact_ref": str(artifact_ref),
             "original_entry_id": str(original_entry_id),
@@ -178,7 +251,16 @@ class AffectedArtifact:
     """
     An artifact affected by a correction cascade.
 
-    Tracks what needs to be unwound and its position in the graph.
+    Contract:
+        Frozen dataclass tracking what needs to be unwound and its
+        position in the EconomicLink graph.
+    Guarantees:
+        - ``root`` factory creates a depth-0 artifact with itself as path.
+        - ``downstream`` factory increments depth and extends path_from_root.
+        - ``is_blocked`` is True only when ``can_unwind`` is False.
+    Non-goals:
+        - Does not determine whether an artifact CAN be unwound; that
+          decision is made by the CorrectionService during graph traversal.
     """
 
     ref: ArtifactRef
@@ -210,7 +292,16 @@ class AffectedArtifact:
         ref: ArtifactRef,
         gl_entries: tuple[UUID, ...],
     ) -> AffectedArtifact:
-        """Create the root artifact being corrected."""
+        """Create the root artifact being corrected.
+
+        Preconditions:
+            ref identifies the artifact that initiated the correction.
+            gl_entries lists the journal entry UUIDs to reverse.
+
+        Postconditions:
+            Returns an AffectedArtifact with depth=0,
+            path_from_root=(ref,), and link_type_followed=None.
+        """
         return cls(
             ref=ref,
             depth=0,
@@ -229,7 +320,17 @@ class AffectedArtifact:
         can_unwind: bool = True,
         block_reason: str | None = None,
     ) -> AffectedArtifact:
-        """Create a downstream affected artifact."""
+        """Create a downstream affected artifact.
+
+        Preconditions:
+            parent is an already-created AffectedArtifact in the cascade.
+            link_type is the EconomicLink type that connects parent to this
+            artifact (e.g., FULFILLED_BY, PAID_BY).
+
+        Postconditions:
+            Returns an AffectedArtifact with depth = parent.depth + 1
+            and path_from_root extended by ref.
+        """
         return cls(
             ref=ref,
             depth=parent.depth + 1,
@@ -246,8 +347,19 @@ class UnwindPlan:
     """
     Complete plan for unwinding a correction cascade.
 
-    Contains all affected artifacts and the compensating entries needed.
-    Built by traversing the EconomicLink graph from the root artifact.
+    Contract:
+        Frozen dataclass containing all affected artifacts and the
+        compensating entries needed.  Built by traversing the
+        EconomicLink graph from the root artifact.
+    Guarantees:
+        - __post_init__ validates non-empty affected_artifacts and that
+          the first artifact is the root.
+        - ``can_execute`` is False for DRY_RUN plans and for CASCADE plans
+          with blocked artifacts.
+        - ``create`` factory computes max_depth_reached automatically.
+    Non-goals:
+        - Does not execute the plan; that is the CorrectionService's
+          responsibility.
     """
 
     root_ref: ArtifactRef
@@ -352,7 +464,16 @@ class CorrectionResult:
     """
     Result of executing a correction.
 
-    Contains the executed plan plus all created journal entries and links.
+    Contract:
+        Frozen dataclass containing the executed plan plus all created
+        journal entries and economic links.
+    Guarantees:
+        - ``artifacts_corrected`` counts only artifacts that were both
+          unwindable (can_unwind) and had GL impact (has_gl_impact).
+        - ``create`` factory converts mutable lists to immutable tuples.
+    Non-goals:
+        - Does not verify that journal entries were actually persisted;
+          that verification is the service layer's responsibility.
     """
 
     plan: UnwindPlan

@@ -1,7 +1,34 @@
 """
-Accounts Payable Workflows.
+Accounts Payable Workflows (``finance_modules.ap.workflows``).
 
-State machines for invoice and payment processing.
+Responsibility
+--------------
+Declares the state-machine definitions for the AP invoice lifecycle and
+AP payment lifecycle.  Guards express preconditions for transitions;
+``posts_entry=True`` marks transitions that produce journal entries.
+
+Architecture position
+---------------------
+**Modules layer** -- declarative workflow definitions.  These frozen
+dataclasses are consumed by the workflow engine at runtime; they contain
+no I/O and no imports beyond ``finance_kernel.logging_config``.
+
+Invariants enforced
+-------------------
+* All ``Workflow``, ``Transition``, and ``Guard`` instances are
+  ``frozen=True`` -- immutable after module load.
+* Transitions with ``posts_entry=True`` correspond 1:1 to AP profiles
+  that produce journal entries.
+
+Failure modes
+-------------
+* Invalid transition (state not in ``states``) detected at runtime by
+  the workflow engine, not by these definitions.
+
+Audit relevance
+---------------
+Workflow definitions logged at module-load time with state counts and
+transition counts for configuration audit.
 """
 
 from dataclasses import dataclass
@@ -13,14 +40,23 @@ logger = get_logger("modules.ap.workflows")
 
 @dataclass(frozen=True)
 class Guard:
-    """A condition for a transition."""
+    """A condition that must be satisfied before a transition fires.
+
+    Contract: frozen, descriptive only.
+    Guarantees: name and description are non-empty at construction.
+    Non-goals: does not evaluate the condition -- the workflow engine does.
+    """
     name: str
     description: str
 
 
 @dataclass(frozen=True)
 class Transition:
-    """A valid state transition."""
+    """A valid state transition in a workflow.
+
+    Contract: frozen.  ``posts_entry=True`` indicates a journal-posting transition.
+    Guarantees: ``from_state`` and ``to_state`` are strings matching ``Workflow.states``.
+    """
     from_state: str
     to_state: str
     action: str
@@ -30,7 +66,12 @@ class Transition:
 
 @dataclass(frozen=True)
 class Workflow:
-    """A state machine definition."""
+    """A state machine definition for an AP document lifecycle.
+
+    Contract: frozen; ``transitions`` reference only states in ``states``.
+    Guarantees: ``initial_state`` is a member of ``states``.
+    Non-goals: does not execute transitions -- the workflow engine does.
+    """
     name: str
     description: str
     initial_state: str

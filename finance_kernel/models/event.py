@@ -1,14 +1,25 @@
 """
-Event envelope model.
+Module: finance_kernel.models.event
+Responsibility: ORM persistence for the incoming event envelope -- the trigger
+    for all downstream financial processing.
+Architecture position: Kernel > Models.  May import from db/base.py and
+    exceptions.py only.
 
-The minimum event envelope the finance kernel accepts.
+Invariants enforced:
+    R1  -- Event immutability (ORM before_update listener + DB trigger).
+    R2  -- Payload hash verification (payload_hash stored at ingestion;
+           same event_id with different hash raises PayloadMismatchError).
+    R3  -- event_id uniqueness (UNIQUE constraint via uq_event_id).
 
-Hard invariants:
-- event_id is never reused
-- (event_id, payload_hash) is immutable; if an event_id arrives with a
-  different payload_hash, it is rejected as a protocol violation
-- occurred_at and effective_date are immutable for a given event_id
-- effective_date determines fiscal period inclusion, locking, and reporting
+Failure modes:
+    - IntegrityError on duplicate event_id (R3).
+    - ImmutabilityViolationError on any UPDATE to an existing Event row (R1).
+    - PayloadMismatchError detected upstream by IngestorService (R2).
+
+Audit relevance:
+    The Event row is the canonical, immutable source record for every financial
+    posting.  Its payload_hash links to the audit event hash chain (R11).
+    Replay safety (R6) depends on event immutability.
 """
 
 from datetime import date, datetime
@@ -25,10 +36,22 @@ from finance_kernel.exceptions import ImmutabilityViolationError
 
 class Event(Base):
     """
-    Financially postable event envelope.
+    Financially postable event envelope -- source of all financial facts.
 
-    Events are the source of all financial facts. They are immutable
-    once ingested and serve as the audit trail for all postings.
+    Contract:
+        Once an Event row is INSERTed, it is immutable.  No column may be
+        updated or deleted.  The ORM before_update listener and a DB trigger
+        both enforce this (R1/R10).
+
+    Guarantees:
+        - event_id is globally unique (UNIQUE constraint).
+        - payload_hash is SHA-256 of the canonical JSON payload (R2).
+        - occurred_at, effective_date, and actor_id are set at ingestion
+          and never change.
+
+    Non-goals:
+        - This model does NOT validate payload schema; that is the
+          responsibility of IngestorService.
     """
 
     __tablename__ = "events"
@@ -107,10 +130,10 @@ class Event(Base):
 
     @property
     def idempotency_key(self) -> str:
-        """
-        Generate the idempotency key for this event.
+        """Generate the idempotency key for this event.
 
-        Format: producer:event_type:event_id
+        Postconditions: Returns string in format producer:event_type:event_id.
+            Used as the UNIQUE key on JournalEntry for R3/R8 enforcement.
         """
         return f"{self.producer}:{self.event_type}:{self.event_id}"
 
@@ -127,10 +150,11 @@ class Event(Base):
 
 @event.listens_for(Event, "before_update")
 def prevent_event_update(mapper, connection, target):
-    """
-    Prevent any updates to Event objects.
+    """Prevent any updates to Event objects.
 
-    R10 Violation: Events are immutable once ingested.
+    Preconditions: Called by SQLAlchemy before any UPDATE flush on Event.
+    Raises: ImmutabilityViolationError always -- INVARIANT R1/R10: Events
+        are immutable once ingested.
     """
     raise ImmutabilityViolationError(
         f"R10 Violation: Events are immutable - cannot modify event {target.event_id}"

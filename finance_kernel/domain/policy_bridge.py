@@ -1,15 +1,26 @@
 """
-Profile Bridge — Connects module profiles to kernel posting pipeline.
+PolicyBridge -- Connects module profiles to kernel posting pipeline.
 
-Each finance module defines AccountingPolicy instances (kernel format) and
-companion ModuleLineMapping tuples. This bridge:
+Responsibility:
+    Bridges finance modules and the kernel posting pipeline by storing
+    line mapping data alongside each AccountingPolicy and building
+    AccountingIntent objects from those mappings at posting time.
 
-1. Stores line mapping data alongside the kernel profile (ModulePolicyRegistry)
-2. Builds AccountingIntent from line mappings + event data at posting time
-3. Supports multi-ledger intents derived from profile LedgerEffects
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
 
-Modules call register_rich_profile() at startup.
-ModulePostingService calls build_accounting_intent() at runtime.
+Invariants enforced:
+    L1  -- Intent lines use account ROLES, resolved to COA at posting time
+    P11 -- Multi-ledger intents are built from LedgerEffects per profile
+
+Failure modes:
+    - ValueError from ``build_accounting_intent()`` if profile not found
+      or no lines could be built
+
+Audit relevance:
+    ModulePolicyRegistry is the authoritative mapping from profile to
+    line mappings.  Auditors verify that modules registered the correct
+    mappings and that intent construction matched the profile definition.
 """
 
 from collections import defaultdict
@@ -90,6 +101,17 @@ class ModulePolicyRegistry:
 
     Complements the kernel's PolicySelector by also storing
     line mapping data needed for AccountingIntent construction.
+
+    Contract:
+        Class-level singleton registry.  ``register()`` adds entries;
+        ``get()`` / ``get_line_mappings()`` query them.
+
+    Guarantees:
+        - ``get()`` returns ``None`` (never raises) for unknown profiles.
+        - ``list_all()`` returns all registered entries.
+
+    Non-goals:
+        - Does NOT persist to database (in-memory, populated at startup).
     """
 
     _entries: ClassVar[dict[str, ModulePolicyEntry]] = {}
@@ -315,6 +337,18 @@ def build_accounting_intent(
     profile = entry.kernel_profile
     safe_payload = payload or {}
 
+    logger.info(
+        "intent_construction_started",
+        extra={
+            "profile_name": profile_name,
+            "source_event_id": str(source_event_id),
+            "amount": str(amount),
+            "currency": currency,
+            "ledger_effect_count": len(profile.ledger_effects),
+            "mapping_count": len(entry.line_mappings),
+        },
+    )
+
     # Group line mappings by ledger
     mappings_by_ledger: dict[str, list[ModuleLineMapping]] = defaultdict(list)
     for m in entry.line_mappings:
@@ -347,11 +381,31 @@ def build_accounting_intent(
             ledger_intents.append(
                 LedgerIntent(ledger_id=effect.ledger, lines=tuple(lines))
             )
+            logger.debug(
+                "ledger_intent_built",
+                extra={
+                    "profile_name": profile_name,
+                    "ledger_id": effect.ledger,
+                    "line_count": len(lines),
+                    "source": "mappings" if effect.ledger in mappings_by_ledger else "auto",
+                },
+            )
 
     if not ledger_intents:
         raise ValueError(
             f"No ledger intents could be built for profile: {profile_name}"
         )
+
+    total_lines = sum(len(li.lines) for li in ledger_intents)
+    logger.info(
+        "intent_construction_completed",
+        extra={
+            "profile_name": profile_name,
+            "source_event_id": str(source_event_id),
+            "ledger_count": len(ledger_intents),
+            "total_lines": total_lines,
+        },
+    )
 
     econ_event_id = uuid4()
 
@@ -394,6 +448,14 @@ def _build_intent_lines(
     for mapping in line_mappings:
         if mapping.foreach:
             collection = payload.get(mapping.foreach, [])
+            logger.debug(
+                "intent_line_foreach",
+                extra={
+                    "role": mapping.role,
+                    "field": mapping.foreach,
+                    "item_count": len(collection),
+                },
+            )
             for item in collection:
                 item_amount = _extract_amount(item, amount)
                 lines.append(
@@ -412,6 +474,15 @@ def _build_intent_lines(
             if ctx_value is not None:
                 ctx_amount = Decimal(str(ctx_value))
                 if ctx_amount > 0:
+                    logger.debug(
+                        "intent_line_from_context",
+                        extra={
+                            "role": mapping.role,
+                            "field": mapping.from_context,
+                            "amount": str(ctx_amount),
+                            "side": mapping.side,
+                        },
+                    )
                     lines.append(
                         _create_intent_line(
                             mapping.role, mapping.side, ctx_amount, currency
@@ -420,6 +491,16 @@ def _build_intent_lines(
                 elif ctx_amount < 0:
                     # Negative context amount: flip side (e.g., favorable variance)
                     flipped_side = "credit" if mapping.side == "debit" else "debit"
+                    logger.debug(
+                        "intent_line_side_flip",
+                        extra={
+                            "role": mapping.role,
+                            "field": mapping.from_context,
+                            "amount": str(abs(ctx_amount)),
+                            "original_side": mapping.side,
+                            "flipped_side": flipped_side,
+                        },
+                    )
                     lines.append(
                         _create_intent_line(
                             mapping.role, flipped_side, abs(ctx_amount), currency

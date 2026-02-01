@@ -1,8 +1,28 @@
 """
-Aging Calculator - Calculate aging for dated documents.
+Module: finance_engines.aging
+Responsibility:
+    Calculate document aging and classify documents into configurable
+    aging buckets.  Used for AP aging, AR aging, and inventory
+    slow-moving analysis.
 
-Used for AP aging, AR aging, and inventory slow-moving analysis.
-Pure functions with no I/O.
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values.
+
+Invariants enforced:
+    - Purity: no clock access, no I/O (R6).
+    - Decimal-only arithmetic for all monetary amounts (R16, R17).
+    - Deterministic bucket classification for identical inputs.
+
+Failure modes:
+    - ValueError when an age does not fall into any configured bucket.
+    - KeyError from document dicts missing required keys in
+      ``generate_report_from_documents``.
+
+Audit relevance:
+    Aging reports are inputs to financial statement disclosure (e.g., the
+    allowance for doubtful accounts).  Each report generation is traced
+    via ``@traced_engine``.
 
 Usage:
     from finance_engines.aging import AgingCalculator, AgeBucket, AgedItem
@@ -39,7 +59,16 @@ class AgeBucket:
     """
     Definition of an aging bucket.
 
-    Immutable value object.
+    Contract:
+        Frozen dataclass representing a contiguous range of days.
+    Guarantees:
+        - min_days >= 0.
+        - max_days >= min_days (when bounded).
+        - ``contains()`` is mutually exclusive across a properly defined
+          bucket sequence.
+    Non-goals:
+        - Does not enforce mutual exclusion across a bucket *set*; that
+          is the caller's responsibility.
     """
 
     name: str
@@ -91,7 +120,14 @@ class AgedItem:
     """
     An item with its age classification.
 
-    Immutable value object representing a document in an aging report.
+    Contract:
+        Frozen dataclass binding a document to its computed age and bucket.
+    Guarantees:
+        - ``age_days`` and ``bucket`` are consistent (bucket.contains(age_days)
+          or age_days < 0 mapped to the current bucket).
+    Non-goals:
+        - Does not validate that the ``amount`` currency matches any
+          report-level currency; that is ``AgingReport``'s responsibility.
     """
 
     document_id: str | UUID
@@ -124,7 +160,14 @@ class AgingReport:
     """
     Complete aging report.
 
-    Immutable value object with aggregation methods.
+    Contract:
+        Frozen dataclass containing a snapshot aging report.
+    Guarantees:
+        - ``total_amount()`` equals the sum of all item amounts.
+        - ``total_by_bucket()`` covers every bucket in ``self.buckets``.
+    Non-goals:
+        - Does not enforce single-currency across items; mixed currencies
+          will cause ``Money`` addition to raise.
     """
 
     as_of_date: date
@@ -233,8 +276,16 @@ class AgingCalculator:
     """
     Calculate aging for any dated documents.
 
-    Pure functions - no I/O, no database access.
-    All dates and data passed as parameters.
+    Contract:
+        Pure functions -- no I/O, no database access.
+        All dates and data passed as parameters.
+    Guarantees:
+        - ``calculate_age`` returns a deterministic integer for any
+          (document_date, as_of_date) pair.
+        - ``classify`` maps every non-negative age to exactly one bucket
+          (given a well-formed bucket sequence).
+    Non-goals:
+        - Does not persist reports; callers are responsible for storage.
     """
 
     DEFAULT_BUCKETS = STANDARD_BUCKETS
@@ -281,15 +332,15 @@ class AgingCalculator:
         """
         Classify age into a bucket.
 
-        Args:
-            age_days: Age in days
-            buckets: Buckets to use (defaults to STANDARD_BUCKETS)
-
-        Returns:
-            The bucket containing this age
-
+        Preconditions:
+            - ``buckets`` (if provided) must form a contiguous, non-overlapping
+              sequence covering all non-negative integers up to an unbounded
+              terminal bucket.
+        Postconditions:
+            - Returns exactly one ``AgeBucket`` whose range contains
+              ``age_days`` (negative ages map to the first/current bucket).
         Raises:
-            ValueError: If age doesn't fit any bucket
+            ValueError: If age doesn't fit any bucket.
         """
         if buckets is None:
             buckets = self.DEFAULT_BUCKETS

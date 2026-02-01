@@ -1,8 +1,26 @@
 """
-Pure event validation.
+EventValidator -- Pure event validation functions.
 
-All event validation logic lives here - NO I/O, NO ORM, NO time.
-This is part of the functional core (R1).
+Responsibility:
+    Validates events at the domain boundary: schema version, event type
+    format, currency codes (R16), payload required fields, amounts, and
+    full schema validation (P10).
+
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
+
+Invariants enforced:
+    R1  -- Event validation at boundary (schema version, event type)
+    R16 -- ISO 4217 currency enforcement via CurrencyRegistry
+    P10 -- Field reference validation against EventSchema
+
+Failure modes:
+    Returns ``ValidationResult.failure(...)`` or ``list[ValidationError]``
+    -- never raises exceptions for business rule violations.
+
+Audit relevance:
+    Validation errors carry machine-readable codes (R18) that auditors use
+    to classify rejection reasons.
 """
 
 import re

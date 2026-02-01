@@ -1,10 +1,34 @@
 """
-Bank Subledger Service.
+finance_services.subledger_bank -- Bank subledger service.
 
-Bank subledger — tracks deposits, withdrawals, and transfers per bank account.
-Entity type: Bank account identifier.
+Responsibility:
+    Manage bank-account-level subledger entries linked to GL journal entries.
+    Track deposits, withdrawals, transfers, reversals, adjustments,
+    bank fees, and interest per bank account.
 
-Zero tolerance by default (see subledger_contracts.yaml).
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    Extends SubledgerService ABC with Bank-specific document type validation.
+    Delegates to shared _post_entry/_get_balance helpers in subledger_ap.
+    Entity type: Bank account identifier.
+
+Invariants enforced:
+    - SL-G1 (single-sided entries): delegated to SubledgerEntry.__post_init__.
+    - SL-G2 (GL linkage): _post_entry stores journal_entry_id on the ORM model.
+    - SL-G3 (per-currency reconciliation): bank uses zero tolerance;
+      every cent must match between SL and GL control account.
+    - Document type whitelist: only DEPOSIT, WITHDRAWAL, TRANSFER,
+      REVERSAL, ADJUSTMENT, BANK_FEE, INTEREST are accepted.
+
+Failure modes:
+    - ValueError from post() if entry validation fails.
+    - ValueError from post() if source_document_type is not in
+      BANK_DOCUMENT_TYPES.
+
+Audit relevance:
+    Every post is logged with entry_id, subledger_type, entity_id, and
+    journal_entry_id.  Zero-tolerance enforcement ensures bank subledger
+    balances exactly match GL control account balances at period close.
 """
 
 from __future__ import annotations
@@ -35,7 +59,19 @@ class BankSubledgerService(SubledgerService):
     """
     Bank subledger service.
 
-    Manages bank-account-level subledger entries linked to GL journal entries.
+    Contract:
+        Manages bank-account-level subledger entries linked to GL journal
+        entries.  Receives Session and Clock via constructor injection.
+    Guarantees:
+        - ``post`` validates entry fields and document type before persisting.
+        - ``get_balance`` returns a SubledgerBalance with debit-normal
+          convention (bank is an asset).
+        - ``get_open_items`` returns only unreconciled entries.
+    Non-goals:
+        - Does not implement bank reconciliation matching logic; that is
+          the ReconciliationService's responsibility.
+        - Does not manage bank statement imports.
+
     Bank uses zero tolerance (SL-G3 per-currency reconciliation).
     """
 

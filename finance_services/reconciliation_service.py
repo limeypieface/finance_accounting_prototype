@@ -1,16 +1,39 @@
 """
-Reconciliation Manager - Invoice/payment matching, 3-way match, bank reconciliation.
+finance_services.reconciliation_service -- Invoice/payment matching, 3-way match, bank reconciliation.
 
-This service manages document reconciliation by:
-1. Tracking reconciliation states via EconomicLink relationships
-2. Applying payments to invoices with PAID_BY links
-3. Creating 3-way matches with FULFILLED_BY chains
-4. Reconciling bank statements with MATCHED_WITH links
+Responsibility:
+    Manages document reconciliation by deriving reconciliation state from
+    EconomicLink relationships, applying payments to invoices with PAID_BY
+    links, creating 3-way matches (PO -> Receipt -> Invoice) with
+    FULFILLED_BY chains, and reconciling bank statements with MATCHED_WITH
+    links.
 
-It composes:
-- AllocationEngine for payment allocation across invoices
-- MatchingEngine for 3-way match and bank reconciliation
-- LinkGraphService for link management and state derivation
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    Composes AllocationEngine and MatchingEngine (pure engines) with
+    LinkGraphService (kernel I/O) for link management and state derivation.
+
+Invariants enforced:
+    - LINK_LEGALITY: all links use the immutable EconomicLink model with
+      appropriate LinkType (PAID_BY, FULFILLED_BY, MATCHED_WITH).
+    - Over-application guard: payment amount must not exceed remaining
+      balance (OverapplicationError).
+    - Duplicate match guard: fully-matched documents reject further
+      application (DocumentAlreadyMatchedError).
+    - Tolerance enforcement: 3-way match rejects quantity and price
+      variances exceeding configured tolerance (MatchVarianceExceededError).
+
+Failure modes:
+    - OverapplicationError: applied amount exceeds remaining balance.
+    - DocumentAlreadyMatchedError: document is already fully matched.
+    - MatchVarianceExceededError: variance exceeds tolerance threshold.
+    - BankReconciliationError: statement line already reconciled.
+
+Audit relevance:
+    - Every payment application and match creates immutable EconomicLink
+      records with metadata capturing amounts, currencies, and dates.
+    - Reconciliation state is fully derivable from the link graph (no
+      stored balances), ensuring replay safety (R6).
 
 Usage:
     from finance_services.reconciliation_service import ReconciliationManager
@@ -90,14 +113,24 @@ class ReconciliationManager:
     """
     Manages document reconciliation and payment application.
 
-    This service handles:
-    - Payment application to invoices (AP/AR)
-    - 3-way matching (PO -> Receipt -> Invoice)
-    - Bank statement reconciliation
-    - Status derivation from link graph
+    Contract:
+        Given artifact references and amounts, derive reconciliation
+        state, apply payments, create 3-way matches, and reconcile bank
+        statement lines -- all backed by immutable EconomicLink records.
 
-    All state is derived from EconomicLink relationships, ensuring
-    consistency and providing full audit trail.
+    Guarantees:
+        - All state is derived from EconomicLink relationships; no stored
+          balances (R6 replay safety).
+        - Over-application is prevented by balance checks before link
+          creation.
+        - 3-way match variances are validated against tolerances before
+          any links are established.
+
+    Non-goals:
+        - Does NOT manage fiscal-period close or GL posting (separate
+          services handle those concerns).
+        - Does NOT handle partial reversal of a payment application
+          (use CorrectionEngine for that).
     """
 
     def __init__(
@@ -246,13 +279,16 @@ class ReconciliationManager:
         # Get current state
         state = self.get_reconciliation_state(invoice_ref, invoice_original_amount)
 
-        # Check for overapplication
+        # INVARIANT: Over-application guard -- applied amount must not
+        # exceed remaining balance.
         if state.is_fully_matched:
             logger.warning("payment_application_already_matched", extra={
                 "invoice_ref": str(invoice_ref),
             })
             raise DocumentAlreadyMatchedError(str(invoice_ref))
 
+        # INVARIANT: Amount cannot exceed remaining balance.
+        assert amount.amount >= 0, "Payment amount must be non-negative"
         if amount.amount > state.remaining_amount.amount:
             logger.warning("payment_application_overapplication", extra={
                 "invoice_ref": str(invoice_ref),
@@ -439,7 +475,8 @@ class ReconciliationManager:
             po_unit_price.currency.code,
         )
 
-        # Check tolerance
+        # INVARIANT: Tolerance enforcement -- quantity and price variances
+        # must be within configured thresholds.
         if tolerance.quantity_tolerance_type.value == "absolute":
             if abs(quantity_variance) > tolerance.quantity_tolerance:
                 raise MatchVarianceExceededError(

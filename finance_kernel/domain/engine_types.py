@@ -1,13 +1,26 @@
 """
-Engine dispatch types — pure frozen dataclasses.
+EngineTypes -- Pure frozen DTOs for engine dispatch tracing.
 
-These DTOs are used by both the EngineDispatcher (in finance_services/)
-and the InterpretationCoordinator (in finance_kernel/services/).
-They live in finance_kernel/domain/ because they have no external
-dependencies and are needed by kernel-internal code.
+Responsibility:
+    Defines the immutable data structures for engine invocation auditing:
+    ``EngineTraceRecord`` (per-engine) and ``EngineDispatchResult`` (aggregate).
 
-The EngineDispatcher class itself lives in finance_services/ because
-it depends on finance_config (CompiledPolicy) and finance_engines (tracer).
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
+    Used by EngineDispatcher (finance_services/) and
+    InterpretationCoordinator (finance_kernel/services/).
+
+Invariants enforced:
+    (none directly -- supports audit trail for engine invocations)
+
+Failure modes:
+    (none -- pure value objects)
+
+Audit relevance:
+    EngineTraceRecord captures engine name, version, input fingerprint,
+    duration, and success/failure for every engine invocation.  Auditors
+    use this to verify that the correct engine versions were invoked and
+    that results are reproducible.
 """
 
 from __future__ import annotations
@@ -18,7 +31,16 @@ from typing import Any
 
 @dataclass(frozen=True)
 class EngineTraceRecord:
-    """Audit record for a single engine invocation."""
+    """
+    Audit record for a single engine invocation.
+
+    Contract:
+        One record per engine call.  ``success=False`` requires ``error``
+        to carry a human-readable description.
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
+    """
 
     engine_name: str
     engine_version: str
@@ -31,7 +53,17 @@ class EngineTraceRecord:
 
 @dataclass(frozen=True)
 class EngineDispatchResult:
-    """Result of dispatching all required engines for a policy."""
+    """
+    Aggregate result of dispatching all required engines for a policy.
+
+    Contract:
+        ``all_succeeded`` is ``True`` only if every engine trace reports
+        ``success=True``.
+
+    Guarantees:
+        - Frozen dataclass -- immutable after construction.
+        - ``errors`` collects all engine-level error messages.
+    """
 
     engine_outputs: dict[str, Any]
     traces: tuple[EngineTraceRecord, ...]

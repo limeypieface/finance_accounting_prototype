@@ -1,7 +1,25 @@
 """
-Journal entry query selector.
+Module: finance_kernel.selectors.journal_selector
+Responsibility: Read-only query access to journal entries and their lines.
+    Converts ORM models to frozen DTOs for clean layer separation.
+Architecture position: Kernel > Selectors.  May import from models/ and
+    selectors/base.py.  MUST NOT import from services/, domain/, or outer layers.
 
-Provides read-only access to journal entries and their lines.
+Invariants enforced:
+    - Read-only: No mutations performed on any queried data.
+    - DTO convention: All public methods return JournalEntryDTO/JournalLineDTO,
+      never raw ORM models.
+    - Lines are sorted by line_seq for deterministic ordering (R24 hash stability).
+
+Failure modes:
+    - Returns None or empty list when no matching entries exist (never raises
+      on absence of data).
+
+Audit relevance:
+    JournalSelector is the primary read path for journal entries in the system.
+    It supports audit queries by event ID, date range, account, and status.
+    All results derive from the authoritative journal_entries/journal_lines
+    tables -- the single source of financial truth.
 """
 
 from dataclasses import dataclass
@@ -77,7 +95,19 @@ class JournalSelector(BaseSelector[JournalEntry]):
     """
     Selector for journal entry queries.
 
-    Returns DTOs rather than ORM models for clean separation.
+    Contract:
+        All public query methods return JournalEntryDTO instances (or lists
+        thereof).  Lines within each DTO are sorted by line_seq for
+        deterministic ordering.
+
+    Guarantees:
+        - Read-only: No mutations are performed.
+        - Eager loading: JournalEntry.lines are loaded via selectinload to
+          avoid N+1 queries.
+        - Ordering: Multi-entry results are ordered by JournalEntry.seq.
+
+    Non-goals:
+        - This selector does NOT compute balances; use LedgerSelector for that.
     """
 
     def __init__(self, session: Session):
@@ -117,6 +147,10 @@ class JournalSelector(BaseSelector[JournalEntry]):
         """
         Get a journal entry by ID.
 
+        Preconditions: journal_entry_id is a valid UUID.
+        Postconditions: Returns JournalEntryDTO with all lines if found,
+            None if no entry exists with the given ID.
+
         Args:
             journal_entry_id: Entry ID.
 
@@ -136,7 +170,12 @@ class JournalSelector(BaseSelector[JournalEntry]):
 
     def get_entry_by_event(self, event_id: UUID) -> JournalEntryDTO | None:
         """
-        Get a journal entry by source event ID.
+        Get a journal entry by source event ID (single result expected).
+
+        Preconditions: event_id is a valid UUID.
+        Postconditions: Returns the first JournalEntryDTO matching the event,
+            or None.  If multiple entries exist for the same event, only the
+            first is returned -- use get_entries_by_event() for the full list.
 
         Args:
             event_id: Event ID.
@@ -182,6 +221,10 @@ class JournalSelector(BaseSelector[JournalEntry]):
     ) -> list[JournalEntryDTO]:
         """
         Get journal entries within a date range.
+
+        Preconditions: start_date <= end_date.
+        Postconditions: Returns all entries where start_date <= effective_date
+            <= end_date, ordered by seq.  Empty list if none found.
 
         Args:
             start_date: Start of period (inclusive).
@@ -265,7 +308,13 @@ class JournalSelector(BaseSelector[JournalEntry]):
         as_of_date: date | None = None,
     ) -> list[JournalEntryDTO]:
         """
-        Get journal entries that affect a specific account.
+        Get posted journal entries that affect a specific account.
+
+        Preconditions: account_id is a valid UUID.
+        Postconditions: Returns only POSTED entries that have at least one
+            JournalLine referencing the given account.  Entries are ordered
+            by seq.  If as_of_date is set, only entries with effective_date
+            <= as_of_date are included.
 
         Args:
             account_id: Account ID.

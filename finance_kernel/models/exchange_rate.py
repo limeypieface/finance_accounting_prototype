@@ -1,12 +1,30 @@
 """
-Exchange Rate model.
+Module: finance_kernel.models.exchange_rate
+Responsibility: ORM persistence for currency exchange rates used in multi-currency
+    journal postings.  Each rate record is a timestamped, sourced conversion factor
+    between two ISO 4217 currencies.
+Architecture position: Kernel > Models.  May import from db/base.py only.
+    MUST NOT import from services/, selectors/, domain/, or outer layers.
 
-Manages currency conversion rates with full auditability.
+Invariants enforced:
+    R10 -- Immutability when referenced.  Once an ExchangeRate row is used by
+           any JournalLine (via exchange_rate_id FK), the rate value is frozen.
+           ORM listener in db/immutability.py + DB trigger 08_exchange_rate.sql.
+    R16 -- ISO 4217 enforcement.  from_currency and to_currency are 3-character
+           codes validated at the ingestion boundary.
+    R21 -- Reference snapshot determinism.  JournalLine stores exchange_rate_id
+           so that replay can recompute the exact converted amount.
 
-Hard invariants:
-- Rates are append-only
-- Posting uses a frozen rate selection (rate_id is stored on the JournalLine)
-- Historical postings never re-evaluate rates
+Failure modes:
+    - ExchangeRateImmutableError on UPDATE to rate when referenced (R10).
+    - ExchangeRateReferencedError on DELETE when referenced (R10).
+    - InvalidExchangeRateError on non-positive or excessively large rate values.
+
+Audit relevance:
+    Exchange rates are the bridge between reporting currency and transaction
+    currency.  Changing a referenced rate retroactively silently alters the
+    value of historical journal entries.  Immutability after first use is a
+    foundational audit guarantee for multi-currency ledgers.
 """
 
 from datetime import datetime
@@ -20,10 +38,25 @@ from finance_kernel.db.base import TrackedBase
 
 class ExchangeRate(TrackedBase):
     """
-    Currency exchange rate record.
+    Currency exchange rate record -- one directional conversion factor.
 
-    Rates are immutable - new rates are added, old rates are never modified.
-    Each posting records the specific rate_id used for conversions.
+    Contract:
+        Each ExchangeRate represents a point-in-time conversion factor from
+        one currency to another (from_currency * rate = to_currency amount).
+        Once referenced by any JournalLine via exchange_rate_id, the rate
+        value becomes immutable (R10).
+
+    Guarantees:
+        - rate is always a positive Decimal with up to 18 decimal places.
+        - from_currency and to_currency are 3-character ISO 4217 codes (R16).
+        - effective_at records when the rate became authoritative.
+        - source records the rate provider for audit trail.
+
+    Non-goals:
+        - This model does NOT enforce inverse rate consistency; the caller
+          must create separate ExchangeRate rows for the reverse direction.
+        - This model does NOT perform triangulation; that is the responsibility
+          of the multicurrency engine.
     """
 
     __tablename__ = "exchange_rates"
@@ -83,6 +116,11 @@ class ExchangeRate(TrackedBase):
         """
         Convert an amount using this rate.
 
+        Preconditions: amount is a Decimal value in from_currency.
+        Postconditions: Returns amount * rate (the equivalent in to_currency).
+            Does NOT round -- callers are responsible for applying currency-
+            precision rounding via round_money() (R17).
+
         Args:
             amount: Amount in from_currency.
 
@@ -93,5 +131,10 @@ class ExchangeRate(TrackedBase):
 
     @property
     def inverse_rate(self) -> Decimal:
-        """Get the inverse rate (to -> from)."""
+        """Get the inverse rate (to -> from).
+
+        Postconditions: Returns 1 / rate.  Callers should use this for display
+            only; for posting, a separate ExchangeRate row in the reverse
+            direction is the canonical source.
+        """
         return Decimal("1") / self.rate

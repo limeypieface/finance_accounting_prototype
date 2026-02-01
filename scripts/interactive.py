@@ -627,6 +627,11 @@ def print_menu():
     print("    J   View journal entries")
     print("    S   Subledger reports (entity balances, open items)")
     print("    T   Trace a journal entry (full auditor decision trail)")
+    print("    F   Trace a failed/rejected/blocked event")
+    print()
+    print("  Close:")
+    print("    H   Pre-close health check (read-only diagnostic)")
+    print("    C   Close a period (guided workflow)")
     print()
     print("  Other:")
     print("    A   Post ALL scenarios at once")
@@ -693,96 +698,17 @@ def show_journal(session):
     print()
 
 
-def show_trace(session, config=None):
-    """Let the user pick a journal entry by sequence number and trace it."""
-    import json
-    from finance_kernel.models.journal import JournalEntry
-    from finance_kernel.models.account import Account
-    from finance_kernel.models.event import Event
+def _render_trace(session, event_id, event_payload_map, acct_map, config):
+    """Render the full audit trace for a given event_id.
+
+    Shared renderer used by both show_trace() and show_failed_traces().
+    """
     from finance_kernel.models.fiscal_period import FiscalPeriod
-    from finance_kernel.models.interpretation_outcome import InterpretationOutcome
     from finance_kernel.models.party import Party
     from finance_kernel.selectors.trace_selector import TraceSelector
 
-    entries = session.query(JournalEntry).order_by(JournalEntry.seq).all()
-    if not entries:
-        print("\n  No journal entries to trace.\n")
-        return
-
-    # Build memo lookup
-    event_map = {}
-    event_payload_map = {}
-    for evt in session.query(Event).all():
-        memo = ""
-        if evt.payload and isinstance(evt.payload, dict):
-            memo = evt.payload.get("memo", "")
-            if not memo:
-                memo = evt.event_type or ""
-            event_payload_map[evt.event_id] = evt.payload
-        event_map[evt.event_id] = memo
-
-    # Account lookup
-    acct_map = {a.id: a for a in session.query(Account).all()}
-
-    # Check which have decision journals
-    outcomes = (
-        session.query(InterpretationOutcome)
-        .filter(InterpretationOutcome.decision_log.isnot(None))
-        .all()
-    )
-    events_with_journal = {o.source_event_id for o in outcomes}
-
-    print()
-    print("=" * 72)
-    print("  TRACE A JOURNAL ENTRY".center(72))
-    print("=" * 72)
-    print()
-    print(f"  {'#':>3}  {'status':<8}  {'journal':<8}  {'memo'}")
-    print(f"  {'---':>3}  {'------':<8}  {'-------':<8}  {'----'}")
-
-    for entry in entries:
-        status_val = entry.status.value if hasattr(entry.status, 'value') else str(entry.status)
-        memo = event_map.get(entry.source_event_id, "")
-        has_log = "YES" if entry.source_event_id in events_with_journal else "no"
-        seq_str = f"{entry.seq:>3}" if entry.seq is not None else "  -"
-        print(f"  {seq_str}  {status_val:<8}  {has_log:<8}  {memo}")
-
-    print()
-    try:
-        pick = input("  Enter entry # to trace (or blank to cancel): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return
-
-    if not pick:
-        return
-
-    try:
-        seq_num = int(pick)
-    except ValueError:
-        print(f"\n  Invalid number '{pick}'.\n")
-        return
-
-    target = None
-    for entry in entries:
-        if entry.seq == seq_num:
-            target = entry
-            break
-
-    if target is None:
-        print(f"\n  No entry with seq #{seq_num}.\n")
-        return
-
-    # Run the trace
-    memo = event_map.get(target.source_event_id, f"entry #{target.seq}")
-    print()
-    W = 72
-    print("=" * W)
-    print(f"  AUDIT TRACE: Entry #{target.seq} — {memo}")
-    print("=" * W)
-
     selector = TraceSelector(session)
-    bundle = selector.trace_by_event_id(target.source_event_id)
+    bundle = selector.trace_by_event_id(event_id)
 
     # ---------------------------------------------------------------
     # 1. ORIGIN EVENT (enhanced — full payload + source document refs)
@@ -905,6 +831,9 @@ def show_trace(session, config=None):
     print()
     print(f"--- JOURNAL ENTRIES ({len(bundle.journal_entries)}) ---")
     print()
+    if not bundle.journal_entries:
+        print("    (none — event did not produce journal entries)")
+        print()
     for je in bundle.journal_entries:
         print(f"    entry_id:       {je.entry_id}")
         print(f"    status:         {je.status}  seq: {je.seq if je.seq is not None else '-'}")
@@ -949,6 +878,12 @@ def show_trace(session, config=None):
             print(f"    profile_hash:      {interp.profile_hash[:16]}...")
         if interp.reason_code:
             print(f"    reason_code:       {interp.reason_code}")
+        if hasattr(interp, 'reason_detail') and interp.reason_detail:
+            print(f"    reason_detail:     {interp.reason_detail}")
+        if hasattr(interp, 'failure_type') and interp.failure_type:
+            print(f"    failure_type:      {interp.failure_type}")
+        if hasattr(interp, 'failure_message') and interp.failure_message:
+            print(f"    failure_message:   {interp.failure_message}")
         if interp.decision_log:
             print(f"    decision_log_size: {len(interp.decision_log)} records")
         print()
@@ -992,7 +927,6 @@ def show_trace(session, config=None):
                       f"Dr {d.get('sum_debit')} = Cr {d.get('sum_credit')}  "
                       f"{'PASS' if balanced else 'FAIL'}")
             elif action == "role_resolved":
-                # Enhanced: show full binding provenance
                 acct_name = d.get('account_name', '')
                 acct_type = d.get('account_type', '')
                 nbal = d.get('normal_balance', '')
@@ -1102,6 +1036,437 @@ def show_trace(session, config=None):
     else:
         print()
         print("  Trace is complete — 0 missing facts.")
+
+    print()
+
+
+def show_trace(session, config=None):
+    """Let the user pick a journal entry by sequence number and trace it."""
+    from finance_kernel.models.journal import JournalEntry
+    from finance_kernel.models.account import Account
+    from finance_kernel.models.event import Event
+    from finance_kernel.models.interpretation_outcome import InterpretationOutcome
+
+    entries = session.query(JournalEntry).order_by(JournalEntry.seq).all()
+    if not entries:
+        print("\n  No journal entries to trace.\n")
+        return
+
+    # Build memo lookup
+    event_map = {}
+    event_payload_map = {}
+    for evt in session.query(Event).all():
+        memo = ""
+        if evt.payload and isinstance(evt.payload, dict):
+            memo = evt.payload.get("memo", "")
+            if not memo:
+                memo = evt.event_type or ""
+            event_payload_map[evt.event_id] = evt.payload
+        event_map[evt.event_id] = memo
+
+    # Account lookup
+    acct_map = {a.id: a for a in session.query(Account).all()}
+
+    # Check which have decision journals
+    outcomes = (
+        session.query(InterpretationOutcome)
+        .filter(InterpretationOutcome.decision_log.isnot(None))
+        .all()
+    )
+    events_with_journal = {o.source_event_id for o in outcomes}
+
+    print()
+    print("=" * 72)
+    print("  TRACE A JOURNAL ENTRY".center(72))
+    print("=" * 72)
+    print()
+    print(f"  {'#':>3}  {'status':<8}  {'journal':<8}  {'memo'}")
+    print(f"  {'---':>3}  {'------':<8}  {'-------':<8}  {'----'}")
+
+    for entry in entries:
+        status_val = entry.status.value if hasattr(entry.status, 'value') else str(entry.status)
+        memo = event_map.get(entry.source_event_id, "")
+        has_log = "YES" if entry.source_event_id in events_with_journal else "no"
+        seq_str = f"{entry.seq:>3}" if entry.seq is not None else "  -"
+        print(f"  {seq_str}  {status_val:<8}  {has_log:<8}  {memo}")
+
+    print()
+    try:
+        pick = input("  Enter entry # to trace (or blank to cancel): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    if not pick:
+        return
+
+    try:
+        seq_num = int(pick)
+    except ValueError:
+        print(f"\n  Invalid number '{pick}'.\n")
+        return
+
+    target = None
+    for entry in entries:
+        if entry.seq == seq_num:
+            target = entry
+            break
+
+    if target is None:
+        print(f"\n  No entry with seq #{seq_num}.\n")
+        return
+
+    # Run the trace
+    memo = event_map.get(target.source_event_id, f"entry #{target.seq}")
+    print()
+    W = 72
+    print("=" * W)
+    print(f"  AUDIT TRACE: Entry #{target.seq} — {memo}")
+    print("=" * W)
+
+    _render_trace(session, target.source_event_id, event_payload_map, acct_map, config)
+
+
+def show_failed_traces(session, config=None):
+    """List rejected/blocked/failed events and let the user trace one."""
+    from finance_kernel.models.account import Account
+    from finance_kernel.models.event import Event
+    from finance_kernel.models.interpretation_outcome import (
+        InterpretationOutcome,
+        OutcomeStatus,
+    )
+
+    non_posted = (
+        session.query(InterpretationOutcome)
+        .filter(
+            InterpretationOutcome.status.notin_([
+                OutcomeStatus.POSTED.value,
+                OutcomeStatus.POSTED,
+            ])
+        )
+        .order_by(InterpretationOutcome.created_at.desc())
+        .all()
+    )
+
+    if not non_posted:
+        print("\n  No failed/rejected/blocked events found.\n")
+        return
+
+    # Build event lookup for memos
+    event_payload_map = {}
+    event_type_map = {}
+    for evt in session.query(Event).all():
+        if evt.payload and isinstance(evt.payload, dict):
+            event_payload_map[evt.event_id] = evt.payload
+        event_type_map[evt.event_id] = evt.event_type or ""
+
+    acct_map = {a.id: a for a in session.query(Account).all()}
+
+    W = 72
+    print()
+    print("=" * W)
+    print("  FAILED / REJECTED / BLOCKED EVENTS".center(W))
+    print("=" * W)
+    print()
+    print(f"  {'#':>3}  {'status':<12}  {'reason':<20}  {'event_type'}")
+    print(f"  {'---':>3}  {'------':<12}  {'------':<20}  {'----------'}")
+
+    for i, outcome in enumerate(non_posted):
+        status_val = outcome.status_str
+        reason = outcome.reason_code or ""
+        if len(reason) > 18:
+            reason = reason[:15] + "..."
+        evt_type = event_type_map.get(outcome.source_event_id, "")
+        print(f"  {i + 1:>3}  {status_val:<12}  {reason:<20}  {evt_type}")
+
+    print()
+    try:
+        pick = input("  Enter # to trace (or blank to cancel): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    if not pick:
+        return
+
+    try:
+        idx = int(pick) - 1
+    except ValueError:
+        print(f"\n  Invalid number '{pick}'.\n")
+        return
+
+    if idx < 0 or idx >= len(non_posted):
+        print(f"\n  Number out of range.\n")
+        return
+
+    outcome = non_posted[idx]
+    evt_type = event_type_map.get(outcome.source_event_id, "unknown")
+
+    print()
+    print("=" * W)
+    print(f"  AUDIT TRACE: {outcome.status_str.upper()} — {evt_type}")
+    print("=" * W)
+
+    _render_trace(session, outcome.source_event_id, event_payload_map, acct_map, config)
+
+
+def _build_close_orchestrator(session, orchestrator, clock, config):
+    """Build a PeriodCloseOrchestrator from the existing PostingOrchestrator."""
+    from finance_modules.reporting.service import ReportingService
+    from finance_modules.reporting.config import ReportingConfig
+    from finance_modules.gl.service import GeneralLedgerService
+    from finance_config.bridges import build_role_resolver
+    from finance_services.period_close_orchestrator import PeriodCloseOrchestrator
+
+    reporting_config = ReportingConfig(entity_name=ENTITY)
+    reporting_service = ReportingService(session=session, clock=clock, config=reporting_config)
+
+    role_resolver = build_role_resolver(config)
+    gl_service = GeneralLedgerService(session, role_resolver, clock)
+
+    return PeriodCloseOrchestrator.from_posting_orchestrator(
+        orchestrator, reporting_service, gl_service,
+    )
+
+
+def handle_health_check(session, orchestrator, clock, config):
+    """Handle 'H' — Pre-close health check (read-only diagnostic)."""
+    close_orch = _build_close_orchestrator(session, orchestrator, clock, config)
+
+    W = 72
+    print()
+    try:
+        period_code = input("  Period code (e.g., FY2026): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    if not period_code:
+        return
+
+    period_info = orchestrator.period_service.get_period_by_code(period_code)
+    if period_info is None:
+        print(f"\n  Period '{period_code}' not found.\n")
+        return
+
+    result = close_orch.health_check(
+        period_code=period_code,
+        period_end_date=period_info.end_date,
+    )
+
+    print()
+    print("=" * W)
+    print(f"  PRE-CLOSE HEALTH CHECK: {period_code}".center(W))
+    print("=" * W)
+    print()
+
+    # Subledger reconciliation
+    print("  Subledger Reconciliation:")
+    if result.sl_reconciliation:
+        for sl_type, info in result.sl_reconciliation.items():
+            sl_bal = info.get("sl_balance", Decimal("0"))
+            gl_bal = info.get("gl_balance", Decimal("0"))
+            var = info.get("variance", Decimal("0"))
+            status = info.get("status", "?")
+            print(f"    {sl_type:<12} SL ${sl_bal:>12,.2f}  GL ${gl_bal:>12,.2f}  "
+                  f"variance: ${var:>10,.2f}  {status}")
+    else:
+        print("    (no subledgers configured)")
+
+    print()
+
+    # Suspense/clearing accounts
+    print("  Suspense / Clearing Accounts:")
+    if result.suspense_balances:
+        for acct in result.suspense_balances:
+            code = acct.get("account_code", "?")
+            bal = acct.get("balance", Decimal("0"))
+            status = acct.get("status", "?")
+            print(f"    {code:<20} ${bal:>12,.2f}  {status}")
+    else:
+        print("    (none found)")
+
+    print()
+
+    # Trial balance
+    print("  Trial Balance:")
+    print(f"    Debits:  ${result.total_debits:>14,.2f}")
+    print(f"    Credits: ${result.total_credits:>14,.2f}")
+    print(f"    Balanced: {'YES' if result.trial_balance_ok else 'NO'}")
+
+    print()
+
+    # Activity
+    print(f"  Period Activity:")
+    print(f"    Entries: {result.period_entry_count}   "
+          f"Rejected: {result.period_rejection_count}")
+
+    print()
+
+    # Verdict
+    n_blocking = len(result.blocking_issues)
+    n_warnings = len(result.warnings)
+    if n_blocking == 0 and n_warnings == 0:
+        print("  RESULT: No issues found. Period is ready to close.")
+    else:
+        print(f"  RESULT: {n_blocking} blocking, {n_warnings} warning")
+        for issue in result.blocking_issues:
+            print(f"    [BLOCKING] {issue.description}")
+        for issue in result.warnings:
+            print(f"    [WARNING]  {issue.description}")
+        if n_blocking > 0:
+            print()
+            print("  Fix blocking issues before starting close.")
+
+    print()
+
+
+def handle_close_workflow(session, orchestrator, clock, config, actor_id):
+    """Handle 'C' — Close a period (guided workflow)."""
+    close_orch = _build_close_orchestrator(session, orchestrator, clock, config)
+
+    W = 72
+    print()
+    try:
+        period_code = input("  Period code (e.g., FY2026): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    if not period_code:
+        return
+
+    period_info = orchestrator.period_service.get_period_by_code(period_code)
+    if period_info is None:
+        print(f"\n  Period '{period_code}' not found.\n")
+        return
+
+    # Check current status
+    status = close_orch.get_status(period_code)
+    if status and status.get("is_closed"):
+        p_status = status.get("status", "closed")
+        print(f"\n  Period {period_code} is already {p_status.upper()}.\n")
+        return
+    if status and status.get("is_closing"):
+        print(f"\n  Period {period_code} is already in CLOSING state "
+              f"(run_id: {status.get('closing_run_id')}).")
+        try:
+            choice = input("  Cancel existing close? [y/N]: ").strip().upper()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if choice == "Y":
+            close_orch.cancel_close(period_code, actor_id, "User cancelled from CLI")
+            session.commit()
+            print("  Close cancelled. Period is OPEN again.\n")
+        else:
+            return
+
+    print()
+    print("=" * W)
+    print(f"  PERIOD CLOSE WORKFLOW: {period_code}".center(W))
+    print("=" * W)
+    print()
+
+    # Run health check first
+    print("  Running health check...")
+    health = close_orch.health_check(period_code, period_info.end_date)
+
+    print(f"  TB: Dr ${health.total_debits:>12,.2f} = Cr ${health.total_credits:>12,.2f}  "
+          f"{'balanced' if health.trial_balance_ok else 'IMBALANCED'}")
+    print(f"  Entries: {health.period_entry_count}   "
+          f"Issues: {len(health.blocking_issues)} blocking, {len(health.warnings)} warning")
+
+    if health.blocking_issues:
+        print()
+        for issue in health.blocking_issues:
+            print(f"    [BLOCKING] {issue.description}")
+        print()
+        try:
+            choice = input("  Blocking issues detected. Proceed anyway? [y/N]: ").strip().upper()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if choice != "Y":
+            return
+
+    print()
+    try:
+        is_ye_input = input("  Year-end close? [y/N]: ").strip().upper()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    is_year_end = is_ye_input == "Y"
+
+    print()
+    print("  Acquiring close lock and executing phases...")
+    print()
+
+    muted = _enable_quiet_logging()
+    try:
+        result = close_orch.close_period_full(
+            period_code=period_code,
+            actor_id=actor_id,
+            is_year_end=is_year_end,
+        )
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        _restore_logging(muted)
+        print(f"  ERROR: {e}\n")
+        return
+    _restore_logging(muted)
+
+    # Display phase results
+    for pr in result.phase_results:
+        if pr.message and "Skipped" in pr.message:
+            tag = "SKIP"
+        elif pr.success:
+            tag = "DONE"
+        else:
+            tag = "FAIL"
+        guard_str = f"  [{pr.guard}: {'PASS' if pr.success else 'FAIL'}]" if pr.guard else ""
+        print(f"  [{pr.phase}] {pr.phase_name:<24} {tag}  {pr.message or ''}{guard_str}")
+
+    print()
+
+    if result.certificate:
+        cert = result.certificate
+        print("=" * W)
+        print(f"  PERIOD {period_code} CLOSED SUCCESSFULLY".center(W))
+        print("=" * W)
+        print()
+        print(f"  Close Certificate ID:  {cert.id}")
+        print(f"  Closed by:             {cert.closed_by}")
+        print(f"  Closed at:             {cert.closed_at}")
+        print(f"  Correlation ID:        {cert.correlation_id}")
+        print()
+        print(f"  Trial Balance:")
+        print(f"    Debits:  ${cert.trial_balance_debits:>14,.2f}")
+        print(f"    Credits: ${cert.trial_balance_credits:>14,.2f}")
+        print()
+        print(f"  Phases completed: {cert.phases_completed}   skipped: {cert.phases_skipped}")
+        print(f"  Adjustments:      {cert.adjustments_posted}")
+        print(f"  Closing entries:  {cert.closing_entries_posted}")
+        print(f"  Subledgers:       {', '.join(cert.subledgers_closed) if cert.subledgers_closed else 'none'}")
+        print()
+        print(f"  Ledger hash (R24): {cert.ledger_hash}")
+        if cert.audit_event_id:
+            print(f"  Audit event:       {cert.audit_event_id}")
+        print()
+        print("  Close events are traceable via 'T'. Rejected events via 'F'.")
+        print(f"  Full log: logs/interactive.log (grep {cert.correlation_id[:8]})")
+    else:
+        print(f"  Close FAILED: {result.message}")
+        print()
+        if result.phase_results:
+            last = result.phase_results[-1]
+            if last.exceptions:
+                print("  Exception detail:")
+                for exc in last.exceptions:
+                    print(f"    [{exc.severity.upper()}] {exc.description}")
+        print()
+        print("  Period remains in CLOSING state. Use 'C' again to retry or cancel.")
 
     print()
 
@@ -1308,10 +1673,14 @@ def _enable_quiet_logging():
 
 
 def _restore_logging(muted):
-    """Restore muted handlers and re-disable logging."""
+    """Restore muted handlers after a quiet-logging section.
+
+    Console handlers are restored to their original levels. The global
+    logging gate is NOT re-disabled so the persistent file handler
+    (logs/interactive.log) continues to receive all records.
+    """
     for h, orig_level in muted:
         h.setLevel(orig_level)
-    logging.disable(logging.CRITICAL)
 
 
 # ---------------------------------------------------------------------------
@@ -1319,7 +1688,22 @@ def _restore_logging(muted):
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    logging.disable(logging.CRITICAL)
+    # Persistent file log — captures everything at DEBUG level even when
+    # console output is suppressed.  Check logs/interactive.log for diagnostics.
+    import os
+    os.makedirs("logs", exist_ok=True)
+    from finance_kernel.logging_config import StructuredFormatter
+    _file_handler = logging.FileHandler("logs/interactive.log", mode="a")
+    _file_handler.setLevel(logging.DEBUG)
+    _file_handler.setFormatter(StructuredFormatter())
+    fk_logger = logging.getLogger("finance_kernel")
+    fk_logger.addHandler(_file_handler)
+    fk_logger.setLevel(logging.DEBUG)
+    # Mute console handlers so CLI output stays clean, but file handler
+    # continues to receive all records.
+    for h in fk_logger.handlers:
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+            h.setLevel(logging.CRITICAL + 1)
 
     from finance_kernel.db.engine import init_engine_from_url, get_session
     from finance_kernel.domain.clock import DeterministicClock
@@ -1390,6 +1774,15 @@ def main() -> int:
 
         elif choice == "T":
             show_trace(session, config)
+
+        elif choice == "F":
+            show_failed_traces(session, config)
+
+        elif choice == "H":
+            handle_health_check(session, orchestrator, clock, config)
+
+        elif choice == "C":
+            handle_close_workflow(session, orchestrator, clock, config, actor_id)
 
         elif choice == "A":
             # Post ALL scenarios
@@ -1509,7 +1902,7 @@ def main() -> int:
                 print(f"\n  Invalid number. Pick 1-{total_items}.")
 
         else:
-            print(f"\n  Unknown command '{choice}'. Try a number, R, J, T, A, X, or Q.")
+            print(f"\n  Unknown command '{choice}'. Try a number, R, J, S, T, F, H, C, A, X, or Q.")
 
     session.close()
     return 0

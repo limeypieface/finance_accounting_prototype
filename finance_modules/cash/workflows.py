@@ -1,8 +1,29 @@
 """
-Cash Module Workflows.
+finance_modules.cash.workflows
+================================
 
-State machines for cash management processes.
-The workflow engine (shared infrastructure) executes these.
+Responsibility:
+    Declarative state-machine definitions for cash management processes
+    (bank reconciliation).  The shared workflow engine executes transitions;
+    this module only declares the graph and guards.
+
+Architecture:
+    Module layer (finance_modules).  Pure data declarations -- no I/O,
+    no imports from services or engines.
+
+Invariants enforced:
+    - Workflow transitions are immutable (frozen dataclasses).
+    - ``posts_entry=True`` transitions trigger journal entries via the
+      posting pipeline, ensuring R4 (balanced entries) and R7 (transaction
+      boundaries) compliance.
+
+Failure modes:
+    - Invalid transition request -> workflow engine rejects (not defined here).
+
+Audit relevance:
+    Reconciliation workflow state changes are auditable events.  The
+    ``approve`` transition (pending_review -> completed) is the control
+    point that triggers posting of reconciliation adjustments.
 """
 
 from dataclasses import dataclass
@@ -14,14 +35,26 @@ logger = get_logger("modules.cash.workflows")
 
 @dataclass(frozen=True)
 class Guard:
-    """A condition that must be true for a transition to be allowed."""
+    """
+    A condition that must be true for a transition to be allowed.
+
+    Contract:
+        Immutable predicate declaration.  The workflow engine evaluates the
+        named guard at transition time; this dataclass only stores metadata.
+    """
     name: str
     description: str
 
 
 @dataclass(frozen=True)
 class Transition:
-    """A valid state transition in a workflow."""
+    """
+    A valid state transition in a workflow.
+
+    Contract:
+        Immutable edge in the workflow graph.  When ``posts_entry`` is True,
+        the transition triggers a journal entry via the posting pipeline.
+    """
     from_state: str
     to_state: str
     action: str
@@ -31,7 +64,14 @@ class Transition:
 
 @dataclass(frozen=True)
 class Workflow:
-    """A state machine definition."""
+    """
+    A state machine definition.
+
+    Contract:
+        Frozen declaration of states and transitions.  ``initial_state``
+        must be an element of ``states``.  All ``from_state`` / ``to_state``
+        values in ``transitions`` must be elements of ``states``.
+    """
     name: str
     description: str
     initial_state: str

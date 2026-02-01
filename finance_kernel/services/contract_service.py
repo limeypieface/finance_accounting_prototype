@@ -1,9 +1,37 @@
 """
-Service layer for Contract operations.
+ContractService -- government contract and CLIN management with DCAA compliance.
 
-Manages government contracts and CLINs with DCAA compliance.
+Responsibility:
+    Provides CRUD operations for government contracts and Contract Line
+    Items (CLINs), enforcing FAR/DCAA compliance rules at every charge
+    boundary: active status, period of performance, funding limits,
+    ceiling limits, and cost allowability.
 
-R3 Compliance: Returns ContractInfo DTOs instead of ORM entities.
+Architecture position:
+    Kernel > Services -- imperative shell.
+    Called by the WIP and Project modules when posting cost charges;
+    also used by interactive administration flows.
+
+Invariants enforced:
+    R3  -- Returns frozen ``ContractInfo`` / ``CLINInfo`` DTOs, never
+           ORM entities (no leaked state).
+    R7  -- Flush-only: never commits or rolls back the session.
+    R16 -- Contract currency validated at creation time (ISO 4217).
+
+Failure modes:
+    - ContractNotFoundError: Contract lookup by ID or number fails.
+    - ContractInactiveError: Charge attempted against non-ACTIVE contract.
+    - ContractPOPExpiredError: Charge date outside period of performance.
+    - ContractFundingExceededError: Charge would exceed funded amount.
+    - ContractCeilingExceededError: Charge would exceed ceiling amount.
+    - UnallowableCostToContractError: Unallowable cost charged to contract.
+    - CLINNotFoundError / CLINInactiveError: CLIN lookup or status failure.
+
+Audit relevance:
+    Contract creation, activation, suspension, and closure are logged
+    via the structured logger.  DCAA-relevant validation decisions
+    (allowability, funding, ceiling) are logged with contract number
+    and charge amounts for audit trail completeness.
 """
 
 from __future__ import annotations
@@ -116,12 +144,25 @@ class CLINInfo:
 
 class ContractService(BaseService[Contract]):
     """
-    Service for managing government contracts.
+    Service for managing government contracts and CLINs.
 
-    Handles CRUD operations for contracts and CLINs with
-    DCAA compliance enforcement for cost charging.
+    Contract:
+        Accepts contract identifiers (UUID or contract_number) and returns
+        frozen ``ContractInfo`` / ``CLINInfo`` DTOs.  Mutation methods
+        (create, activate, suspend, close, add_funding) flush changes
+        within the caller's transaction.
 
-    R3 Compliance: All public methods return DTOs, not ORM entities.
+    Guarantees:
+        - R3: All public methods return immutable DTOs, not ORM entities.
+        - DCAA compliance validation via ``validate_can_charge()`` checks
+          active status, POP, funding, ceiling, and cost allowability.
+        - R7: Session is flushed but never committed.
+
+    Non-goals:
+        - Does NOT manage the transaction boundary (caller's responsibility).
+        - Does NOT enforce cost pool allocation rules (that is the
+          allocation engine).
+        - Does NOT compute incurred-cost-to-date (caller provides it).
     """
 
     def _to_dto(self, contract: Contract) -> ContractInfo:
@@ -294,6 +335,17 @@ class ContractService(BaseService[Contract]):
     ) -> ContractInfo:
         """
         Create a new contract.
+
+        Preconditions:
+            - ``contract_number`` is a unique, non-empty string.
+            - ``currency`` is a valid ISO 4217 code (R16).
+            - ``funded_amount``, if provided, is a non-negative ``Decimal``.
+            - ``ceiling_amount``, if provided, is >= ``funded_amount``.
+
+        Postconditions:
+            - A new ``Contract`` row is flushed with status DRAFT and
+              ``is_active=True``.
+            - Returns a frozen ``ContractInfo`` DTO.
 
         Args:
             contract_number: Unique contract number.
@@ -572,6 +624,16 @@ class ContractService(BaseService[Contract]):
     ) -> ContractInfo:
         """
         Validate that a charge can be applied to a contract.
+
+        Preconditions:
+            - ``contract_number`` identifies an existing contract.
+            - ``charge_amount`` is a positive ``Decimal`` (never float).
+            - ``incurred_to_date``, if provided, is a non-negative ``Decimal``
+              representing total costs already charged to this contract.
+
+        Postconditions:
+            - Returns ``ContractInfo`` only if ALL DCAA checks pass.
+            - On any failure, raises a typed exception (no silent pass).
 
         Checks:
         1. Contract exists and is active

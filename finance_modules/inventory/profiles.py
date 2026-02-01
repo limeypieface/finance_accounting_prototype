@@ -1,9 +1,33 @@
 """
-Inventory Economic Profiles — Kernel format.
+Inventory Economic Profiles (``finance_modules.inventory.profiles``).
 
-Merged authoritative profiles from kernel (guards, where-clauses, multi-ledger)
-and module (line mappings, additional scenarios). Each profile is a kernel
-AccountingPolicy with companion ModuleLineMapping tuples for intent construction.
+Responsibility
+--------------
+Declares all ``AccountingPolicy`` instances and companion
+``ModuleLineMapping`` tuples for the inventory module.  Each profile maps
+a single event type to journal-line specifications using account ROLES.
+
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue (this layer).
+Profiles are registered into kernel registries by ``register()`` and
+resolved at posting time by the interpretation pipeline (L1).
+
+Invariants enforced
+-------------------
+* R14 -- No ``if/switch`` on event_type in the posting engine.
+* R15 -- Adding a new inventory event type requires ONLY a new profile.
+* L1  -- Account roles are resolved to COA codes at posting time.
+
+Failure modes
+-------------
+* Duplicate profile names cause ``register_rich_profile`` to raise.
+* Guard expression match causes REJECTED outcome.
+
+Audit relevance
+---------------
+* Profile version numbers support replay compatibility (R23).
+* Guard conditions provide machine-readable rejection codes.
 
 Profiles:
     InventoryReceipt            — PO receipt: Dr Inventory / Cr GRNI

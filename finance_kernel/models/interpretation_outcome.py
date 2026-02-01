@@ -1,20 +1,25 @@
 """
-Interpretation Outcome model.
+Module: finance_kernel.models.interpretation_outcome
+Responsibility: ORM persistence for the terminal state of event interpretation.
+    Every accepted BusinessEvent ends here -- no exceptions.
+Architecture position: Kernel > Models.  May import from db/base.py only.
 
-Every accepted BusinessEvent ends here. No exceptions.
+Invariants enforced:
+    P15 -- Exactly one InterpretationOutcome per accepted event
+           (UNIQUE constraint on source_event_id via uq_outcome_source_event).
+    L5  -- No journal rows without POSTED outcome; no POSTED outcome without
+           all journal rows (enforced atomically by InterpretationCoordinator).
 
-This model records the terminal state of event interpretation:
-- POSTED: Successfully posted to all required ledgers
-- BLOCKED: Valid event, cannot process yet (awaiting precondition)
-- REJECTED: Invalid economic reality (policy says no)
-- PROVISIONAL: Recorded provisionally, awaiting confirmation
-- NON_POSTING: Valid, but no financial effect per policy
-- FAILED: Guard/engine/system failure (retriable)
-- RETRYING: Retry in progress after FAILED
-- ABANDONED: Permanently given up after repeated failures
+Failure modes:
+    - IntegrityError on duplicate source_event_id (P15).
+    - ValueError on invalid state transition (VALID_TRANSITIONS map).
 
-Invariant P15: Every accepted BusinessEvent has exactly one InterpretationOutcome.
-Invariant L5: No journal rows without POSTED outcome; no POSTED outcome without all journal rows.
+Audit relevance:
+    InterpretationOutcome is the proof that "every event ends somewhere."
+    For POSTED outcomes, journal_entry_ids links to the resulting JournalEntries.
+    For non-POSTED outcomes, reason_code and reason_detail explain why.
+    The decision_log column captures structured log records from the posting
+    pipeline for full audit trace reconstruction.
 """
 
 from datetime import datetime
@@ -91,8 +96,20 @@ class InterpretationOutcome(Base):
     """
     Records the terminal state of event interpretation.
 
-    Every accepted BusinessEvent must have exactly one InterpretationOutcome.
-    This is the proof that "every event ends somewhere."
+    Contract:
+        Every accepted BusinessEvent must have exactly one InterpretationOutcome
+        (P15).  The UNIQUE constraint on source_event_id enforces this.
+
+    Guarantees:
+        - State transitions follow VALID_TRANSITIONS (enforced by
+          validate_transition).
+        - Terminal states (POSTED, REJECTED, NON_POSTING, ABANDONED)
+          cannot transition further.
+        - When status is POSTED, journal_entry_ids is non-null (L5).
+
+    Non-goals:
+        - This model does NOT enforce L5 atomicity at the ORM level;
+          InterpretationCoordinator handles that within a transaction.
     """
 
     __tablename__ = "interpretation_outcomes"
@@ -268,7 +285,13 @@ class InterpretationOutcome(Base):
         return self.status_enum == OutcomeStatus.FAILED
 
     def validate_transition(self, target: OutcomeStatus) -> None:
-        """Raise ValueError if transition from current status to target is invalid."""
+        """Validate that a state transition is allowed.
+
+        Preconditions: target is a valid OutcomeStatus.
+        Postconditions: Returns None if transition is valid.
+        Raises: ValueError if transition from current status to target
+            is not in VALID_TRANSITIONS.
+        """
         allowed = VALID_TRANSITIONS.get(self.status_enum, frozenset())
         if target not in allowed:
             raise ValueError(

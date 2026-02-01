@@ -12,19 +12,32 @@
 -- a finalized reporting period that cannot be altered.
 -- =============================================================================
 
--- Function: Prevent modifications to closed fiscal periods
--- Allows: open -> closed transition (closing the period)
--- Blocks: Any modification after status = 'closed'
+-- Function: Prevent modifications to closed/locked fiscal periods
+-- Allowed transitions (period close lifecycle):
+--   OPEN -> CLOSING      (begin_closing — R25 close lock)
+--   CLOSING -> OPEN      (cancel_closing — release lock)
+--   CLOSING -> CLOSED    (close_period — orchestrated close)
+--   OPEN -> CLOSED       (close_period — direct close without orchestrator)
+--   CLOSED -> LOCKED     (lock_period — year-end permanent seal)
+-- Blocks: Any modification after status = 'closed' or 'locked' (except above)
 CREATE OR REPLACE FUNCTION prevent_closed_fiscal_period_modification()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Allow the closing transition (OPEN -> CLOSED)
-    IF TG_OP = 'UPDATE' AND OLD.status = 'open' AND NEW.status = 'closed' THEN
-        RETURN NEW;
+    IF TG_OP = 'UPDATE' THEN
+        -- Allow explicitly defined status transitions
+        IF OLD.status = 'open' AND NEW.status IN ('closing', 'closed') THEN
+            RETURN NEW;
+        END IF;
+        IF OLD.status = 'closing' AND NEW.status IN ('open', 'closed') THEN
+            RETURN NEW;
+        END IF;
+        IF OLD.status = 'closed' AND NEW.status = 'locked' THEN
+            RETURN NEW;
+        END IF;
     END IF;
 
-    -- Block all other modifications to closed periods
-    IF OLD.status = 'closed' THEN
+    -- Block all other modifications to closed or locked periods
+    IF OLD.status IN ('closed', 'locked') THEN
         RAISE EXCEPTION 'R10 Violation: Cannot modify closed fiscal period %', OLD.id
             USING ERRCODE = 'restrict_violation';
     END IF;
@@ -40,8 +53,8 @@ RETURNS TRIGGER AS $$
 DECLARE
     has_entries BOOLEAN;
 BEGIN
-    -- Rule 1: Closed periods cannot be deleted
-    IF OLD.status = 'closed' THEN
+    -- Rule 1: Closed or locked periods cannot be deleted
+    IF OLD.status IN ('closed', 'locked') THEN
         RAISE EXCEPTION 'R10 Violation: Cannot delete closed fiscal period %', OLD.id
             USING ERRCODE = 'restrict_violation';
     END IF;

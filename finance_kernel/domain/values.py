@@ -1,11 +1,31 @@
 """
-Domain value objects.
+Values -- Immutable, self-validating domain value objects.
 
-These are immutable, self-validating types that enforce domain constraints.
-They replace primitive types (Decimal, str) for financial fields.
+Responsibility:
+    Provides the foundational value types for all financial computations:
+    Currency, Money, Quantity, and ExchangeRate. These replace primitive
+    types (Decimal, str) wherever financial data appears in domain logic.
 
-R4 Compliance: Money, Quantity, Currency, ExchangeRate must be value objects.
-Primitive numeric or string types are forbidden for financial fields in domain logic.
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
+    Imported by every other domain module. No outward dependencies except
+    finance_kernel.domain.currency (CurrencyRegistry).
+
+Invariants enforced:
+    R4  -- All monetary amounts use Money value objects (never raw Decimal/float)
+    R16 -- ISO 4217 enforcement: Currency codes validated at construction time
+    R17 -- Precision-derived tolerance: rounding tolerance derived from currency
+           decimal places, never hardcoded
+
+Failure modes:
+    - ValueError on construction with invalid amounts, currencies, or rates
+    - TypeError when Money/Quantity operations mix incompatible types
+    - ValueError when arithmetic mixes different currencies or units
+
+Audit relevance:
+    These types are the foundation of financial correctness. Auditors rely on
+    Money pairing amounts with currencies (never separated), Decimal-only
+    arithmetic (never float), and ISO 4217 validation at every boundary.
 """
 
 from __future__ import annotations
@@ -22,14 +42,25 @@ class Currency:
     """
     ISO 4217 currency code value object.
 
-    Validated on construction - invalid codes raise ValueError.
-    Immutable and hashable.
+    Contract:
+        Wraps a three-letter ISO 4217 code. Validated and normalized (uppercased)
+        on construction. Invalid codes are rejected immediately.
+
+    Guarantees:
+        - Immutable and hashable (frozen dataclass with slots)
+        - code is always uppercase and stripped of whitespace
+        - code is always a valid ISO 4217 code per CurrencyRegistry (R16)
+
+    Non-goals:
+        - Does NOT store exchange rates or decimal place info directly
+          (delegates to CurrencyRegistry)
+        - Does NOT perform currency conversion
     """
 
     code: str
 
     def __post_init__(self) -> None:
-        # Normalize and validate
+        # INVARIANT: R16 -- ISO 4217 enforcement at construction boundary
         normalized = self.code.upper().strip() if self.code else ""
         if not CurrencyRegistry.is_valid(normalized):
             raise ValueError(f"Invalid ISO 4217 currency code: {self.code}")
@@ -38,12 +69,23 @@ class Currency:
 
     @property
     def decimal_places(self) -> int:
-        """Get the number of decimal places for this currency."""
+        """
+        Get the number of decimal places for this currency.
+
+        Postconditions:
+            - Returns the ISO 4217 standard decimal places (R17).
+        """
         return CurrencyRegistry.get_decimal_places(self.code)
 
     @property
     def rounding_tolerance(self) -> Decimal:
-        """Get the rounding tolerance for this currency."""
+        """
+        Get the rounding tolerance for this currency.
+
+        Postconditions:
+            - Tolerance is derived from currency precision (R17), never hardcoded.
+        """
+        # INVARIANT: R17 -- tolerance derived from currency decimal places
         return CurrencyRegistry.get_rounding_tolerance(self.code)
 
     @property
@@ -64,35 +106,56 @@ class Money:
     """
     Monetary amount value object.
 
-    Pairs an amount with its currency - they are NEVER separated.
-    Validated on construction:
-    - Amount must be a valid Decimal
-    - Currency must be valid ISO 4217
+    Contract:
+        Pairs a Decimal amount with its Currency -- they are NEVER separated.
+        This is the canonical representation of monetary values throughout the
+        entire system.
 
-    Immutable and hashable.
+    Guarantees:
+        - Immutable and hashable (frozen dataclass with slots)
+        - amount is always a Decimal (never float) -- R4
+        - currency is always a valid Currency (ISO 4217) -- R16
+        - Arithmetic operations enforce same-currency constraint
+        - No silent currency mixing in addition or subtraction
+
+    Non-goals:
+        - Does NOT perform currency conversion (use ExchangeRate.convert)
+        - Does NOT auto-round -- callers must explicitly call .round()
     """
 
     amount: Decimal
     currency: Currency
 
     def __post_init__(self) -> None:
-        # Ensure amount is Decimal
+        # INVARIANT: R4 -- amount must be Decimal, never float
         if not isinstance(self.amount, Decimal):
             try:
                 object.__setattr__(self, "amount", Decimal(str(self.amount)))
             except (InvalidOperation, ValueError) as e:
                 raise ValueError(f"Invalid amount: {self.amount}") from e
 
-        # Ensure currency is Currency object
+        # INVARIANT: R16 -- currency must be a valid ISO 4217 Currency
         if isinstance(self.currency, str):
             object.__setattr__(self, "currency", Currency(self.currency))
         elif not isinstance(self.currency, Currency):
             raise TypeError(f"currency must be Currency or str, got {type(self.currency)}")
 
+        assert isinstance(self.amount, Decimal), f"R4 violation: amount must be Decimal, got {type(self.amount)}"
+
     @classmethod
     def of(cls, amount: Decimal | str | int, currency: str | Currency) -> Money:
         """
         Factory method for creating Money.
+
+        Preconditions:
+            - amount is convertible to Decimal (no float allowed at call site)
+            - currency is a valid ISO 4217 code or Currency object
+
+        Postconditions:
+            - Returns an immutable Money with Decimal amount and Currency
+
+        Raises:
+            ValueError: If amount cannot be converted or currency is invalid (R16).
 
         Args:
             amount: The monetary amount.
@@ -133,8 +196,19 @@ class Money:
         """
         Round to the currency's decimal places.
 
+        Preconditions:
+            - self is a valid Money instance.
+
+        Postconditions:
+            - Returns a new Money rounded to the currency's ISO 4217 decimal places (R17).
+            - Original Money is unchanged (immutable).
+
+        Raises:
+            No exceptions.
+
         Returns a new Money instance with rounded amount.
         """
+        # INVARIANT: R17 -- rounding precision derived from currency decimal places
         decimal_places = self.currency.decimal_places
         quantize_str = "0." + "0" * decimal_places if decimal_places > 0 else "1"
         rounded = self.amount.quantize(Decimal(quantize_str), rounding=rounding)
@@ -230,8 +304,19 @@ class Quantity:
     """
     Numeric quantity with unit value object.
 
-    Used for non-monetary quantities like inventory counts.
-    Immutable and hashable.
+    Contract:
+        Pairs a Decimal value with its unit of measure. Used for non-monetary
+        quantities like inventory counts, weights, and volumes.
+
+    Guarantees:
+        - Immutable and hashable (frozen dataclass with slots)
+        - value is always Decimal (never float)
+        - unit is always a non-empty, stripped string
+        - Arithmetic operations enforce same-unit constraint
+
+    Non-goals:
+        - Does NOT perform unit conversion
+        - Does NOT validate against a unit registry
     """
 
     value: Decimal
@@ -355,9 +440,20 @@ class ExchangeRate:
     """
     Exchange rate between two currencies.
 
-    Represents: 1 unit of from_currency = rate units of to_currency
+    Contract:
+        Represents: 1 unit of from_currency = rate units of to_currency.
+        Validated on construction: rate must be positive, currencies must be
+        valid ISO 4217.
 
-    Immutable and hashable.
+    Guarantees:
+        - Immutable and hashable (frozen dataclass with slots)
+        - rate is always a positive Decimal (never float, never zero or negative)
+        - from_currency and to_currency are always valid Currency objects (R16)
+        - convert() enforces currency matching
+
+    Non-goals:
+        - Does NOT store effective dates (that is ExchangeRateInfo's job)
+        - Does NOT handle triangulation or cross rates
     """
 
     from_currency: Currency
@@ -365,22 +461,24 @@ class ExchangeRate:
     rate: Decimal
 
     def __post_init__(self) -> None:
-        # Convert string currencies to Currency objects
+        # INVARIANT: R16 -- currencies must be valid ISO 4217
         if isinstance(self.from_currency, str):
             object.__setattr__(self, "from_currency", Currency(self.from_currency))
         if isinstance(self.to_currency, str):
             object.__setattr__(self, "to_currency", Currency(self.to_currency))
 
-        # Ensure rate is Decimal
+        # INVARIANT: R4 -- rate must be Decimal, never float
         if not isinstance(self.rate, Decimal):
             try:
                 object.__setattr__(self, "rate", Decimal(str(self.rate)))
             except (InvalidOperation, ValueError) as e:
                 raise ValueError(f"Invalid exchange rate: {self.rate}") from e
 
-        # Validate rate is positive
+        # Validate rate is positive (economic constraint: zero or negative rates are meaningless)
         if self.rate <= Decimal("0"):
             raise ValueError(f"Exchange rate must be positive: {self.rate}")
+
+        assert isinstance(self.rate, Decimal), f"R4 violation: rate must be Decimal, got {type(self.rate)}"
 
     @classmethod
     def of(
@@ -402,14 +500,21 @@ class ExchangeRate:
         """
         Convert money from one currency to another using this rate.
 
+        Preconditions:
+            - money.currency must equal self.from_currency
+
+        Postconditions:
+            - Returns Money in to_currency with amount = money.amount * rate
+            - Original money is unchanged (immutable)
+
+        Raises:
+            ValueError: If money currency doesn't match from_currency.
+
         Args:
             money: Money in from_currency.
 
         Returns:
             Money in to_currency.
-
-        Raises:
-            ValueError: If money currency doesn't match from_currency.
         """
         if money.currency != self.from_currency:
             raise ValueError(

@@ -1,8 +1,31 @@
 """
-AR Subledger Service.
+finance_services.subledger_ar -- Accounts Receivable subledger service.
 
-Accounts Receivable subledger — tracks customer invoices, payments, and credit memos.
-Entity type: Customer (Party with type CUSTOMER).
+Responsibility:
+    Manage customer-level subledger entries linked to GL journal entries.
+    Track invoices, payments, credit memos, reversals, and adjustments
+    per customer.
+
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    Extends SubledgerService ABC with AR-specific document type validation.
+    Delegates to shared _post_entry/_get_balance helpers in subledger_ap.
+    Entity type: Customer (Party with type CUSTOMER).
+
+Invariants enforced:
+    - SL-G1 (single-sided entries): delegated to SubledgerEntry.__post_init__.
+    - SL-G2 (GL linkage): _post_entry stores journal_entry_id on the ORM model.
+    - Document type whitelist: only INVOICE, PAYMENT, CREDIT_MEMO,
+      REVERSAL, ADJUSTMENT are accepted.
+
+Failure modes:
+    - ValueError from post() if entry validation fails.
+    - ValueError from post() if source_document_type is not in
+      AR_DOCUMENT_TYPES.
+
+Audit relevance:
+    Every post is logged with entry_id, subledger_type, entity_id, and
+    journal_entry_id.
 """
 
 from __future__ import annotations
@@ -32,7 +55,18 @@ class ARSubledgerService(SubledgerService):
     """
     Accounts Receivable subledger service.
 
-    Manages customer-level subledger entries linked to GL journal entries.
+    Contract:
+        Manages customer-level subledger entries linked to GL journal entries.
+        Receives Session and Clock via constructor injection.
+    Guarantees:
+        - ``post`` validates entry fields and document type before persisting.
+        - ``get_balance`` returns a SubledgerBalance with debit-normal
+          convention (AR is an asset).
+        - ``get_open_items`` returns only unreconciled entries.
+    Non-goals:
+        - Does not enforce customer credit limits; that is the AR module's
+          responsibility.
+        - Does not manage payment terms or dunning.
     """
 
     subledger_type = SubledgerType.AR

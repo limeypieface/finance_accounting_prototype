@@ -1,74 +1,36 @@
 """
-EconomicLink - The "Why" Pointer for Economic Ancestry.
+EconomicLink -- The "Why" Pointer for Economic Ancestry.
 
-===============================================================================
-PURPOSE
-===============================================================================
+Responsibility:
+    Defines the immutable link graph that connects economic artifacts.
+    Instead of storing ``po_id`` columns scattered across tables, links
+    create an explicit, traversable graph of economic relationships.
 
-EconomicLink is a first-class primitive that represents the inheritance
-relationship between economic artifacts. Instead of storing `po_id` columns
-scattered across tables, links create an explicit, traversable graph of
-economic relationships.
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
 
-Examples:
-    PurchaseOrder → (FULFILLS) → Receipt → (FULFILLS) → Invoice
-    Invoice → (PAID_BY) → Payment
-    JournalEntry → (REVERSED_BY) → ReversalEntry
-    CostLot → (CONSUMED_BY) → ConsumptionEvent
-    Invoice → (ALLOCATED_TO) → PaymentLine
+Invariants enforced:
+    L1 -- Links are immutable once created (ORM listener + DB trigger)
+    L2 -- No self-links (parent_ref != child_ref, validated in __post_init__)
+    L3 -- Acyclic per link_type (cycle detection at application level)
+    L4 -- Event provenance (creating_event_id is required / NOT NULL)
+    L5 -- Type compatibility (LinkTypeSpec validates parent/child types)
 
-Benefits:
-    1. Matching Engine can walk links to find related documents
-    2. Valuation Layer can trace consumption back to acquisition lots
-    3. Reversal Engine can traverse REVERSED_BY to generate compensating entries
-    4. Audit can reconstruct the full economic history of any artifact
+Failure modes:
+    - ValueError on self-link (L2)
+    - ValueError on invalid parent/child type combination (L5)
+    - ValueError on malformed ArtifactRef string in ``parse()``
 
-===============================================================================
-INVARIANTS
-===============================================================================
+Audit relevance:
+    EconomicLink is the auditable "why pointer" that enables full economic
+    history reconstruction.  Auditors traverse REVERSED_BY, PAID_BY,
+    FULFILLED_BY, and CONSUMED_BY chains to verify economic ancestry.
 
-L1 (Immutability): Links are immutable once created. No UPDATE, no DELETE.
-    - Enforced by ORM listener + database trigger
-
-L2 (No Self-Links): parent_ref cannot equal child_ref.
-    - Enforced by __post_init__ validation
-
-L3 (Acyclic): The link graph must be acyclic for a given link_type.
-    - Enforced by application code (not database) - cycle detection on insert
-
-L4 (Event Provenance): Every link must record the creating_event_id.
-    - Enforced by NOT NULL constraint
-
-L5 (Type Compatibility): Link types define valid parent/child artifact types.
-    - Enforced by LinkTypeSpec validation
-
-===============================================================================
-DESIGN DECISIONS
-===============================================================================
-
-1. WHY ArtifactRef INSTEAD OF JUST UUID?
-   An artifact is identified by (artifact_type, artifact_id). Using just a UUID
-   loses the type information, forcing callers to join multiple tables to
-   discover what the UUID points to. ArtifactRef is self-describing.
-
-2. WHY NOT FOREIGN KEYS TO EVERY TABLE?
-   EconomicLink connects heterogeneous artifacts (events, documents, lots,
-   journal entries). Polymorphic foreign keys are database-specific and complex.
-   The ArtifactRef pattern trades referential integrity for flexibility.
-   Application-level validation ensures refs are valid.
-
-3. WHY FROZEN DATACLASS + ORM MODEL?
-   Domain logic uses the frozen dataclass (pure, testable).
-   Persistence uses the ORM model (SQLAlchemy patterns).
-   Factory methods convert between them.
-
-4. WHY LINK_TYPE ENUM VS. FREE-FORM STRING?
-   Enumerated link types enable:
-   - Static analysis (exhaustive matching in Python)
-   - Type-specific traversal logic
-   - Documentation of valid relationship semantics
-
-===============================================================================
+Design decisions:
+    1. ArtifactRef (type + UUID) instead of bare UUID -- self-describing.
+    2. No polymorphic foreign keys -- flexibility over referential integrity.
+    3. Frozen dataclass + ORM model -- pure domain + persistence separation.
+    4. LinkType enum -- exhaustive matching, static analysis, documented semantics.
 """
 
 from __future__ import annotations
@@ -166,6 +128,15 @@ class ArtifactRef:
 
     Self-describing pointer that includes both the type and identifier,
     enabling heterogeneous artifact graphs without polymorphic foreign keys.
+
+    Contract:
+        ``artifact_type`` must be a valid ``ArtifactType`` enum member.
+        ``artifact_id`` must be a ``UUID``.
+
+    Guarantees:
+        - Frozen and slotted -- immutable after construction.
+        - ``__str__`` produces ``"type:uuid"`` for serialisation.
+        - ``parse()`` round-trips from string representation.
     """
 
     artifact_type: ArtifactType
@@ -441,13 +412,13 @@ class EconomicLink:
     metadata: Mapping[str, Any] | None = None  # Optional link-specific data
 
     def __post_init__(self) -> None:
-        # L2: No self-links
+        # INVARIANT: L2 -- no self-links (parent_ref != child_ref)
         if self.parent_ref == self.child_ref:
             raise ValueError(
                 f"Self-link not allowed: parent and child are both {self.parent_ref}"
             )
 
-        # L5: Type compatibility
+        # INVARIANT: L5 -- parent/child types must be valid for this link_type
         spec = LINK_TYPE_SPECS.get(self.link_type)
         if spec:
             errors = spec.validate(self.parent_ref, self.child_ref)
@@ -455,6 +426,10 @@ class EconomicLink:
                 raise ValueError(
                     f"Invalid link type combination: {'; '.join(errors)}"
                 )
+        # INVARIANT: L4 -- creating_event_id must be present
+        assert self.creating_event_id is not None, (
+            "L4 violation: creating_event_id is required for all economic links"
+        )
 
     @classmethod
     def create(

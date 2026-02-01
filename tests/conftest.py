@@ -1213,6 +1213,25 @@ def module_accounts(create_account):
             code="1311", name="Project WIP",
             account_type=AccountType.ASSET, normal_balance=NormalBalance.DEBIT,
         ),
+        # --- Revenue (ASC 606) ---
+        "contract_receivable": create_account(
+            code="1121", name="Contract Receivable",
+            account_type=AccountType.ASSET, normal_balance=NormalBalance.DEBIT,
+        ),
+        "unbilled_receivable": create_account(
+            code="1131", name="Unbilled Receivable",
+            account_type=AccountType.ASSET, normal_balance=NormalBalance.DEBIT,
+        ),
+        # --- Lease (ASC 842) ---
+        "rou_asset": create_account(
+            code="1701", name="Right-of-Use Asset",
+            account_type=AccountType.ASSET, normal_balance=NormalBalance.DEBIT,
+        ),
+        # --- Budget ---
+        "budget_control": create_account(
+            code="1630", name="Budget Control",
+            account_type=AccountType.ASSET, normal_balance=NormalBalance.DEBIT,
+        ),
         # =====================================================================
         # Liability accounts
         # =====================================================================
@@ -1254,6 +1273,16 @@ def module_accounts(create_account):
         ),
         "ic_due_to": create_account(
             code="2500", name="Intercompany Due To",
+            account_type=AccountType.LIABILITY, normal_balance=NormalBalance.CREDIT,
+        ),
+        # --- Lease (ASC 842) ---
+        "lease_liability": create_account(
+            code="2800", name="Lease Liability",
+            account_type=AccountType.LIABILITY, normal_balance=NormalBalance.CREDIT,
+        ),
+        # --- Budget ---
+        "budget_offset": create_account(
+            code="2620", name="Budget Offset",
             account_type=AccountType.LIABILITY, normal_balance=NormalBalance.CREDIT,
         ),
         "reserve_for_encumbrance": create_account(
@@ -1324,6 +1353,10 @@ def module_accounts(create_account):
             code="3300", name="Dividends",
             account_type=AccountType.EQUITY, normal_balance=NormalBalance.DEBIT,
         ),
+        "cumulative_translation_adj": create_account(
+            code="3400", name="Cumulative Translation Adjustment",
+            account_type=AccountType.EQUITY, normal_balance=NormalBalance.CREDIT,
+        ),
         # =====================================================================
         # Revenue accounts
         # =====================================================================
@@ -1368,6 +1401,15 @@ def module_accounts(create_account):
         ),
         "impairment_loss": create_account(
             code="5710", name="Impairment Loss",
+            account_type=AccountType.EXPENSE, normal_balance=NormalBalance.DEBIT,
+        ),
+        # --- Lease (ASC 842) ---
+        "rou_amortization": create_account(
+            code="5720", name="ROU Amortization",
+            account_type=AccountType.EXPENSE, normal_balance=NormalBalance.DEBIT,
+        ),
+        "lease_interest": create_account(
+            code="5730", name="Lease Interest Expense",
             account_type=AccountType.EXPENSE, normal_balance=NormalBalance.DEBIT,
         ),
         "salary_expense": create_account(
@@ -1452,6 +1494,15 @@ def module_accounts(create_account):
         ),
         "contract_cost_incurred": create_account(
             code="6100", name="Contract Cost Incurred",
+            account_type=AccountType.EXPENSE, normal_balance=NormalBalance.DEBIT,
+        ),
+        # --- Project Accounting ---
+        "contract_revenue": create_account(
+            code="4550", name="Contract Revenue",
+            account_type=AccountType.REVENUE, normal_balance=NormalBalance.CREDIT,
+        ),
+        "direct_cost": create_account(
+            code="5050", name="Direct Cost",
             account_type=AccountType.EXPENSE, normal_balance=NormalBalance.DEBIT,
         ),
     }
@@ -1544,7 +1595,19 @@ def module_role_resolver(module_accounts):
         "CREDIT": module_accounts["ar"],  # credit memo against AR
         "REFUND": module_accounts["cash"],
         "WRITE_OFF": module_accounts["bad_debt_expense"],
+        "FINANCE_CHARGE": module_accounts["interest_income"],
         "TAX_LIABILITY": module_accounts["tax_payable"],
+        # --- Revenue (ASC 606) ---
+        "CONTRACT_RECEIVABLE": module_accounts["contract_receivable"],
+        "UNBILLED_RECEIVABLE": module_accounts["unbilled_receivable"],
+        # --- Lease (ASC 842) ---
+        "ROU_ASSET": module_accounts["rou_asset"],
+        "LEASE_LIABILITY": module_accounts["lease_liability"],
+        "ROU_AMORTIZATION": module_accounts["rou_amortization"],
+        "LEASE_INTEREST": module_accounts["lease_interest"],
+        # --- Budget ---
+        "BUDGET_CONTROL": module_accounts["budget_control"],
+        "BUDGET_OFFSET": module_accounts["budget_offset"],
         # =================================================================
         # Procurement module
         # =================================================================
@@ -1636,6 +1699,7 @@ def module_role_resolver(module_accounts):
         "UNREALIZED_FX_LOSS": module_accounts["unrealized_fx_loss"],
         "REALIZED_FX_GAIN": module_accounts["realized_fx_gain"],
         "REALIZED_FX_LOSS": module_accounts["realized_fx_loss"],
+        "CUMULATIVE_TRANSLATION_ADJ": module_accounts["cumulative_translation_adj"],
         # =================================================================
         # Expense module
         # =================================================================
@@ -1643,6 +1707,11 @@ def module_role_resolver(module_accounts):
         "CORPORATE_CARD_LIABILITY": module_accounts["corporate_card_liability"],
         "ADVANCE_CLEARING": module_accounts["advance_clearing"],
         "PROJECT_WIP": module_accounts["project_wip"],
+        # =================================================================
+        # Project Accounting module
+        # =================================================================
+        "CONTRACT_REVENUE": module_accounts["contract_revenue"],
+        "DIRECT_COST": module_accounts["direct_cost"],
     }
     for role, account in bindings.items():
         resolver.register_binding(role, account.id, account.code)

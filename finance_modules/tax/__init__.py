@@ -1,7 +1,35 @@
 """
 Tax Module.
 
-Handles sales/use tax, VAT, and tax reporting.
+Responsibility:
+    Thin ERP glue for sales/use tax, VAT, income tax, and tax reporting.
+    Delegates all computation to ``finance_engines.tax.TaxCalculator`` and
+    all journal posting to ``finance_kernel.services.ModulePostingService``.
+
+Architecture:
+    finance_modules -- Thin ERP glue (this layer).
+    The module owns domain models, economic profiles, configuration, and
+    workflows.  Actual tax arithmetic lives in ``finance_engines.tax``;
+    actual ledger writes live in ``finance_kernel``.
+
+Invariants:
+    - All monetary amounts use ``Decimal`` -- NEVER ``float`` (R16, R17).
+    - Profile-to-event dispatch uses account ROLES resolved at posting time
+      (L1).  No hard-coded COA codes in this module.
+    - Every journal-posting method follows the single-transaction boundary
+      contract (R7): commit on success, rollback on failure.
+
+Failure modes:
+    - Invalid ``tax_type`` in ``record_tax_obligation`` silently
+      dispatches to the profile registry, which may reject (BLOCKED) if
+      no profile matches.
+    - ``TaxConfig.__post_init__`` raises ``ValueError`` for out-of-range
+      or invalid configuration values.
+
+Audit relevance:
+    - Tax provisions (ASC 740) and VAT settlements produce journal entries
+      whose audit trail is guaranteed by the kernel (R11 hash chain).
+    - Multi-jurisdiction aggregation is logged but not individually posted.
 
 Total: ~180 lines of module-specific code.
 Tax calculation engines (jurisdiction lookup, rate determination) come from shared engines.

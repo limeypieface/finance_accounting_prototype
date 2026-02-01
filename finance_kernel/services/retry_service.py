@@ -1,7 +1,33 @@
 """
-Retry Service — Phase 9.4/9.6 Financial Exception Lifecycle.
+RetryService -- financial exception retry lifecycle management.
 
-Manages the retry lifecycle for FAILED interpretation outcomes.
+Responsibility:
+    Manages the retry lifecycle for FAILED interpretation outcomes:
+    initiation, success/failure completion, and permanent abandonment.
+    Enforces retry limits and valid state transitions.
+
+Architecture position:
+    Kernel > Services -- imperative shell.
+    Called by operational tooling (work queues, interactive CLI) when
+    a FAILED outcome is ready for retry after configuration or master
+    data has been corrected.
+
+Invariants enforced:
+    MAX_RETRIES -- Safety limit (10) prevents infinite retry loops.
+    P15 -- Outcome uniqueness maintained via OutcomeRecorder transitions
+           (no duplicate outcomes created during retry).
+    R1  -- Original event payload is immutable between retries (the
+           retry contract forbids payload mutation).
+
+Failure modes:
+    - RetryNotAllowedError: Outcome is not FAILED, or MAX_RETRIES
+      exceeded, or no outcome exists for the event.
+    - InvalidOutcomeTransitionError (from OutcomeRecorder): Transition
+      not permitted from current state.
+
+Audit relevance:
+    Every retry initiation, success, failure, and abandonment is logged
+    with source_event_id, retry_actor_id, retry_count, and failure_type.
 
 Retry contract:
   - Allowed to change between retries:
@@ -81,15 +107,27 @@ class RetryNotAllowedError(Exception):
 class RetryService:
     """Manages the retry lifecycle for FAILED interpretation outcomes.
 
-    This service enforces the retry contract:
-    - Only FAILED outcomes may be retried.
-    - The original event payload and actor_id are immutable.
-    - Each retry increments retry_count.
-    - Retry transitions: FAILED → RETRYING → (POSTED | FAILED)
-    - Abandonment: FAILED → ABANDONED (terminal)
+    Contract:
+        Accepts a ``source_event_id`` for a FAILED outcome and drives it
+        through the retry lifecycle: FAILED -> RETRYING -> (POSTED | FAILED).
+        Alternatively, transitions FAILED -> ABANDONED (terminal).
+
+    Guarantees:
+        - Only FAILED outcomes may be retried.
+        - The original event payload and actor_id are immutable (R1).
+        - Each retry increments ``retry_count``.
+        - MAX_RETRIES (10) is enforced as a safety limit to prevent
+          infinite retry loops.
+        - State transitions are validated by OutcomeRecorder.
+
+    Non-goals:
+        - Does NOT re-run the posting pipeline (caller's responsibility).
+        - Does NOT call ``session.commit()`` -- caller controls boundaries.
+        - Does NOT modify the original event payload.
     """
 
-    MAX_RETRIES = 10  # Safety limit
+    # INVARIANT: Safety limit -- prevents infinite retry loops
+    MAX_RETRIES = 10
 
     def __init__(
         self,
@@ -106,7 +144,16 @@ class RetryService:
         source_event_id: UUID,
         retry_actor_id: UUID | None = None,
     ) -> InterpretationOutcome:
-        """Begin a retry attempt. Transitions FAILED → RETRYING.
+        """Begin a retry attempt. Transitions FAILED -> RETRYING.
+
+        Preconditions:
+            - An ``InterpretationOutcome`` exists for ``source_event_id``.
+            - Outcome status is FAILED.
+            - ``retry_count < MAX_RETRIES``.
+
+        Postconditions:
+            - Outcome status is RETRYING.
+            - ``retry_count`` is incremented by 1.
 
         Args:
             source_event_id: Event to retry.
@@ -130,6 +177,7 @@ class RetryService:
                 f"Outcome status is {outcome.status_str}, not 'failed'",
             )
 
+        # INVARIANT: MAX_RETRIES -- Safety limit prevents infinite retry loops
         if outcome.retry_count >= self.MAX_RETRIES:
             raise RetryNotAllowedError(
                 source_event_id,

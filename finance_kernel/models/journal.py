@@ -1,21 +1,31 @@
 """
-Journal Entry and Journal Line models.
+Module: finance_kernel.models.journal
+Responsibility: ORM persistence for journal entries and journal lines -- the
+    single source of financial truth in this system.
+Architecture position: Kernel > Models.  May import from db/base.py only.
+    MUST NOT import from services/, selectors/, domain/, or outer layers.
 
-The core of the finance kernel - the append-only journal.
+Invariants enforced:
+    R3  -- Idempotency key uniqueness (UNIQUE constraint on idempotency_key).
+    R4  -- Balance per currency (checked by JournalWriter before commit;
+           verified here via is_balanced property for read-side assertions).
+    R5  -- Rounding line uniqueness (at most ONE is_rounding=True per entry;
+           threshold enforced by DB trigger trg_journal_line_single_rounding).
+    R9  -- Sequence safety (seq is monotonic, gap-safe; UNIQUE constraint).
+    R10 -- Immutability (ORM listeners in db/immutability.py + DB triggers
+           prevent UPDATE/DELETE on posted entries and their lines).
+    R21 -- Reference snapshot determinism (coa_version, dimension_schema_version,
+           rounding_policy_version, currency_registry_version columns).
 
-Hard invariants for JournalEntry:
-- Posted JournalEntry is immutable
-- Exactly one posted JournalEntry exists per idempotency_key
-- Every posted JournalEntry has a unique, increasing seq
-- Ledger rebuilds must process entries in seq order
-- Reversals create new JournalEntries; originals never change
+Failure modes:
+    - IntegrityError on duplicate idempotency_key (R3/R8).
+    - ImmutabilityViolationError on UPDATE/DELETE of posted entry/line (R10).
+    - UnbalancedEntryError if debits != credits at posting time (R4).
 
-Hard invariants for JournalLine:
-- A line is either debit or credit, never both
-- account_id must exist and be active at time of posting
-- Required dimensions must be present
-- If multi-currency rounding produces a remainder, exactly one line
-  must be marked is_rounding=true
+Audit relevance:
+    JournalEntry and JournalLine rows are the authoritative financial record.
+    Every audit, replay, and reporting query ultimately derives from these rows.
+    Immutability after POSTED status is the foundational audit guarantee.
 """
 
 from datetime import date, datetime
@@ -47,7 +57,11 @@ if TYPE_CHECKING:
 
 
 class JournalEntryStatus(str, Enum):
-    """Status of a journal entry."""
+    """Lifecycle status of a journal entry.
+
+    Contract: Transitions are one-way: DRAFT -> POSTED -> REVERSED.
+    Guarantees: No backward transitions are permitted (R10).
+    """
 
     DRAFT = "draft"
     POSTED = "posted"
@@ -55,7 +69,11 @@ class JournalEntryStatus(str, Enum):
 
 
 class LineSide(str, Enum):
-    """Which side of the entry this line is on."""
+    """Which side of the entry this line is on.
+
+    Contract: Every JournalLine has exactly one side -- DEBIT or CREDIT.
+    Guarantees: Amount is always positive; side determines sign convention.
+    """
 
     DEBIT = "debit"
     CREDIT = "credit"
@@ -63,9 +81,23 @@ class LineSide(str, Enum):
 
 class JournalEntry(TrackedBase):
     """
-    Journal entry header.
+    Journal entry header -- the atomic unit of double-entry accounting.
 
-    Represents a complete double-entry transaction derived from an event.
+    Contract:
+        Each JournalEntry is derived from exactly one source event and carries
+        an idempotency_key that is unique across the entire system (R3/R8).
+        Once status transitions to POSTED, the row and all child JournalLines
+        become immutable (R10).
+
+    Guarantees:
+        - Debits == Credits per currency per entry (R4, checked at posting).
+        - Monotonic seq assigned at posting time via SequenceService (R9).
+        - R21 snapshot columns populated at post time for deterministic replay.
+
+    Non-goals:
+        - This model does NOT enforce balance at the ORM level; enforcement
+          lives in JournalWriter.  The is_balanced property is a read-side
+          convenience, not a write-time guard.
     """
 
     __tablename__ = "journal_entries"
@@ -215,22 +247,34 @@ class JournalEntry(TrackedBase):
 
     @property
     def is_posted(self) -> bool:
-        """Check if entry is posted."""
+        """Check if entry is posted.
+
+        Postconditions: Returns True iff status is POSTED.
+        """
         return self.status == JournalEntryStatus.POSTED
 
     @property
     def is_draft(self) -> bool:
-        """Check if entry is still a draft."""
+        """Check if entry is still a draft.
+
+        Postconditions: Returns True iff status is DRAFT.
+        """
         return self.status == JournalEntryStatus.DRAFT
 
     @property
     def is_reversed(self) -> bool:
-        """Check if entry has been reversed."""
+        """Check if entry has been reversed.
+
+        Postconditions: Returns True iff status is REVERSED.
+        """
         return self.status == JournalEntryStatus.REVERSED
 
     @property
     def total_debits(self) -> Decimal:
-        """Sum of all debit amounts."""
+        """Sum of all debit line amounts.
+
+        Postconditions: Result >= 0 (amounts are always positive).
+        """
         return sum(
             (line.amount for line in self.lines if line.side == LineSide.DEBIT),
             Decimal("0"),
@@ -238,7 +282,10 @@ class JournalEntry(TrackedBase):
 
     @property
     def total_credits(self) -> Decimal:
-        """Sum of all credit amounts."""
+        """Sum of all credit line amounts.
+
+        Postconditions: Result >= 0 (amounts are always positive).
+        """
         return sum(
             (line.amount for line in self.lines if line.side == LineSide.CREDIT),
             Decimal("0"),
@@ -246,7 +293,10 @@ class JournalEntry(TrackedBase):
 
     @property
     def is_balanced(self) -> bool:
-        """Check if debits equal credits."""
+        """Check if debits equal credits (R4 read-side convenience).
+
+        Postconditions: Returns True iff total_debits == total_credits.
+        """
         return self.total_debits == self.total_credits
 
 
@@ -254,7 +304,20 @@ class JournalLine(TrackedBase):
     """
     Individual debit or credit line within a journal entry.
 
-    Lines are immutable after the parent entry is posted.
+    Contract:
+        Each line belongs to exactly one JournalEntry, references exactly one
+        Account, and records a positive amount on one side (DEBIT or CREDIT).
+        Lines are immutable after the parent entry transitions to POSTED (R10).
+
+    Guarantees:
+        - amount is always positive; the side column determines sign (R4).
+        - At most ONE line per entry may have is_rounding=True (R5/R22).
+        - currency is a 3-character ISO 4217 code (R16).
+        - line_seq provides deterministic ordering for hash computation (R24).
+
+    Non-goals:
+        - This model does not validate account existence or activity status;
+          that is enforced by JournalWriter at posting time.
     """
 
     __tablename__ = "journal_lines"
@@ -344,20 +407,25 @@ class JournalLine(TrackedBase):
 
     @property
     def is_debit(self) -> bool:
-        """Check if this is a debit line."""
+        """Check if this is a debit line.
+
+        Postconditions: Returns True iff side is DEBIT.
+        """
         return self.side == LineSide.DEBIT
 
     @property
     def is_credit(self) -> bool:
-        """Check if this is a credit line."""
+        """Check if this is a credit line.
+
+        Postconditions: Returns True iff side is CREDIT.
+        """
         return self.side == LineSide.CREDIT
 
     @property
     def signed_amount(self) -> Decimal:
-        """
-        Return amount with sign based on side.
+        """Return amount with sign based on side.
 
-        Debits are positive, credits are negative.
+        Postconditions: Debits are positive, credits are negative.
         """
         if self.is_debit:
             return self.amount

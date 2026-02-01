@@ -1,7 +1,31 @@
 """
-Fixed Assets Domain Models.
+Fixed Assets Domain Models (``finance_modules.assets.models``).
 
-The nouns of fixed assets: assets, categories, depreciation, disposals.
+Responsibility
+--------------
+Frozen dataclass value objects representing the nouns of fixed assets:
+assets, categories, depreciation schedules, disposals, transfers,
+revaluations, and impairment records.
+
+Architecture position
+---------------------
+**Modules layer** -- pure data definitions with ZERO I/O.  Consumed by
+``FixedAssetService`` and returned to callers.  No dependency on kernel
+services, database, or engines.
+
+Invariants enforced
+-------------------
+* All models are ``frozen=True`` (immutable after construction).
+* All monetary fields use ``Decimal`` -- NEVER ``float``.
+
+Failure modes
+-------------
+* Construction with invalid enum values raises ``ValueError``.
+
+Audit relevance
+---------------
+* ``AssetRevaluation`` records support fair-value measurement disclosure.
+* ``AssetTransfer`` records track custody changes for compliance.
 """
 
 from dataclasses import dataclass
@@ -104,3 +128,37 @@ class AssetDisposal:
     accumulated_depreciation_at_disposal: Decimal = Decimal("0")
     net_book_value_at_disposal: Decimal = Decimal("0")
     gain_loss: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class AssetTransfer:
+    """Record of asset transfer between cost centers."""
+    id: UUID
+    asset_id: UUID
+    transfer_date: date
+    from_cost_center: str
+    to_cost_center: str
+    transferred_by: UUID | None = None
+
+
+@dataclass(frozen=True)
+class AssetRevaluation:
+    """Record of asset revaluation to fair value."""
+    id: UUID
+    asset_id: UUID
+    revaluation_date: date
+    old_carrying_value: Decimal
+    new_fair_value: Decimal
+    revaluation_surplus: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class DepreciationComponent:
+    """A component of an asset for component-level depreciation."""
+    id: UUID
+    asset_id: UUID
+    component_name: str
+    cost: Decimal
+    useful_life_months: int
+    depreciation_method: str = "straight_line"
+    accumulated_depreciation: Decimal = Decimal("0")

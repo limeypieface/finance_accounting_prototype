@@ -1,13 +1,39 @@
 """
-Ingestor service - Event ingestion with boundary validation.
+IngestorService -- event ingestion with boundary validation and idempotency.
 
-The Ingestor is the entry point for external events. It is responsible for:
-- Detecting duplicate/conflicting events (idempotency)
-- Creating immutable event records
-- Transforming external events into domain EventEnvelopes
+Responsibility:
+    Entry point for external events into the finance kernel.  Validates
+    payloads at the boundary, detects duplicate/conflicting events via
+    payload hash comparison, creates immutable event records, and returns
+    domain ``EventEnvelope`` objects for downstream processing.
 
-IMPORTANT: Validation is delegated to the pure domain layer (event_validator.py).
-The Ingestor is part of the imperative shell (R2) - it only does I/O operations.
+Architecture position:
+    Kernel > Services -- imperative shell, called by ModulePostingService
+    at the start of every posting pipeline invocation.
+
+Invariants enforced:
+    R1  -- Event immutability: once an Event row is flushed, its payload
+           and payload_hash are protected by ORM listeners and DB triggers.
+    R2  -- Payload hash verification: same event_id with different payload
+           is a protocol violation, resulting in REJECTED status.
+    R3  -- Idempotency: duplicate event_id with matching payload_hash
+           returns DUPLICATE (idempotent success).
+    R8  -- Idempotency locking: UNIQUE constraint on ``event_id`` column
+           plus ``SELECT ... FOR UPDATE`` semantics via IntegrityError
+           handling.
+
+Failure modes:
+    - REJECTED (validation): Pure-domain ``validate_event()`` found errors
+      in the payload schema or required fields.
+    - REJECTED (hash mismatch): Same event_id re-submitted with different
+      payload (R2 protocol violation).
+    - REJECTED (concurrent conflict): IntegrityError on insert and
+      subsequent lookup fails.
+    - DUPLICATE: Idempotent re-delivery of an already-ingested event.
+
+Audit relevance:
+    Ingestion and rejection are recorded via AuditorService (when provided).
+    Structured log entries include event_type, payload_hash, and error counts.
 """
 
 from dataclasses import dataclass
@@ -59,15 +85,27 @@ class IngestorService:
     """
     Service for ingesting events into the finance kernel.
 
-    The Ingestor is part of the IMPERATIVE SHELL (R2):
-    - It may: persist records, emit audit events, manage transactions
-    - It may NOT: validate domain rules (delegated to pure layer)
+    Contract:
+        Accepts raw event data (event_id, event_type, payload, etc.)
+        and returns an ``IngestResult`` indicating acceptance, idempotent
+        duplicate, or rejection.
 
-    Workflow:
-    1. Delegate validation to pure domain layer (event_validator)
-    2. Check for duplicates (idempotency)
-    3. Create the immutable event record
-    4. Return an EventEnvelope for further processing
+    Guarantees:
+        - R1: Event records are immutable once flushed.  The ORM model and
+          DB triggers prevent modification or deletion.
+        - R2: Payload hash is computed at ingestion time and stored.  Any
+          re-submission with a different payload for the same event_id is
+          detected and rejected.
+        - R3/R8: Idempotency via UNIQUE constraint on ``event_id`` plus
+          IntegrityError handling for concurrent inserts.
+        - Boundary validation is delegated to the pure domain layer
+          (``event_validator.py``).
+
+    Non-goals:
+        - Does NOT call ``session.commit()`` -- caller controls boundaries.
+        - Does NOT validate domain-level business rules beyond schema
+          validation (that is the policy layer).
+        - Does NOT manage the posting pipeline (that is ModulePostingService).
     """
 
     def __init__(
@@ -108,6 +146,19 @@ class IngestorService:
         3. Creates the event record
         4. Returns the result
 
+        Preconditions:
+            - ``event_id`` is a globally unique UUID.
+            - ``event_type`` is a non-empty namespaced string.
+            - ``payload`` is a JSON-serializable dict.
+
+        Postconditions:
+            - On ACCEPTED: An immutable ``Event`` row is flushed (R1) with
+              a computed ``payload_hash`` (R2), and an audit event is
+              recorded (if auditor is configured).
+            - On DUPLICATE: No new row is created; existing envelope returned.
+            - On REJECTED: No Event row is created; rejection audit event
+              is recorded (if auditor is configured).
+
         Args:
             event_id: Globally unique event identifier.
             event_type: Namespaced event type (e.g., "inventory.receipt").
@@ -146,14 +197,15 @@ class IngestorService:
                 message="Validation failed",
             )
 
-        # 2. Compute payload hash
+        # INVARIANT: R2 -- Compute payload hash for verification
         payload_hash = hash_payload(payload)
 
-        # 3. Check for existing event
+        # INVARIANT: R3/R8 -- Check for existing event (idempotency)
         existing = self._get_existing_event(event_id)
 
         if existing is not None:
-            # Check payload hash matches
+            # INVARIANT: R2 -- Payload hash verification: same event_id +
+            # different payload = protocol violation
             if existing.payload_hash != payload_hash:
                 if self._auditor:
                     self._auditor.record_event_rejected(
@@ -181,7 +233,7 @@ class IngestorService:
                 message="Event already ingested",
             )
 
-        # 4. Create new event
+        # INVARIANT: R1 -- Create new immutable event record
         event = Event(
             event_id=event_id,
             event_type=event_type,

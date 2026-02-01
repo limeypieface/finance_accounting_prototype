@@ -38,7 +38,14 @@ from finance_modules import (
     procurement,
     payroll,
     gl,
+    contracts,
     reporting,
+    revenue,
+    lease,
+    budget,
+    intercompany,
+    credit_loss,
+    project,
 )
 
 __all__ = [
@@ -55,6 +62,12 @@ __all__ = [
     "gl",
     "contracts",
     "reporting",
+    "revenue",
+    "lease",
+    "budget",
+    "intercompany",
+    "credit_loss",
+    "project",
     "register_all_modules",
 ]
 
@@ -94,6 +107,36 @@ def register_all_modules() -> None:
     register_procurement()
     register_tax()
     register_wip()
+
+    # Revenue module (ASC 606)
+    from finance_modules.revenue.profiles import register as register_revenue
+
+    register_revenue()
+
+    # Lease module (ASC 842)
+    from finance_modules.lease.profiles import register as register_lease
+
+    register_lease()
+
+    # Budget module
+    from finance_modules.budget.profiles import register as register_budget
+
+    register_budget()
+
+    # Intercompany module
+    from finance_modules.intercompany.profiles import register as register_intercompany
+
+    register_intercompany()
+
+    # Credit Loss module (ASC 326 / CECL)
+    from finance_modules.credit_loss.profiles import register as register_credit_loss
+
+    register_credit_loss()
+
+    # Project Accounting module
+    from finance_modules.project.profiles import register as register_project
+
+    register_project()
 
     # Reporting module (read-only — no-op registration)
     from finance_modules.reporting.profiles import register as register_reporting

@@ -1,19 +1,47 @@
 """
-Subledger Period Close Service (SL-Phase 8, SL-G6).
+finance_services.subledger_period_service -- Subledger period close service (SL-G6).
 
-Orchestrates subledger period close with reconciliation enforcement.
-Lives in finance_services/ (not kernel) because it coordinates across
-concrete subledger services, selectors, and the reconciler.
+Responsibility:
+    Orchestrate subledger period close with reconciliation enforcement.
+    Compare SL aggregate balances against GL control account balances,
+    persist failure reports on mismatch, and mark SL periods as CLOSED
+    on success.
+
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    Lives in finance_services/ (not kernel) because it coordinates across
+    concrete subledger services, selectors, and the reconciler.
+    Called by PeriodCloseOrchestrator during the subledger close phase.
+
+Invariants enforced:
+    - SL-G4 (snapshot isolation): uses the caller's session for all
+      queries, ensuring a consistent point-in-time view.
+    - SL-G6 (close-time enforcement): when enforce_on_close=True and
+      reconciliation fails, the GL close is blocked and a
+      ReconciliationFailureReport is persisted for audit.
+    - SL-G3 (per-currency reconciliation): currency-specific balance
+      comparison via SubledgerReconciler.validate_period_close.
+
+Failure modes:
+    - Reconciliation blocking violations: period remains OPEN and a
+      ReconciliationFailureReportModel is persisted.
+    - Unresolvable control account role: period is closed without
+      enforcement (logged as warning for audit follow-up).
+    - Already-closed period: returns existing status row (idempotent).
+
+Audit relevance:
+    - ReconciliationFailureReportModel captures GL balance, SL balance,
+      delta, and checked_at for every failed reconciliation.
+    - Successful closes are logged with GL/SL balance details.
+    - get_close_status() provides period-end status reporting for all
+      subledger types.
 
 Key behaviors:
-- close_subledger_period(): Reconciles SL vs GL, creates failure report
-  on mismatch, marks SL period as CLOSED on success.
-- is_subledger_closed(): Queries SubledgerPeriodStatusModel.
-- are_all_subledgers_closed(): Checks all contract-defined subledgers.
-- get_close_status(): Returns status dict for all subledger types.
-
-SL-G6: When enforce_on_close=True and reconciliation fails, GL close
-is blocked and a ReconciliationFailureReport is persisted for audit.
+    - close_subledger_period(): Reconciles SL vs GL, creates failure report
+      on mismatch, marks SL period as CLOSED on success.
+    - is_subledger_closed(): Queries SubledgerPeriodStatusModel.
+    - are_all_subledgers_closed(): Checks all contract-defined subledgers.
+    - get_close_status(): Returns status dict for all subledger types.
 """
 
 from __future__ import annotations
@@ -50,8 +78,20 @@ logger = get_logger("services.subledger_period")
 class SubledgerPeriodService:
     """Orchestrates subledger period close with reconciliation enforcement.
 
-    Receives all dependencies via constructor injection. Uses the caller's
-    session for all queries (SL-G4 snapshot isolation).
+    Contract:
+        Receives all dependencies via constructor injection.  Uses the
+        caller's session for all queries (SL-G4 snapshot isolation).
+    Guarantees:
+        - ``close_subledger_period`` is idempotent: calling it on an
+          already-closed period returns the existing status row.
+        - Blocking violations prevent close and persist a failure report.
+        - Non-blocking warnings are logged but do not prevent close.
+        - ``are_all_subledgers_closed`` evaluates only subledgers with
+          enforce_on_close=True.
+    Non-goals:
+        - Does not manage the GL period close; that is the
+          PeriodCloseOrchestrator's responsibility.
+        - Does not initiate corrective actions for reconciliation failures.
     """
 
     def __init__(
@@ -77,6 +117,17 @@ class SubledgerPeriodService:
         actor_id: UUID | None = None,
     ) -> SubledgerPeriodStatusModel:
         """Close a subledger period with reconciliation enforcement.
+
+        Preconditions:
+            subledger_type is a valid SubledgerType enum value.
+            period_code references an existing fiscal period.
+            period_end_date is the accounting end date for balance queries.
+
+        Postconditions:
+            Returns SubledgerPeriodStatusModel with status CLOSED (if
+            reconciliation passed or was not enforced) or OPEN (if
+            reconciliation failed with blocking violations and a
+            ReconciliationFailureReportModel was persisted).
 
         SL-G6: If enforce_on_close=True and reconciliation fails, the
         period remains OPEN and a ReconciliationFailureReport is persisted.
@@ -184,7 +235,7 @@ class SubledgerPeriodService:
         blocking = [v for v in violations if v.blocking]
 
         if blocking:
-            # SL-G6: Persist failure report and keep period OPEN
+            # INVARIANT [SL-G6]: blocking violations prevent close; persist failure report.
             delta = sl_balance - gl_balance
             report = ReconciliationFailureReportModel(
                 id=uuid4(),

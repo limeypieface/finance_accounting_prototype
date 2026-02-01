@@ -1,15 +1,48 @@
 """
-Expense Management Module Service - Orchestrates T&E operations via engines + kernel.
+Expense Management Module Service (``finance_modules.expense.service``).
 
-Thin glue layer that:
-1. Calls TaxCalculator for expense tax calculations
-2. Calls AllocationEngine for cost center allocation
-3. Calls ModulePostingService for journal entry creation
+Responsibility
+--------------
+Orchestrates T&E (Travel & Entertainment) expense operations -- expense
+recording, reimbursement, policy compliance checks, mileage/per-diem
+calculations, cost-center allocation, receipt matching, and corporate
+card reconciliation -- by delegating pure computation to ``finance_engines``
+and journal persistence to
+``finance_kernel.services.module_posting_service``.
 
-All computation lives in engines. All posting lives in kernel.
-This service owns the transaction boundary (R7 compliance).
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue.  ``ExpenseService`` is the sole public
+entry point for expense operations.  It composes stateless engines
+(``TaxCalculator``, ``AllocationEngine``, ``MatchingEngine``) and the
+kernel ``ModulePostingService``.
 
-Usage:
+Invariants enforced
+-------------------
+* R7  -- Each public method owns the transaction boundary
+          (``commit`` on success, ``rollback`` on failure or exception).
+* R14 -- Event type selection is data-driven; no ``if/switch`` on
+          event_type inside the posting path.
+* L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
+* R4  -- Double-entry balance enforced downstream by ``JournalWriter``.
+
+Failure modes
+-------------
+* Guard rejection or kernel validation  -> ``ModulePostingResult`` with
+  ``is_success == False``; session rolled back.
+* Unexpected exception  -> session rolled back, exception re-raised.
+* Policy violation (e.g., over-limit expense)  -> ``ValueError`` from
+  helpers before posting attempt.
+
+Audit relevance
+---------------
+Structured log events emitted at operation start and commit/rollback for
+every public method, carrying expense IDs, categories, amounts, and
+policy compliance outcomes.  All journal entries feed the kernel audit
+chain (R11).
+
+Usage::
+
     service = ExpenseService(session, role_resolver, clock)
     result = service.record_expense(
         expense_id=uuid4(), category="TRAVEL",
@@ -23,7 +56,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from typing import Any, Sequence
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -74,6 +107,28 @@ logger = get_logger("modules.expense.service")
 class ExpenseService:
     """
     Orchestrates expense-management operations through engines and kernel.
+
+    Contract
+    --------
+    * Every posting method returns ``ModulePostingResult``; callers inspect
+      ``result.is_success`` to determine outcome.
+    * Non-posting helpers (``calculate_mileage``, ``calculate_per_diem``,
+      etc.) return pure domain objects with no side-effects on the journal.
+
+    Guarantees
+    ----------
+    * Session is committed only on ``result.is_success``; otherwise rolled back.
+    * Engine writes and journal writes share a single transaction
+      (``ModulePostingService`` runs with ``auto_commit=False``).
+    * Clock is injectable for deterministic testing.
+
+    Non-goals
+    ---------
+    * Does NOT own account-code resolution (delegated to kernel via ROLES).
+    * Does NOT enforce fiscal-period locks directly (kernel ``PeriodService``
+      handles R12/R13).
+    * Does NOT persist expense domain models -- only journal entries are
+      persisted.
 
     Engine composition:
     - TaxCalculator: expense tax calculations (sales tax, VAT on expenses)
@@ -693,7 +748,7 @@ class ExpenseService:
         results: list[CardTransaction] = []
         for txn in transactions:
             ct = CardTransaction(
-                id=txn.get("id") or __import__("uuid").uuid4(),
+                id=txn.get("id") or uuid4(),
                 card_id=card_id,
                 transaction_date=txn["transaction_date"] if isinstance(txn.get("transaction_date"), date_type) else date_type.fromisoformat(str(txn["transaction_date"])),
                 posting_date=txn["posting_date"] if isinstance(txn.get("posting_date"), date_type) else date_type.fromisoformat(str(txn["posting_date"])),

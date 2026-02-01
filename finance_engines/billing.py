@@ -1,21 +1,43 @@
 """
-Government Contract Billing Engine.
+Module: finance_engines.billing
+Responsibility:
+    Calculate provisional and final billing amounts for government
+    contracts.  Composes with AllocationCascade for indirect cost
+    calculations and produces billing line items suitable for invoice
+    generation.
 
-Pure functions with deterministic behavior. No I/O.
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values.
 
-This engine calculates provisional and final billing amounts for
-government contracts. It composes with AllocationCascade for
-indirect cost calculations and produces billing line items
-suitable for invoice generation.
+Invariants enforced:
+    - R17 (precision-derived tolerance): all monetary computations use
+      ROUND_HALF_UP to 2 decimal places.
+    - R16 (ISO 4217): currency codes propagated through all Money objects.
+    - Purity: no clock access, no I/O (R6).
+    - Funding ceiling: billing never exceeds funded amount or contract
+      ceiling, enforced deterministically.
+
+Failure modes:
+    - ValueError if required inputs are missing for a contract type
+      (e.g., no cost_breakdown for cost-plus).
+    - ValueError for unsupported contract types.
+    - ValueError for negative cost/rate inputs (frozen dataclass
+      ``__post_init__`` guards).
+
+Audit relevance:
+    Billing results are the basis for government invoice submissions
+    (SF-1034 / SF-1035).  Withholding percentages follow DCAA standard
+    (15%) and all billing is traced via ``@traced_engine``.
 
 Supported contract types:
-- Cost Plus Fixed Fee (CPFF)
-- Cost Plus Incentive Fee (CPIF)
-- Cost Plus Award Fee (CPAF)
-- Time & Materials (T&M)
-- Labor Hour (LH)
-- Firm Fixed Price (FFP) - milestone billing
-- Fixed Price Incentive (FPI)
+    - Cost Plus Fixed Fee (CPFF)
+    - Cost Plus Incentive Fee (CPIF)
+    - Cost Plus Award Fee (CPAF)
+    - Time & Materials (T&M)
+    - Labor Hour (LH)
+    - Firm Fixed Price (FFP) - milestone billing
+    - Fixed Price Incentive (FPI)
 
 Usage:
     from finance_engines.billing import (
@@ -105,7 +127,13 @@ class CostBreakdown:
     """
     Direct cost breakdown for a billing period.
 
-    All amounts must be non-negative.
+    Contract:
+        Frozen dataclass grouping direct cost categories.
+    Guarantees:
+        - All amounts are non-negative (enforced in ``__post_init__``).
+        - ``total_direct`` equals the sum of all non-None cost fields.
+    Non-goals:
+        - Does not carry indirect costs; see ``IndirectRates``.
     """
 
     direct_labor: Money
@@ -139,7 +167,13 @@ class IndirectRates:
     """
     Indirect cost rates for billing calculation.
 
-    All rates are expressed as decimals (e.g., 0.35 for 35%).
+    Contract:
+        Frozen dataclass holding DCAA indirect cost rates.
+    Guarantees:
+        - All rates are non-negative (enforced in ``__post_init__``).
+    Non-goals:
+        - Does not validate that rates match negotiated agreement values;
+          that is a policy-layer concern.
     """
 
     fringe: Decimal = Decimal("0")
@@ -264,7 +298,14 @@ class BillingResult:
     """
     Complete billing calculation result.
 
-    Immutable value object containing all billing details.
+    Contract:
+        Frozen dataclass containing all billing details.
+    Guarantees:
+        - ``gross_billing == total_cost + fee_amount`` (before caps).
+        - ``net_billing == gross_billing - withholding_amount``.
+    Non-goals:
+        - Does not produce the actual invoice document; callers use line_items
+          to format the invoice.
 
     Attributes:
         contract_type: Type of contract billed
@@ -303,7 +344,18 @@ def calculate_billing(billing_input: BillingInput) -> BillingResult:
     """
     Calculate billing for a government contract period.
 
-    Pure function - no side effects, no I/O, deterministic output.
+    Pure function -- no side effects, no I/O, deterministic output.
+
+    Preconditions:
+        billing_input is a valid BillingInput with contract_type set.
+        For cost-plus types: cost_breakdown and indirect_rates must be provided.
+        For T&M/LH types: labor_entries must be provided.
+        For FFP types: milestones must be provided.
+
+    Postconditions:
+        Returns BillingResult where net_billing == gross_billing - withholding.
+        If funding_limit is set and exceeded, funding_limited is True and
+        gross_billing is capped.
 
     Routes to the appropriate billing calculator based on contract type.
 
@@ -440,6 +492,7 @@ def calculate_fee(
     """
     raw_fee = (total_cost * fee_rate).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
+    # INVARIANT: fee ceiling enforcement -- billing never exceeds funded amount.
     if fee_ceiling is not None:
         remaining_fee = fee_ceiling - cumulative_fee
         if remaining_fee < Decimal("0"):
@@ -510,6 +563,7 @@ def apply_funding_limit(
     Returns:
         Tuple of (capped_amount, was_limited)
     """
+    # INVARIANT: funding limit enforcement -- billing capped at funded amount.
     if funding_limit is None:
         return Money.of(billing_amount, currency), False
 
@@ -987,6 +1041,13 @@ def calculate_rate_adjustment(
 
 
 def _apply_rate(base: Decimal, rate: Decimal, currency: str) -> Money:
-    """Apply rate to base with deterministic rounding."""
+    """Apply rate to base with deterministic rounding.
+
+    Preconditions:
+        - ``base`` and ``rate`` are Decimal values.
+    Postconditions:
+        - Result is rounded to 2 decimal places using ROUND_HALF_UP.
+    """
+    # INVARIANT: R17 — precision-derived rounding to 2 decimal places
     result = (base * rate).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
     return Money.of(result, currency)

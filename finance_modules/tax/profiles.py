@@ -1,18 +1,49 @@
 """
-Tax Economic Profiles — Kernel format.
+Tax Economic Profiles -- Kernel format.
 
-Merged authoritative profiles from kernel (guards, where-clauses, multi-ledger)
-and module (line mappings, additional scenarios). Each profile is a kernel
-AccountingPolicy with companion ModuleLineMapping tuples for intent construction.
+Responsibility:
+    Declares all ``AccountingPolicy`` instances and companion
+    ``ModuleLineMapping`` tuples for the tax module.  Each profile maps a
+    single event type to journal-line specifications using account ROLES
+    (not COA codes).
+
+Architecture:
+    finance_modules -- Thin ERP glue (this layer).
+    Profiles are registered into kernel registries by ``register()`` and
+    resolved at posting time by the interpretation pipeline (L1).
+
+Invariants:
+    - R14 -- No ``if/switch`` on event_type in the posting engine.
+             Each event type has exactly one profile (or one per
+             where-clause variant).
+    - R15 -- Adding a new tax event type requires ONLY a new profile +
+             mapping + registration.
+    - L1  -- Account roles (e.g., ``TAX_PAYABLE``) are resolved to COA
+             codes at posting time by the kernel's ``RoleResolver``.
+
+Failure modes:
+    - Duplicate profile names cause ``register_rich_profile`` to raise at
+      startup.
+    - A guard expression evaluating to ``True`` causes the event to be
+      REJECTED with the declared ``reason_code``.
+
+Audit relevance:
+    - Profile version numbers support replay compatibility (R23).
+    - Guard conditions provide machine-readable rejection codes for
+      audit inspection.
 
 Profiles:
-    SalesTaxCollected   — Sales tax collected: Dr Clearing / Cr Payable
-    UseTaxAccrued       — Use tax self-assessed: Dr Expense / Cr Accrual
-    TaxPayment          — Tax remitted: Dr Payable / Cr Cash
-    VatInput            — VAT paid on purchase: Dr Receivable / Cr Clearing
-    VatOutput           — VAT collected on sale: Dr Clearing / Cr Payable
-    VatSettlement       — Net VAT settlement: Dr Payable / Cr Receivable + Cash
-    TaxRefundReceived   — Tax refund received: Dr Cash / Cr Receivable
+    SalesTaxCollected   -- Sales tax collected: Dr Clearing / Cr Payable
+    UseTaxAccrued       -- Use tax self-assessed: Dr Expense / Cr Accrual
+    TaxPayment          -- Tax remitted: Dr Payable / Cr Cash
+    VatInput            -- VAT paid on purchase: Dr Receivable / Cr Clearing
+    VatOutput           -- VAT collected on sale: Dr Clearing / Cr Payable
+    VatSettlement       -- Net VAT settlement: Dr Payable / Cr Receivable + Cash
+    TaxRefundReceived   -- Tax refund received: Dr Cash / Cr Receivable
+    TaxDTARecorded      -- Deferred tax asset: Dr Receivable / Cr Expense
+    TaxDTLRecorded      -- Deferred tax liability: Dr Expense / Cr Payable
+    TaxMultiJurisdiction -- Multi-jurisdiction obligation: Dr Expense / Cr Payable
+    TaxAdjustment       -- Prior period adjustment: Dr Expense / Cr Payable
 """
 
 from datetime import date
@@ -280,6 +311,130 @@ TAX_REFUND_RECEIVED_MAPPINGS = (
 )
 
 
+# --- Deferred Tax Asset Recorded -----------------------------------------------
+
+TAX_DTA_RECORDED = AccountingPolicy(
+    name="TaxDTARecorded",
+    version=1,
+    trigger=PolicyTrigger(event_type="tax.dta_recorded"),
+    meaning=PolicyMeaning(
+        economic_type="DEFERRED_TAX_ASSET",
+        dimensions=("jurisdiction",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="TAX_RECEIVABLE", credit_role="TAX_EXPENSE"),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_DTA_AMOUNT",
+            message="DTA amount must be positive",
+        ),
+    ),
+    description="Deferred tax asset recognized",
+)
+
+TAX_DTA_RECORDED_MAPPINGS = (
+    ModuleLineMapping(role="TAX_RECEIVABLE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="TAX_EXPENSE", side="credit", ledger="GL"),
+)
+
+
+# --- Deferred Tax Liability Recorded ------------------------------------------
+
+TAX_DTL_RECORDED = AccountingPolicy(
+    name="TaxDTLRecorded",
+    version=1,
+    trigger=PolicyTrigger(event_type="tax.dtl_recorded"),
+    meaning=PolicyMeaning(
+        economic_type="DEFERRED_TAX_LIABILITY",
+        dimensions=("jurisdiction",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="TAX_EXPENSE", credit_role="TAX_PAYABLE"),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_DTL_AMOUNT",
+            message="DTL amount must be positive",
+        ),
+    ),
+    description="Deferred tax liability recognized",
+)
+
+TAX_DTL_RECORDED_MAPPINGS = (
+    ModuleLineMapping(role="TAX_EXPENSE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="TAX_PAYABLE", side="credit", ledger="GL"),
+)
+
+
+# --- Multi-Jurisdiction Tax Posted --------------------------------------------
+
+TAX_MULTI_JURISDICTION = AccountingPolicy(
+    name="TaxMultiJurisdiction",
+    version=1,
+    trigger=PolicyTrigger(event_type="tax.multi_jurisdiction"),
+    meaning=PolicyMeaning(
+        economic_type="TAX_LIABILITY_INCREASE",
+        dimensions=("jurisdiction",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="TAX_EXPENSE", credit_role="TAX_PAYABLE"),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_TAX_AMOUNT",
+            message="Tax amount must be positive",
+        ),
+    ),
+    description="Multi-jurisdiction tax obligation posted",
+)
+
+TAX_MULTI_JURISDICTION_MAPPINGS = (
+    ModuleLineMapping(role="TAX_EXPENSE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="TAX_PAYABLE", side="credit", ledger="GL"),
+)
+
+
+# --- Tax Adjustment -----------------------------------------------------------
+
+TAX_ADJUSTMENT = AccountingPolicy(
+    name="TaxAdjustment",
+    version=1,
+    trigger=PolicyTrigger(event_type="tax.adjustment"),
+    meaning=PolicyMeaning(
+        economic_type="TAX_ADJUSTMENT",
+        dimensions=("jurisdiction",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="TAX_EXPENSE", credit_role="TAX_PAYABLE"),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_ADJUSTMENT_AMOUNT",
+            message="Tax adjustment amount must be positive",
+        ),
+    ),
+    description="Prior period tax adjustment",
+)
+
+TAX_ADJUSTMENT_MAPPINGS = (
+    ModuleLineMapping(role="TAX_EXPENSE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="TAX_PAYABLE", side="credit", ledger="GL"),
+)
+
+
 # =============================================================================
 # Profile + Mapping pairs for registration
 # =============================================================================
@@ -292,6 +447,11 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     (VAT_OUTPUT, VAT_OUTPUT_MAPPINGS),
     (VAT_SETTLEMENT, VAT_SETTLEMENT_MAPPINGS),
     (TAX_REFUND_RECEIVED, TAX_REFUND_RECEIVED_MAPPINGS),
+    # New ASC 740 + deepening profiles
+    (TAX_DTA_RECORDED, TAX_DTA_RECORDED_MAPPINGS),
+    (TAX_DTL_RECORDED, TAX_DTL_RECORDED_MAPPINGS),
+    (TAX_MULTI_JURISDICTION, TAX_MULTI_JURISDICTION_MAPPINGS),
+    (TAX_ADJUSTMENT, TAX_ADJUSTMENT_MAPPINGS),
 )
 
 

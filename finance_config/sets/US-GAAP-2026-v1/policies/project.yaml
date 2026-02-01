@@ -1,0 +1,153 @@
+policies:
+- name: ProjectCostRecorded
+  version: 1
+  module: project
+  description: Records project cost incurrence
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: project.cost_recorded
+  meaning:
+    economic_type: PROJECT_COST
+    dimensions:
+    - project_id
+    - wbs_code
+  ledger_effects:
+  - ledger: GL
+    debit_role: PROJECT_WIP
+    credit_role: DIRECT_COST
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Cost amount must be positive
+  line_mappings:
+  - role: PROJECT_WIP
+    side: debit
+  - role: DIRECT_COST
+    side: credit
+- name: ProjectBillingMilestone
+  version: 1
+  module: project
+  description: Records milestone-based billing
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: project.billing_milestone
+  meaning:
+    economic_type: PROJECT_BILLING
+    dimensions:
+    - project_id
+  ledger_effects:
+  - ledger: GL
+    debit_role: CONTRACT_RECEIVABLE
+    credit_role: CONTRACT_REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_BILLING
+    message: Billing amount must be positive
+  line_mappings:
+  - role: CONTRACT_RECEIVABLE
+    side: debit
+  - role: CONTRACT_REVENUE
+    side: credit
+- name: ProjectBillingTM
+  version: 1
+  module: project
+  description: Records time and materials billing
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: project.billing_tm
+  meaning:
+    economic_type: PROJECT_BILLING
+    dimensions:
+    - project_id
+  ledger_effects:
+  - ledger: GL
+    debit_role: UNBILLED_AR
+    credit_role: CONTRACT_REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_BILLING
+    message: Billing amount must be positive
+  line_mappings:
+  - role: UNBILLED_AR
+    side: debit
+  - role: CONTRACT_REVENUE
+    side: credit
+- name: ProjectRevenueRecognized
+  version: 1
+  module: project
+  description: Records project revenue recognition
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: project.revenue_recognized
+  meaning:
+    economic_type: REVENUE_RECOGNITION
+    dimensions:
+    - project_id
+  ledger_effects:
+  - ledger: GL
+    debit_role: UNBILLED_AR
+    credit_role: CONTRACT_REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_REVENUE
+    message: Revenue amount must be positive
+  line_mappings:
+  - role: UNBILLED_AR
+    side: debit
+  - role: CONTRACT_REVENUE
+    side: credit
+- name: ProjectBudgetRevised
+  version: 1
+  module: project
+  description: Records project budget revision
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: project.budget_revised
+  meaning:
+    economic_type: BUDGET_CHANGE
+    dimensions:
+    - project_id
+    - wbs_code
+  ledger_effects:
+  - ledger: GL
+    debit_role: PROJECT_WIP
+    credit_role: WIP_BILLED
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Budget revision amount must be positive
+  line_mappings:
+  - role: PROJECT_WIP
+    side: debit
+  - role: WIP_BILLED
+    side: credit
+- name: ProjectPhaseCompleted
+  version: 1
+  module: project
+  description: Records project phase completion (WIP relief)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: project.phase_completed
+  meaning:
+    economic_type: PROJECT_COMPLETION
+    dimensions:
+    - project_id
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_BILLED
+    credit_role: PROJECT_WIP
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Phase completion amount must be positive
+  line_mappings:
+  - role: WIP_BILLED
+    side: debit
+  - role: PROJECT_WIP
+    side: credit

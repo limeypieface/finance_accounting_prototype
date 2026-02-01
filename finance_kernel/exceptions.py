@@ -599,6 +599,41 @@ class AdjustmentsNotAllowedError(PeriodError):
         )
 
 
+class PeriodClosingError(PeriodError):
+    """Non-close posting attempted on a period that is mid-close (R25)."""
+
+    code: str = "PERIOD_CLOSING"
+
+    def __init__(self, period_code: str):
+        self.period_code = period_code
+        super().__init__(
+            f"Period {period_code} is in CLOSING state — "
+            f"only close-related postings are permitted"
+        )
+
+
+class CloseAuthorityError(PeriodError):
+    """Actor lacks authority for the requested close operation."""
+
+    code: str = "CLOSE_AUTHORITY_DENIED"
+
+    def __init__(
+        self,
+        actor_id: str,
+        required_role: str,
+        actual_role: str,
+        phase: int,
+    ):
+        self.actor_id = actor_id
+        self.required_role = required_role
+        self.actual_role = actual_role
+        self.phase = phase
+        super().__init__(
+            f"Actor {actor_id} has role {actual_role} but phase {phase} "
+            f"requires {required_role}"
+        )
+
+
 # Account-related exceptions
 
 

@@ -1,24 +1,40 @@
 """
-Subledger ORM Models.
+Module: finance_kernel.models.subledger
+Responsibility: ORM persistence for subledger entries, reconciliation matches,
+    reconciliation failure reports, and subledger period close status.  These
+    models form the entity-level derived index over the GL journal, enabling
+    per-counterparty balance tracking and GL-to-SL reconciliation.
+Architecture position: Kernel > Models.  May import from db/base.py only.
+    MUST NOT import from services/, selectors/, domain/, or outer layers.
 
-Models for subledger entries and reconciliation tracking.
+Invariants enforced:
+    SL-G2  -- Idempotency.  UNIQUE(journal_entry_id, subledger_type, source_line_id)
+              prevents duplicate subledger entries under retry.
+    SL-G6  -- ReconciliationFailureReportModel is an append-only audit artifact.
+              Once created, no UPDATE or DELETE is permitted (R10, ORM + DB).
+    SL-G10 -- Currency normalization.  Currency values are uppercase ISO 4217,
+              normalized at the ingestion boundary.
+    R10    -- SubledgerEntryModel financial fields are immutable after posting
+              (posted_at is set).  Only reconciliation_status and reconciled_amount
+              may change post-posting (reconciliation lifecycle).
+    F13    -- subledger_type is persisted as SubledgerType.value (canonical string).
+    F16    -- GL linkage uses journal_entry_id / journal_line_id (canonical names).
+    F17    -- period_code references FiscalPeriod.period_code (FK integrity).
 
-SubledgerEntryModel:
-    Entity-level derived index linked to GL journal entries. Tracks
-    individual subledger transactions with reconciliation status.
+Failure modes:
+    - IntegrityError on duplicate (journal_entry_id, subledger_type, source_line_id)
+      (SL-G2 idempotency).
+    - ImmutabilityViolationError on UPDATE of financial fields on posted
+      SubledgerEntryModel (R10).
+    - ImmutabilityViolationError on any UPDATE/DELETE of ReconciliationFailureReportModel
+      (SL-G6, R10).
 
-SubledgerReconciliationModel:
-    Match-level reconciliation history pairing debit/credit entries.
-
-ReconciliationFailureReportModel:
-    Period-close audit artifact persisted when GL/SL balances diverge.
-
-Invariants:
-- SL-G2: Unique constraint (journal_entry_id, subledger_type, source_line_id)
-  prevents duplicate subledger entries under retry.
-- SL-G10: Currency values are uppercase ISO 4217, normalized at ingestion.
-- F13: subledger_type is persisted as SubledgerType.value (canonical string).
-- F16: GL linkage uses journal_entry_id / journal_line_id (canonical names).
+Audit relevance:
+    Subledger entries provide the per-counterparty view of financial activity
+    (AP by vendor, AR by customer, etc.).  GL-to-SL reconciliation verifies
+    that subledger aggregate balances match GL control account balances.
+    ReconciliationFailureReportModel is a sacred audit artifact that records
+    any GL/SL divergence detected during period close.
 """
 
 from datetime import date, datetime
@@ -44,7 +60,11 @@ from finance_kernel.db.base import TrackedBase, UUIDString
 
 
 class ReconciliationStatus(str, Enum):
-    """Reconciliation status for a subledger entry."""
+    """Reconciliation status for a subledger entry.
+
+    Contract: Transitions follow OPEN -> PARTIAL -> RECONCILED (or WRITTEN_OFF).
+    RECONCILED and WRITTEN_OFF are terminal states.
+    """
 
     OPEN = "open"
     PARTIAL = "partial"
@@ -54,14 +74,24 @@ class ReconciliationStatus(str, Enum):
 
 class SubledgerEntryModel(TrackedBase):
     """
-    Subledger entry ORM model.
+    Subledger entry -- entity-level derived index linked to the GL.
 
-    Entity-level derived index linked to GL journal entries via
-    journal_entry_id / journal_line_id (F16 canonical names).
+    Contract:
+        Each SubledgerEntryModel is linked to exactly one JournalEntry via
+        journal_entry_id (F16).  The combination (journal_entry_id,
+        subledger_type, source_line_id) is unique (SL-G2 idempotency).
+        Once posted_at is set, financial fields are immutable (R10); only
+        reconciliation_status and reconciled_amount may change.
 
-    The subledger_type is persisted as SubledgerType.value (F13).
-    Round-trip mapping: SubledgerType → .value on write,
-    SubledgerType(stored_str) on read.
+    Guarantees:
+        - subledger_type is persisted as SubledgerType.value (F13).
+        - currency is uppercase ISO 4217 (SL-G10).
+        - Exactly one of debit_amount or credit_amount is set per entry.
+        - journal_entry_id references a valid JournalEntry (FK).
+
+    Non-goals:
+        - This model does NOT enforce that exactly one of debit/credit is set
+          at the ORM level; that is a service-layer validation.
     """
 
     __tablename__ = "subledger_entries"
@@ -180,11 +210,22 @@ class SubledgerEntryModel(TrackedBase):
 
 class SubledgerReconciliationModel(TrackedBase):
     """
-    Match-level reconciliation history.
+    Match-level reconciliation history -- debit-to-credit entry pairing.
 
-    Records individual debit-to-credit entry matches. This is NOT the same
-    as ReconciliationFailureReportModel, which records period-close audit
-    artifacts (F11).
+    Contract:
+        Each row records one reconciliation match between a debit subledger
+        entry and a credit subledger entry.  The reconciled_amount may be
+        partial (is_full_match=False) or full (is_full_match=True).
+
+    Guarantees:
+        - debit_entry_id and credit_entry_id reference valid SubledgerEntryModel
+          rows (FK constraints).
+        - reconciled_amount is always positive.
+        - reconciled_at records when the match was made.
+
+    Non-goals:
+        - This model is NOT the period-close audit artifact; that is
+          ReconciliationFailureReportModel (F11, SL-G6).
     """
 
     __tablename__ = "subledger_reconciliations"
@@ -228,14 +269,25 @@ class SubledgerReconciliationModel(TrackedBase):
 
 class ReconciliationFailureReportModel(TrackedBase):
     """
-    Period-close audit artifact (F11, SL-G6).
+    Period-close audit artifact for GL/SL reconciliation failures.
 
-    Persisted when enforce_on_close=True reconciliation fails. Records the
-    GL/SL balance delta for audit review. Referenced by
-    SubledgerPeriodStatusModel.reconciliation_report_id (SL-Phase 8).
+    Contract:
+        ReconciliationFailureReportModel rows are sacred -- append-only, never
+        updated or deleted (SL-G6, R10).  Each row records the GL control
+        account balance vs. subledger aggregate balance delta for one
+        subledger type in one fiscal period.
 
-    Distinct from SubledgerReconciliationModel which records match-level
-    entry pairs.
+    Guarantees:
+        - Immutable after creation (ORM listener + DB trigger, R10).
+        - delta_amount = gl_control_balance - sl_aggregate_balance.
+        - entity_deltas (JSON) provides per-entity breakdown of imbalances.
+        - checked_at records when the reconciliation check was performed.
+
+    Non-goals:
+        - This model does NOT resolve the failure; resolution is a manual
+          audit process or automated correction via reversal entries.
+        - Distinct from SubledgerReconciliationModel which records match-level
+          entry pairs.
     """
 
     __tablename__ = "reconciliation_failure_reports"
@@ -281,7 +333,11 @@ class ReconciliationFailureReportModel(TrackedBase):
 
 
 class SubledgerPeriodStatus(str, Enum):
-    """Status of a subledger period."""
+    """Status of a subledger period.
+
+    Contract: Transitions follow OPEN -> RECONCILING -> CLOSED.
+    CLOSED is a terminal state (no reopening).
+    """
 
     OPEN = "open"
     RECONCILING = "reconciling"
@@ -290,13 +346,23 @@ class SubledgerPeriodStatus(str, Enum):
 
 class SubledgerPeriodStatusModel(TrackedBase):
     """
-    Subledger period close status (SL-Phase 8, SL-G6).
+    Subledger period close status tracker.
 
-    Tracks close state per subledger type per fiscal period. Makes close
-    state auditable and queryable rather than implied by absence of failures.
+    Contract:
+        Each row tracks the close state for one subledger type in one fiscal
+        period.  The combination (subledger_type, period_code) is unique
+        (uq_sl_period_status).
 
-    F17: period_code format is defined by FiscalPeriod as the single
-    source of truth. The FK constraint enforces referential integrity.
+    Guarantees:
+        - period_code references a valid FiscalPeriod.period_code (FK, F17).
+        - status lifecycle: OPEN -> RECONCILING -> CLOSED.
+        - reconciliation_report_id links to the failure report if reconciliation
+          detected a GL/SL divergence (SL-G6).
+        - closed_at and closed_by record the close action for audit.
+
+    Non-goals:
+        - This model does NOT enforce the close lifecycle at the ORM level;
+          that is the responsibility of the period close orchestrator.
     """
 
     __tablename__ = "subledger_period_status"

@@ -1,13 +1,28 @@
 """
-EconomicLink ORM Model.
+Module: finance_kernel.models.economic_link
+Responsibility: ORM persistence for economic links -- the "why pointer"
+    connecting financial artifacts across the system.
+Architecture position: Kernel > Models.  May import from db/base.py and
+    exceptions.py only.
 
-Persistence layer for economic links with immutability protection.
+Invariants enforced:
+    R4/L1 -- Links are immutable after creation (ORM before_update/before_delete
+             listeners + DB trigger).  No UPDATE, no DELETE.
+    L2   -- No self-links (parent_ref != child_ref).  Enforced by
+            LinkGraphService at creation time.
+    L3   -- Unique constraint on (link_type, parent_ref, child_ref).
+    L4   -- creating_event_id is required (NOT NULL) -- provenance tracking.
 
-Hard invariants:
-- L1: Links are immutable after creation (no UPDATE, no DELETE)
-- L2: No self-links (parent_ref != child_ref)
-- L3: Unique constraint on (link_type, parent_ref, child_ref)
-- L4: creating_event_id is required (NOT NULL)
+Failure modes:
+    - ImmutabilityViolationError on UPDATE or DELETE attempt (L1).
+    - IntegrityError on duplicate link (L3).
+    - SelfLinkError on self-referential link attempt (L2).
+
+Audit relevance:
+    EconomicLinks form the traversable graph of financial cause-and-effect.
+    Every link records the creating_event_id so auditors can trace why any
+    two artifacts are related.  Immutability ensures the historical graph
+    cannot be retroactively altered.
 """
 
 from __future__ import annotations
@@ -41,8 +56,20 @@ class EconomicLinkModel(Base):
     """
     Persistent storage for economic links.
 
-    Maps the EconomicLink domain object to the database.
-    Enforces immutability via ORM event listeners.
+    Contract:
+        Once INSERTed, an EconomicLinkModel row is immutable -- no UPDATE,
+        no DELETE.  To "undo" a link, create a compensating relationship
+        (e.g., REVERSED_BY).
+
+    Guarantees:
+        - (link_type, parent_ref, child_ref) is unique (L3).
+        - creating_event_id is always populated (L4).
+        - ORM listeners raise ImmutabilityViolationError on mutation (L1).
+
+    Non-goals:
+        - Self-link prevention (L2) is enforced by LinkGraphService, not
+          this model.
+        - Cycle detection is performed by LinkGraphService at creation time.
     """
 
     __tablename__ = "economic_links"
@@ -141,10 +168,10 @@ class EconomicLinkModel(Base):
 
     @classmethod
     def from_domain(cls, link: EconomicLink) -> EconomicLinkModel:
-        """
-        Create ORM model from domain object.
+        """Create ORM model from domain object.
 
-        Used by LinkGraphService to persist links.
+        Preconditions: link is a valid EconomicLink domain object.
+        Postconditions: Returns a new EconomicLinkModel ready for session.add().
         """
         return cls(
             id=link.link_id,
@@ -159,10 +186,11 @@ class EconomicLinkModel(Base):
         )
 
     def to_domain(self) -> EconomicLink:
-        """
-        Convert ORM model to domain object.
+        """Convert ORM model to domain object.
 
-        Used by LinkGraphService for query results.
+        Postconditions: Returns an EconomicLink frozen dataclass.
+        Raises: ValueError if stored link_type or artifact_type is not a
+            valid enum member.
         """
         # Import here to avoid circular imports
         from finance_kernel.domain.economic_link import (
@@ -219,10 +247,11 @@ class EconomicLinkModel(Base):
 
 @event.listens_for(EconomicLinkModel, "before_update")
 def prevent_link_update(mapper, connection, target):
-    """
-    Prevent any updates to EconomicLink records.
+    """Prevent any updates to EconomicLink records.
 
-    L1 Violation: Links are immutable once created.
+    Preconditions: Called by SQLAlchemy before any UPDATE flush.
+    Raises: ImmutabilityViolationError always -- INVARIANT L1: Links are
+        immutable once created.
     """
     raise ImmutabilityViolationError(
         entity_type="EconomicLink",
@@ -233,11 +262,11 @@ def prevent_link_update(mapper, connection, target):
 
 @event.listens_for(EconomicLinkModel, "before_delete")
 def prevent_link_delete(mapper, connection, target):
-    """
-    Prevent deletion of EconomicLink records.
+    """Prevent deletion of EconomicLink records.
 
-    L1 Violation: Links are immutable - use compensating links (e.g., REVERSED_BY)
-    instead of deletion.
+    Preconditions: Called by SQLAlchemy before any DELETE flush.
+    Raises: ImmutabilityViolationError always -- INVARIANT L1: Links are
+        immutable.  Use compensating links (e.g., REVERSED_BY) instead.
     """
     raise ImmutabilityViolationError(
         entity_type="EconomicLink",

@@ -1,7 +1,32 @@
 """
-Payroll Domain Models.
+Payroll Domain Models (``finance_modules.payroll.models``).
 
-The nouns of payroll: employees, pay periods, timecards, paychecks.
+Responsibility
+--------------
+Frozen dataclass value objects representing the nouns of payroll:
+employees, pay periods, timecards, paychecks, tax withholdings,
+benefit deductions, and NACHA payment batches.
+
+Architecture position
+---------------------
+**Modules layer** -- pure data definitions with ZERO I/O.  Consumed by
+``PayrollService`` and returned to callers.  No dependency on kernel
+services, database, or engines.
+
+Invariants enforced
+-------------------
+* All models are ``frozen=True`` (immutable after construction).
+* All monetary fields use ``Decimal`` -- NEVER ``float``.
+
+Failure modes
+-------------
+* Construction with invalid enum values raises ``ValueError``.
+
+Audit relevance
+---------------
+* Payroll records are SOX-critical.
+* Withholding breakdowns must be traceable for tax compliance.
+* NACHA batch records support payment reconciliation.
 """
 
 from dataclasses import dataclass, field
@@ -163,3 +188,38 @@ class PayrollRun:
     status: PayrollRunStatus = PayrollRunStatus.DRAFT
     approved_by: UUID | None = None
     approved_date: date | None = None
+
+
+@dataclass(frozen=True)
+class WithholdingResult:
+    """Result of gross-to-net payroll calculation."""
+    id: UUID
+    employee_id: UUID
+    gross_pay: Decimal
+    federal_withholding: Decimal
+    state_withholding: Decimal
+    social_security: Decimal
+    medicare: Decimal
+    total_deductions: Decimal
+    net_pay: Decimal
+
+
+@dataclass(frozen=True)
+class BenefitsDeduction:
+    """A benefits deduction from an employee's paycheck."""
+    id: UUID
+    employee_id: UUID
+    plan_name: str
+    employee_amount: Decimal
+    employer_amount: Decimal = Decimal("0")
+    period: str = ""
+
+
+@dataclass(frozen=True)
+class EmployerContribution:
+    """An employer contribution to a benefits plan."""
+    id: UUID
+    employee_id: UUID
+    plan_name: str
+    amount: Decimal
+    period: str = ""

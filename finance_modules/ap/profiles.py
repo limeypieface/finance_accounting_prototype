@@ -1,20 +1,50 @@
 """
-Accounts Payable Economic Profiles — Kernel format.
+Accounts Payable Economic Profiles (``finance_modules.ap.profiles``).
 
-Merged authoritative profiles from kernel (guards, where-clauses, multi-ledger)
-and module (line mappings, additional scenarios).
+Responsibility
+--------------
+Declares the full set of AP ``AccountingPolicy`` definitions and their
+companion ``ModuleLineMapping`` tuples.  Each policy maps a business event
+type to its ledger effects using account ROLES (not COA codes).
+
+Architecture position
+---------------------
+**Modules layer** -- declarative profile definitions consumed by the kernel
+interpretation pipeline.  Registered into kernel registries at boot via
+``register()``.
+
+Invariants enforced
+-------------------
+* R14 -- Profile dispatch via ``PolicyTrigger.where``; no ``if/switch`` on
+         event_type.
+* R15 -- Adding a new AP scenario requires only a new profile + mapping
+         tuple added to ``_ALL_PROFILES``.
+* L1  -- All line mappings use ROLES; COA resolution deferred to kernel
+         ``JournalWriter``.
+* P1  -- Where-clauses on ``ap.invoice_received`` ensure exactly one profile
+         matches per event.
+
+Failure modes
+-------------
+* Duplicate profile name at registration time -> kernel raises.
+* Missing where-clause -> ambiguous dispatch (kernel rejects at posting).
+
+Audit relevance
+---------------
+Profile registration is logged with count.  Each profile carries a ``version``
+for replay compatibility (R23).
 
 Profiles:
-    APInvoiceExpense           — Direct expense invoice (no PO)
-    APInvoicePOMatched         — PO-matched invoice clearing GRNI
-    APInvoiceInventory         — Inventory invoice
-    APPayment                  — Standard supplier payment
-    APPaymentWithDiscount      — Payment with early payment discount
-    APInvoiceCancelled         — Invoice reversal
-    APAccrualRecorded          — Period-end uninvoiced receipt accrual
-    APAccrualReversed          — Accrual reversal
-    APPrepaymentRecorded       — Advance payment to vendor
-    APPrepaymentApplied        — Prepayment applied to invoice
+    APInvoiceExpense           -- Direct expense invoice (no PO)
+    APInvoicePOMatched         -- PO-matched invoice clearing GRNI
+    APInvoiceInventory         -- Inventory invoice
+    APPayment                  -- Standard supplier payment
+    APPaymentWithDiscount      -- Payment with early payment discount
+    APInvoiceCancelled         -- Invoice reversal
+    APAccrualRecorded          -- Period-end uninvoiced receipt accrual
+    APAccrualReversed          -- Accrual reversal
+    APPrepaymentRecorded       -- Advance payment to vendor
+    APPrepaymentApplied        -- Prepayment applied to invoice
 """
 
 from datetime import date
@@ -390,7 +420,13 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
 
 
 def register() -> None:
-    """Register all AP profiles in kernel registries."""
+    """Register all AP profiles in kernel registries.
+
+    Preconditions:
+        - Kernel profile registry is initialized.
+    Postconditions:
+        - All ``_ALL_PROFILES`` entries registered; log emitted with count.
+    """
     for profile, mappings in _ALL_PROFILES:
         register_rich_profile(MODULE_NAME, profile, mappings)
 

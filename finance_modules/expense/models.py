@@ -1,7 +1,31 @@
 """
-Travel & Expense Domain Models.
+Travel and Expense Domain Models (``finance_modules.expense.models``).
 
-The nouns of expense management: reports, lines, cards, transactions.
+Responsibility
+--------------
+Frozen dataclass value objects representing the nouns of expense management:
+expense reports, line items, corporate cards, card transactions, policy
+limits, and approval workflows.
+
+Architecture position
+---------------------
+**Modules layer** -- pure data definitions with ZERO I/O.  Consumed by
+``ExpenseService`` and returned to callers.  No dependency on kernel
+services, database, or engines.
+
+Invariants enforced
+-------------------
+* All models are ``frozen=True`` (immutable after construction).
+* All monetary fields use ``Decimal`` -- NEVER ``float``.
+
+Failure modes
+-------------
+* Construction with invalid enum values raises ``ValueError``.
+
+Audit relevance
+---------------
+* Expense report lifecycle (``ExpenseReportStatus``) is auditable.
+* Corporate card reconciliation provides control over T&E spend.
 """
 
 from dataclasses import dataclass, field

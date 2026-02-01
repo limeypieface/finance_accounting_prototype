@@ -1,9 +1,35 @@
 """
-Transactional sequence service.
+SequenceService -- monotonic sequence allocation via locked counter rows.
 
-Provides monotonically increasing sequence numbers with proper
-transactional guarantees. Uses a dedicated table with row-level
-locking to prevent sequence gaps and duplicates under concurrency.
+Responsibility:
+    Provides strictly monotonically increasing sequence numbers for
+    journal entries and audit events.  Uses a dedicated counter table
+    with row-level locking (``SELECT ... FOR UPDATE``) to guarantee
+    uniqueness and ordering under concurrent access.
+
+Architecture position:
+    Kernel > Services -- imperative shell infrastructure.
+    Called by JournalWriter (for journal entry sequences) and
+    AuditorService (for audit event sequences).
+
+Invariants enforced:
+    R9  -- Sequence monotonicity: sequences are strictly monotonic and
+           gap-safe.  The SQL aggregate-max-plus-one anti-pattern is
+           FORBIDDEN -- the locked counter row is the sole source of
+           truth for the next value.
+    R5  -- Transactional: sequence increment is only visible after the
+           caller's transaction commits.  Rollback returns the value.
+
+Failure modes:
+    - IntegrityError: Concurrent counter creation race (handled via
+      savepoint rollback and retry).
+    - Deadlock: Two transactions locking different sequence rows in
+      opposite order (mitigated by always locking a single row per call).
+
+Audit relevance:
+    Sequence allocation is logged at DEBUG level with sequence_name
+    and value.  The monotonic ordering of sequences underpins the
+    audit chain (R11) and journal ordering guarantees.
 """
 
 from sqlalchemy import BigInteger, String, select
@@ -45,10 +71,22 @@ class SequenceService:
     """
     Service for generating transactional sequence numbers.
 
-    Provides monotonically increasing sequences with:
-    - Row-level locking for concurrency safety
-    - No gaps under normal operation
-    - Transaction isolation (sequence advances only on commit)
+    Contract:
+        Accepts a sequence name and returns the next strictly-monotonic
+        integer value.  The increment is transactional -- it is only
+        committed when the caller's transaction commits.
+
+    Guarantees:
+        - R9: Strictly monotonic sequences via locked counter row.
+          The SQL aggregate-max-plus-one anti-pattern is NEVER used.
+        - Concurrency safety: ``SELECT ... FOR UPDATE`` serializes
+          concurrent allocations for the same sequence.
+        - Gap-safe: Under normal operation, no sequence values are
+          skipped.  On transaction rollback, the value is returned.
+
+    Non-goals:
+        - Does NOT call ``session.commit()`` -- caller controls boundaries.
+        - Does NOT provide cross-session uniqueness without transactions.
 
     Usage:
         with session.begin():
@@ -82,18 +120,27 @@ class SequenceService:
         The increment is only committed when the transaction commits.
         If the transaction rolls back, the sequence value is not consumed.
 
+        Preconditions:
+            - ``sequence_name`` is a non-empty string.
+            - The caller is within an active database transaction.
+
+        Postconditions:
+            - Returns an integer > 0 that is strictly greater than any
+              previously returned value for this sequence name (R9).
+            - The counter row is locked until the transaction completes.
+
         Args:
             sequence_name: Name of the sequence.
 
         Returns:
-            The next sequence value.
+            The next sequence value (always > 0).
         """
         # Expire any cached counter objects to ensure fresh read from DB
         # This is critical when expire_on_commit=False and session is reused
         self._session.expire_all()
 
-        # Try to get and lock the existing counter
-        # Use populate_existing=True to force refresh of identity map
+        # INVARIANT: R9 -- Sequence monotonicity via locked counter row.
+        # SELECT ... FOR UPDATE serializes concurrent allocations.
         counter = self._session.execute(
             select(SequenceCounter)
             .where(SequenceCounter.name == sequence_name)
@@ -118,6 +165,10 @@ class SequenceService:
                 return 1
             except IntegrityError:
                 # Another thread created the counter, rollback savepoint and retry
+                logger.debug(
+                    "sequence_counter_race_retry",
+                    extra={"sequence_name": sequence_name},
+                )
                 savepoint.rollback()
                 # Clear any stale state from the failed insert
                 self._session.expire_all()
@@ -130,8 +181,11 @@ class SequenceService:
                 ).scalar_one()
                 # Fall through to increment
 
-        # Increment and return
+        # INVARIANT: R9 -- Increment via locked row, never aggregate-max+1
         counter.current_value += 1
+        assert counter.current_value > 0, (
+            "R9 violation: sequence value must be strictly positive"
+        )
         self._session.flush()
         logger.debug(
             "sequence_allocated",

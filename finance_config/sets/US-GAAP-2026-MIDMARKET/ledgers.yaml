@@ -1,0 +1,36 @@
+ledgers:
+- ledger_id: GL
+  name: General Ledger
+  required_roles: []
+- ledger_id: INVENTORY
+  name: Inventory Subledger
+  required_roles:
+  - STOCK_ON_HAND
+  - IN_TRANSIT
+  - SOLD
+  - IN_PRODUCTION
+  - SCRAPPED
+- ledger_id: AP
+  name: Accounts Payable Subledger
+  required_roles:
+  - INVOICE
+  - SUPPLIER_BALANCE
+  - PAYMENT
+- ledger_id: AR
+  name: Accounts Receivable Subledger
+  required_roles:
+  - CUSTOMER_BALANCE
+  - INVOICE
+  - PAYMENT
+  - CREDIT
+  - WRITE_OFF
+  - REFUND
+  - FINANCE_CHARGE
+- ledger_id: BANK
+  name: Bank Subledger
+  required_roles:
+  - AVAILABLE
+  - DEPOSIT
+  - WITHDRAWAL
+  - RECONCILED
+  - PENDING

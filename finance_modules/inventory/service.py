@@ -1,15 +1,44 @@
 """
-Inventory Module Service - Orchestrates inventory operations via engines + kernel.
+Inventory Module Service (``finance_modules.inventory.service``).
 
-Thin glue layer that:
-1. Calls ValuationLayer for cost lot management (create/consume)
-2. Calls VarianceCalculator for price/cost variances
-3. Calls ModulePostingService for journal entry creation
+Responsibility
+--------------
+Orchestrates inventory operations by composing pure calculation engines
+(``ValuationLayer``, ``VarianceCalculator``) with the kernel posting pipeline
+(``ModulePostingService``).  This is a **thin glue layer** -- it contains no
+business rules of its own.
 
-All computation lives in engines. All posting lives in kernel.
-This service owns the transaction boundary (R7 compliance).
+Architecture
+------------
+Layer: **Modules** -- stateful orchestration wrapper.
 
-Usage:
+1. Calls ``ValuationLayer`` for cost-lot management (create / consume FIFO/LIFO).
+2. Calls ``VarianceCalculator`` for purchase-price and standard-cost variances.
+3. Calls ``ModulePostingService`` for journal-entry creation via the kernel
+   interpretation pipeline.
+
+Invariants
+----------
+- R7  -- Each public method owns its transaction boundary.  ``ModulePostingService``
+         runs with ``auto_commit=False``; this service calls ``session.commit()``
+         on success and ``session.rollback()`` on failure.
+- R4  -- Double-entry balance is enforced downstream by ``JournalWriter``.
+- R14 -- Profile dispatch uses where-clause selectors, not ``if/switch``.
+
+Failure Modes
+-------------
+- ``ValuationLayer`` raises on insufficient lot quantity.
+- ``ModulePostingService`` returns a non-success ``ModulePostingResult``.
+- Any unhandled exception triggers ``session.rollback()`` before re-raise.
+
+Audit Relevance
+---------------
+Every receipt / issue / adjustment that posts a journal entry creates an
+immutable audit trail.  Cost-lot links (``EconomicLink``) tie raw-material
+receipts to COGS and WIP consumption for full cost-flow traceability.
+
+Usage::
+
     service = InventoryService(session, role_resolver, clock)
     result = service.receive_inventory(
         receipt_id=uuid4(), item_id="WIDGET-001",
@@ -59,6 +88,30 @@ logger = get_logger("modules.inventory.service")
 class InventoryService:
     """
     Orchestrates inventory operations through engines and kernel.
+
+    Contract
+    --------
+    Every public method accepts domain-typed parameters, delegates computation
+    to one or more engines, and routes the result through
+    ``ModulePostingService.post_event()`` for journal creation.  On success the
+    session is committed; on failure it is rolled back.
+
+    Guarantees
+    ----------
+    - Atomicity: engine writes (cost lots, economic links) and journal writes
+      share a single database transaction.
+    - Idempotency: delegated to the kernel via ``idempotency_key`` on the
+      underlying ``JournalEntry`` (R3/R8).
+    - Cost-flow integrity: every issue operation consumes cost lots through
+      ``ValuationLayer``, ensuring FIFO/LIFO ordering is preserved.
+
+    Non-goals
+    ---------
+    - This class does NOT implement costing algorithms -- those live in
+      ``finance_engines.valuation``.
+    - This class does NOT enforce double-entry balance -- that is the kernel's
+      responsibility (R4).
+    - This class does NOT directly create ``JournalLine`` objects.
 
     Engine composition:
     - ValuationLayer: cost lot creation and FIFO/LIFO consumption
@@ -111,6 +164,19 @@ class InventoryService:
     ) -> ModulePostingResult:
         """
         Receive inventory: create cost lot + post journal entry.
+
+        Preconditions:
+            - ``quantity`` > 0 and ``unit_cost`` >= 0.
+            - ``currency`` is a valid ISO 4217 code (R16).
+            - ``effective_date`` falls within an open fiscal period (R12).
+
+        Postconditions:
+            - A new cost lot exists in ``ValuationLayer`` for FIFO/LIFO tracking.
+            - A ``JournalEntry`` is posted (Dr Inventory / Cr GRNI) if successful.
+            - Session is committed on success, rolled back on any failure.
+
+        Raises:
+            Exception: Propagates engine or kernel errors after rolling back.
 
         Engine: ValuationLayer.create_lot() for FIFO/LIFO tracking.
         Profile: inventory.receipt -> InventoryReceipt
@@ -176,7 +242,21 @@ class InventoryService:
         warehouse: str | None = None,
     ) -> tuple[VarianceResult, ModulePostingResult]:
         """
-        Receive inventory with price variance tracking.
+        Receive inventory with purchase-price variance (PPV) tracking.
+
+        Preconditions:
+            - ``quantity`` > 0; both cost arguments >= 0.
+            - ``actual_unit_cost != standard_unit_cost`` (otherwise use
+              ``receive_inventory``).
+
+        Postconditions:
+            - Cost lot created at **standard** cost.
+            - PPV (actual - standard) captured in the journal payload and posted
+              to the PPV account role.
+            - Session committed on success, rolled back on failure.
+
+        Raises:
+            Exception: Propagates engine or kernel errors after rolling back.
 
         Engine: VarianceCalculator.price_variance() for PPV computation.
         Engine: ValuationLayer.create_lot() at standard cost.
@@ -257,7 +337,19 @@ class InventoryService:
         warehouse: str | None = None,
     ) -> ModulePostingResult:
         """
-        Receive finished goods from production.
+        Receive finished goods from production into inventory.
+
+        Preconditions:
+            - ``quantity`` > 0 and ``unit_cost`` >= 0.
+            - ``work_order_id`` references a valid production work order.
+
+        Postconditions:
+            - A finished-goods cost lot is created.
+            - Journal entry posted (Dr Inventory / Cr WIP).
+            - Session committed on success, rolled back on failure.
+
+        Raises:
+            Exception: Propagates engine or kernel errors after rolling back.
 
         Engine: ValuationLayer.create_lot() to track FG cost lot.
         Profile: inventory.receipt_from_production -> InventoryReceiptFromProduction
@@ -313,9 +405,22 @@ class InventoryService:
         currency: str = "USD",
     ) -> ModulePostingResult:
         """
-        Receive inventory from an inter-location transfer.
+        Receive inventory from an inter-location transfer (inbound side).
 
-        No engine call — the transfer-out side consumed lots.
+        Preconditions:
+            - ``quantity`` > 0 and ``unit_cost`` >= 0.
+            - A corresponding outbound issue (``issue_transfer``) has already
+              consumed the cost lots at the source location.
+
+        Postconditions:
+            - Journal entry posted (Dr Stock On Hand / Cr In Transit on
+              INVENTORY subledger).
+            - Session committed on success, rolled back on failure.
+
+        Raises:
+            Exception: Propagates kernel errors after rolling back.
+
+        No engine call -- the transfer-out side consumed lots.
         Profile: inventory.transfer_in -> InventoryTransferIn
         """
         total_cost = quantity * unit_cost
@@ -363,6 +468,19 @@ class InventoryService:
         """
         Issue inventory for a sale (COGS recognition).
 
+        Preconditions:
+            - ``quantity`` > 0.
+            - Sufficient on-hand lots exist for the requested ``item_id`` and
+              optional ``location_id``.
+
+        Postconditions:
+            - Cost lots consumed in FIFO or LIFO order.
+            - Journal entry posted (Dr COGS / Cr Inventory).
+            - ``ConsumptionResult`` contains layer-by-layer cost breakdown.
+
+        Raises:
+            Exception: Propagates if insufficient lots or kernel rejects.
+
         Engine: ValuationLayer.consume_fifo/lifo() determines cost.
         Profile: inventory.issue (issue_type=SALE) -> InventoryIssueSale
         """
@@ -393,6 +511,16 @@ class InventoryService:
         """
         Issue inventory for production (WIP material consumption).
 
+        Preconditions:
+            - ``quantity`` > 0.
+            - Sufficient on-hand lots exist for ``item_id``.
+
+        Postconditions:
+            - Cost lots consumed; journal posted (Dr WIP / Cr Inventory).
+
+        Raises:
+            Exception: Propagates if insufficient lots or kernel rejects.
+
         Engine: ValuationLayer.consume_fifo/lifo() determines cost.
         Profile: inventory.issue (issue_type=PRODUCTION) -> InventoryIssueProduction
         """
@@ -422,7 +550,17 @@ class InventoryService:
         location_id: str | None = None,
     ) -> tuple[ConsumptionResult, ModulePostingResult]:
         """
-        Issue inventory as scrap/write-off.
+        Issue inventory as scrap / write-off.
+
+        Preconditions:
+            - ``quantity`` > 0.
+            - ``reason_code`` is a non-empty string describing the scrap reason.
+
+        Postconditions:
+            - Cost lots consumed; journal posted (Dr Scrap Expense / Cr Inventory).
+
+        Raises:
+            Exception: Propagates if insufficient lots or kernel rejects.
 
         Engine: ValuationLayer.consume_fifo/lifo() determines cost.
         Profile: inventory.issue (issue_type=SCRAP) -> InventoryIssueScrap
@@ -453,7 +591,21 @@ class InventoryService:
         currency: str = "USD",
     ) -> tuple[ConsumptionResult, ModulePostingResult]:
         """
-        Issue inventory for inter-location transfer.
+        Issue inventory for inter-location transfer (outbound side).
+
+        Preconditions:
+            - ``quantity`` > 0.
+            - ``from_location != to_location``.
+            - Sufficient lots at ``from_location``.
+
+        Postconditions:
+            - Cost lots consumed at source; journal posted
+              (Dr In Transit / Cr Stock On Hand on INVENTORY subledger).
+            - Caller must subsequently call ``receive_transfer`` for the
+              inbound side.
+
+        Raises:
+            Exception: Propagates if insufficient lots or kernel rejects.
 
         Engine: ValuationLayer.consume_fifo/lifo() determines cost from source.
         Profile: inventory.issue (issue_type=TRANSFER) -> InventoryIssueTransfer
@@ -488,9 +640,23 @@ class InventoryService:
         warehouse: str | None = None,
     ) -> ModulePostingResult:
         """
-        Adjust inventory quantity/value (cycle count, physical count, etc.).
+        Adjust inventory quantity and/or value (cycle count, physical count, etc.).
 
-        No engine call — adjustments are direct postings.
+        Preconditions:
+            - ``quantity_change != 0`` (zero adjustments are a no-op at the
+              profile level but will still attempt posting).
+            - ``reason_code`` is a non-empty string.
+
+        Postconditions:
+            - Journal entry posted via where-clause dispatch:
+              positive -> Dr Inventory / Cr Inventory Variance;
+              negative -> Dr Inventory Variance / Cr Inventory.
+            - Session committed on success, rolled back on failure.
+
+        Raises:
+            Exception: Propagates kernel errors after rolling back.
+
+        No engine call -- adjustments are direct postings.
         Profile: inventory.adjustment -> InventoryAdjustmentPositive or Negative
         (where-clause dispatch based on quantity_change sign)
         """
@@ -531,7 +697,19 @@ class InventoryService:
         currency: str = "USD",
     ) -> tuple[VarianceResult, ModulePostingResult]:
         """
-        Revalue inventory (standard cost change, LCM adjustment, etc.).
+        Revalue inventory (standard-cost change, lower-of-cost-or-market, etc.).
+
+        Preconditions:
+            - ``old_value`` and ``new_value`` >= 0; ``quantity`` > 0.
+            - ``old_value != new_value`` (no-op revaluation is wasteful).
+
+        Postconditions:
+            - Revaluation variance computed and posted
+              (Dr Inventory Revaluation / Cr Inventory).
+            - ``VarianceResult`` indicates the direction and magnitude.
+
+        Raises:
+            Exception: Propagates engine or kernel errors after rolling back.
 
         Engine: VarianceCalculator.standard_cost_variance() for revaluation difference.
         Profile: inventory.revaluation -> InventoryRevaluation
@@ -597,6 +775,21 @@ class InventoryService:
     ) -> ModulePostingResult:
         """
         Record a cycle count and post the adjustment for any variance.
+
+        Preconditions:
+            - ``expected_quantity`` >= 0 and ``actual_quantity`` >= 0.
+            - ``unit_cost`` >= 0.
+
+        Postconditions:
+            - If ``actual_quantity == expected_quantity``, returns a synthetic
+              POSTED result with no journal entry.
+            - Otherwise, variance is computed and posted via where-clause dispatch:
+              positive variance -> Dr Inv Asset / Cr Adjustment (+ subledger);
+              negative variance -> Dr Adjustment / Cr Inv Asset (+ subledger).
+            - Session committed on success, rolled back on failure.
+
+        Raises:
+            Exception: Propagates engine or kernel errors after rolling back.
 
         Engine: VarianceCalculator for count variance computation.
         Profile: inventory.cycle_count -> InventoryCycleCountPositive or Negative
@@ -674,7 +867,17 @@ class InventoryService:
         """
         Classify items into A/B/C categories by cumulative annual value.
 
-        No posting — delegates to helpers.py pure function.
+        Preconditions:
+            - ``items`` is non-empty.
+            - ``a_pct + b_pct <= 100``.
+
+        Postconditions:
+            - Returns ``{item_id: "A"|"B"|"C"}`` for every item in the input.
+
+        Raises:
+            ValueError: If ``items`` is empty or percentage thresholds invalid.
+
+        No posting -- delegates to helpers.py pure function.
         """
         result = _classify_abc(items, a_pct, b_pct)
         logger.info("inventory_abc_classified", extra={
@@ -701,9 +904,20 @@ class InventoryService:
         location_id: str | None = None,
     ) -> ReorderPoint:
         """
-        Calculate reorder point and optionally EOQ.
+        Calculate reorder point (ROP) and optionally Economic Order Quantity (EOQ).
 
-        No posting — delegates to helpers.py pure functions.
+        Preconditions:
+            - ``avg_daily_usage`` >= 0, ``lead_time_days`` >= 0, ``safety_stock`` >= 0.
+            - If EOQ is desired, all three of ``annual_demand``, ``order_cost``,
+              and ``holding_cost`` must be positive.
+
+        Postconditions:
+            - Returns a ``ReorderPoint`` with computed ROP and EOQ (0 if not requested).
+
+        Raises:
+            ValueError: If any input is negative or EOQ inputs are non-positive.
+
+        No posting -- delegates to helpers.py pure functions.
         """
         rop = _calculate_reorder_point(avg_daily_usage, lead_time_days, safety_stock)
 
@@ -739,7 +953,20 @@ class InventoryService:
         currency: str = "USD",
     ) -> tuple[ConsumptionResult, ModulePostingResult]:
         """
-        Transfer inventory between warehouses (consumes from source).
+        Transfer inventory between warehouses (outbound side -- consumes from source).
+
+        Preconditions:
+            - ``quantity`` > 0.
+            - ``from_location != to_location``.
+            - Sufficient lots exist at ``from_location``.
+
+        Postconditions:
+            - Cost lots consumed at source.
+            - Journal posted (Dr In Transit / Cr Inv Asset + subledger).
+            - Caller MUST call ``receive_transfer`` for the inbound side.
+
+        Raises:
+            Exception: Propagates if insufficient lots or kernel rejects.
 
         Engine: ValuationLayer.consume_fifo/lifo() for source lot consumption.
         Profile: inventory.warehouse_transfer -> InventoryWarehouseTransferOut/In
@@ -775,7 +1002,18 @@ class InventoryService:
         currency: str = "USD",
     ) -> tuple[ConsumptionResult, ModulePostingResult]:
         """
-        Write off expired inventory.
+        Write off expired inventory (shelf-life expiration).
+
+        Preconditions:
+            - ``quantity`` > 0.
+            - Sufficient lots exist for the item at the given location.
+
+        Postconditions:
+            - Cost lots consumed; journal posted
+              (Dr Scrap Expense / Cr Inv Asset + subledger).
+
+        Raises:
+            Exception: Propagates if insufficient lots or kernel rejects.
 
         Engine: ValuationLayer.consume_fifo/lifo() determines write-off cost.
         Profile: inventory.issue (issue_type=SCRAP) -> InventoryIssueScrap
@@ -814,6 +1052,12 @@ class InventoryService:
     ) -> tuple[ConsumptionResult, ModulePostingResult]:
         """
         Internal method for all inventory issue operations.
+
+        All public ``issue_*`` methods delegate here.  This method:
+        1. Consumes cost lots via ``ValuationLayer`` (FIFO or LIFO).
+        2. Builds an event payload with engine-computed cost.
+        3. Posts through ``ModulePostingService``.
+        4. Commits or rolls back the session.
 
         Engine: ValuationLayer.consume_fifo/lifo() determines the cost of goods issued.
         """

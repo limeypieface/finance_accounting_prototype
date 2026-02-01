@@ -1,16 +1,27 @@
 """
-Chart of Accounts model.
+Module: finance_kernel.models.account
+Responsibility: ORM persistence for the Chart of Accounts (COA) -- the target
+    of every journal line.
+Architecture position: Kernel > Models.  May import from db/base.py only.
 
-Defines the Account entity with:
-- Account types (asset, liability, equity, revenue, expense)
-- Normal balance (debit or credit)
-- Tags for categorization (direct, indirect, unallowable, billable, rounding)
+Invariants enforced:
+    R10 -- Structural fields (account_type, normal_balance) immutable once
+           referenced by posted JournalLines.
+    L1  -- Role-to-COA resolution requires exactly one active Account per role
+           at posting time (enforced by JournalWriter, not this model).
+    R5  -- At least one account with the ROUNDING tag must exist per currency
+           (enforced at system setup; rounding account lookup at posting time).
 
-Hard invariants:
-- Accounts referenced by posted lines cannot be deleted
-- account_id is immutable
-- type and normal_balance are immutable once referenced
-- At least one rounding account must exist per currency or ledger
+Failure modes:
+    - AccountNotFoundError when a posting references a non-existent account.
+    - AccountInactiveError when a posting targets an inactive account.
+    - AccountReferencedError when deletion is attempted on a referenced account.
+
+Audit relevance:
+    Account rows define the structure of the general ledger.  Changes to
+    account_type or normal_balance after posting would retroactively alter
+    the meaning of historical journal lines, so structural fields are locked
+    once referenced.
 """
 
 from enum import Enum
@@ -60,9 +71,21 @@ class AccountTag(str, Enum):
 
 class Account(TrackedBase):
     """
-    Chart of Accounts entry.
+    Chart of Accounts entry -- a single node in the general ledger structure.
 
-    Represents a single account in the general ledger structure.
+    Contract:
+        Account.code is globally unique (uq_account_code).  Once an account
+        is referenced by a posted JournalLine, its account_type and
+        normal_balance MUST NOT change (R10).
+
+    Guarantees:
+        - code is unique and non-null.
+        - account_type is one of ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE.
+        - normal_balance is DEBIT or CREDIT, consistent with account_type.
+
+    Non-goals:
+        - This model does NOT enforce referential deletion prevention at the
+          ORM level; that is handled by FK constraints and service-layer guards.
     """
 
     __tablename__ = "accounts"
@@ -133,21 +156,34 @@ class Account(TrackedBase):
 
     @property
     def is_rounding_account(self) -> bool:
-        """Check if this is a rounding account."""
+        """Check if this is a rounding account (R5/R22).
+
+        Postconditions: Returns True iff tags list contains "rounding".
+        """
         return self.tags is not None and AccountTag.ROUNDING.value in self.tags
 
     @property
     def is_debit_normal(self) -> bool:
-        """Check if account has debit normal balance."""
+        """Check if account has debit normal balance.
+
+        Postconditions: Returns True iff normal_balance is DEBIT.
+        """
         return self.normal_balance == NormalBalance.DEBIT
 
     @property
     def is_credit_normal(self) -> bool:
-        """Check if account has credit normal balance."""
+        """Check if account has credit normal balance.
+
+        Postconditions: Returns True iff normal_balance is CREDIT.
+        """
         return self.normal_balance == NormalBalance.CREDIT
 
     def has_tag(self, tag: AccountTag | str) -> bool:
-        """Check if account has a specific tag."""
+        """Check if account has a specific tag.
+
+        Preconditions: tag is an AccountTag enum member or a string.
+        Postconditions: Returns True iff tag is present in this account's tags list.
+        """
         if self.tags is None:
             return False
         tag_value = tag.value if isinstance(tag, AccountTag) else tag

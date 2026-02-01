@@ -1,8 +1,40 @@
 """
-Configuration Loader — loads individual YAML fragment files.
+Configuration Loader (``finance_config.loader``).
 
-This is build/test tooling only. No service or orchestrator
-should call this directly. Use get_active_config() instead.
+Responsibility
+--------------
+Loads individual YAML fragment files and parses them into typed
+``finance_config.schema`` dataclass instances.  This is **build/test
+tooling only** -- no service or orchestrator should call this directly.
+The single public entry point for runtime config is
+``finance_config.get_active_config()``.
+
+Architecture position
+---------------------
+**Config layer** -- infrastructure tooling.  The loader is consumed by
+``finance_config.assembler`` during configuration set assembly.  It has
+no dependency on kernel, modules, or engines.
+
+Invariants enforced
+-------------------
+* R18 -- All parse errors raise ``ValueError`` or ``KeyError`` with
+          descriptive messages; no silent defaults for required fields.
+* Every parsed object is a frozen dataclass from ``schema.py``.
+* ``compute_checksum`` produces a deterministic SHA-256 hash for
+  configuration identity and change detection.
+
+Failure modes
+-------------
+* Missing YAML file  -> ``FileNotFoundError`` propagates.
+* Malformed YAML  -> ``yaml.YAMLError`` propagates.
+* Missing required keys in parsed dict  -> ``KeyError`` propagates.
+* Invalid date format  -> ``ValueError`` from ``date.fromisoformat``.
+
+Audit relevance
+---------------
+``compute_checksum`` enables auditors to verify that the active
+configuration matches a known, version-controlled baseline.  Every
+parsed configuration artifact is traceable back to a specific YAML file.
 """
 
 from __future__ import annotations
@@ -36,13 +68,32 @@ from finance_config.schema import (
 
 
 def load_yaml_file(path: Path) -> dict[str, Any]:
-    """Load a single YAML file and return its contents as a dict."""
+    """
+    Load a single YAML file and return its contents as a dict.
+
+    Preconditions:
+        - ``path`` must point to an existing, readable YAML file.
+    Postconditions:
+        - Returns a ``dict`` (possibly empty if the YAML is empty).
+    Raises:
+        FileNotFoundError: if the file does not exist.
+        yaml.YAMLError: if the file contains invalid YAML.
+    """
     with open(path) as f:
         return yaml.safe_load(f) or {}
 
 
 def parse_date(value: Any) -> date:
-    """Parse a date from YAML (string or date object)."""
+    """
+    Parse a date from YAML (string or date object).
+
+    Preconditions:
+        - ``value`` must be a ``date`` instance or an ISO-format date string.
+    Postconditions:
+        - Returns a ``date`` object.
+    Raises:
+        ValueError: if ``value`` is not a valid date representation.
+    """
     if isinstance(value, date):
         return value
     if isinstance(value, str):
@@ -63,7 +114,18 @@ def parse_scope(data: dict[str, Any]) -> ConfigScope:
 
 
 def parse_policy(data: dict[str, Any]) -> PolicyDefinition:
-    """Parse a PolicyDefinition from a dict."""
+    """
+    Parse a ``PolicyDefinition`` from a dict.
+
+    Preconditions:
+        - ``data`` must contain at minimum ``name``, ``trigger.event_type``,
+          ``meaning.economic_type``, and at least one ``ledger_effects`` entry.
+    Postconditions:
+        - Returns a fully populated ``PolicyDefinition`` frozen dataclass.
+    Raises:
+        KeyError: if required keys are missing.
+        ValueError: if date fields cannot be parsed.
+    """
     trigger_data = data.get("trigger", {})
     where_raw = trigger_data.get("where", [])
     where_tuples = tuple(
@@ -145,7 +207,16 @@ def parse_policy(data: dict[str, Any]) -> PolicyDefinition:
 
 
 def parse_role_binding(data: dict[str, Any]) -> RoleBinding:
-    """Parse a RoleBinding from a dict."""
+    """
+    Parse a ``RoleBinding`` from a dict.
+
+    Preconditions:
+        - ``data`` must contain ``role`` and ``account_code`` keys.
+    Postconditions:
+        - Returns a ``RoleBinding`` frozen dataclass.
+    Raises:
+        KeyError: if required keys are missing.
+    """
     return RoleBinding(
         role=data["role"],
         ledger=data.get("ledger", "GL"),
@@ -203,6 +274,16 @@ def parse_subledger_contract(data: dict[str, Any]) -> SubledgerContractDef:
 
 
 def compute_checksum(data: dict[str, Any]) -> str:
-    """Compute SHA-256 checksum of canonical serialization."""
+    """
+    Compute SHA-256 checksum of canonical JSON serialization.
+
+    Preconditions:
+        - ``data`` must be JSON-serializable (via ``json.dumps`` with
+          ``default=str``).
+    Postconditions:
+        - Returns a hex-encoded SHA-256 hash string.
+        - Identical ``data`` always produces identical checksums
+          (deterministic).
+    """
     canonical = json.dumps(data, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()

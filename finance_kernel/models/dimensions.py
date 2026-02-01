@@ -1,17 +1,31 @@
 """
-Dimension models for multi-dimensional accounting.
+Module: finance_kernel.models.dimensions
+Responsibility: ORM persistence for the multi-dimensional accounting dimension
+    schema.  Dimension defines the axis (e.g., "org_unit", "project"); DimensionValue
+    defines the members of that axis (e.g., "PROJ-100", "DIV-EAST").
+Architecture position: Kernel > Models.  May import from db/base.py only.
+    MUST NOT import from services/, selectors/, domain/, or outer layers.
 
-Phase 1 baseline dimension set:
-- org_unit_id (or legal_entity_id)
-- project_id (nullable but typed)
-- contract_id (nullable but typed)
+Invariants enforced:
+    R10 -- Dimension.code is immutable once dimension values exist (ORM listener
+           in db/immutability.py + DB trigger 07_dimension.sql).
+    R10 -- DimensionValue.code, .name, and .dimension_code are immutable after
+           creation (ORM listener + DB trigger).
+    R21 -- dimension_schema_version on JournalEntry records the dimension schema
+           state at posting time for deterministic replay.
 
-Hard invariants:
-- Dimension keys are fixed identifiers, not free text
-- Dimension values are stable IDs; names are immutable once created
-- DimensionValue must reference an existing Dimension (FK enforced)
-- Inactive dimensions cannot be used in postings
-- Required dimensions are enforced by posting rules
+Failure modes:
+    - ImmutabilityViolationError on UPDATE of Dimension.code when values exist.
+    - ImmutabilityViolationError on UPDATE of DimensionValue immutable fields
+      (code, name, dimension_code).
+    - IntegrityError on INSERT of DimensionValue with non-existent dimension_code
+      (FK RESTRICT).
+
+Audit relevance:
+    Dimensions partition journal lines into reportable segments (cost center,
+    project, contract).  Stability of dimension codes and names ensures that
+    historical journal dimension JSON maps remain interpretable across time.
+    Changing a dimension value code would orphan all journal lines that reference it.
 """
 
 from sqlalchemy import Boolean, ForeignKeyConstraint, Index, String, UniqueConstraint
@@ -22,13 +36,23 @@ from finance_kernel.db.base import TrackedBase
 
 class Dimension(TrackedBase):
     """
-    Dimension definition.
+    Dimension definition -- one axis of the multi-dimensional chart.
 
-    Defines the available dimensions for multi-dimensional accounting.
+    Contract:
+        Each Dimension defines one named axis (e.g., "org_unit", "project")
+        identified by a unique, immutable code.  The code becomes the key
+        in JournalLine.dimensions JSON maps and MUST NOT change once any
+        DimensionValue exists under it (R10).
 
-    Invariants:
-    - code is unique and immutable
-    - is_active=False prevents use in new postings
+    Guarantees:
+        - code is globally unique (uq_dimension_code constraint).
+        - code is immutable once child DimensionValues exist (ORM + DB trigger).
+        - is_active=False prevents this dimension from being used in new postings.
+        - is_required=True causes posting validation to reject lines without it.
+
+    Non-goals:
+        - This model does NOT enforce is_required at the ORM level; enforcement
+          lives in the posting pipeline (JournalWriter / AccountingIntent).
     """
 
     __tablename__ = "dimensions"
@@ -76,16 +100,22 @@ class Dimension(TrackedBase):
 
 class DimensionValue(TrackedBase):
     """
-    Value for a dimension.
+    Member value for a dimension axis.
 
-    Represents a specific value that can be assigned to a dimension
-    (e.g., a specific project, org unit, or contract).
+    Contract:
+        Each DimensionValue represents one selectable member within a Dimension
+        (e.g., project "PROJ-100" under the "project" dimension).  Its code,
+        name, and dimension_code are immutable after creation (R10).
 
-    Invariants:
-    - dimension_code must reference an existing Dimension.code (FK enforced)
-    - code is immutable once created
-    - name is immutable once created (stable for audit trail)
-    - is_active=False prevents use in new postings
+    Guarantees:
+        - (dimension_code, code) is unique (uq_dimension_value constraint).
+        - dimension_code references an existing Dimension.code (FK RESTRICT).
+        - code, name, dimension_code are immutable once created (ORM + DB trigger).
+        - is_active=False prevents this value from being used in new postings.
+
+    Non-goals:
+        - This model does NOT cascade-delete when its parent Dimension is
+          removed; the FK uses ON DELETE RESTRICT to prevent orphaning.
     """
 
     __tablename__ = "dimension_values"

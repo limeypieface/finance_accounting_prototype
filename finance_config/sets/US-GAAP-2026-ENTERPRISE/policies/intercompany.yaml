@@ -1,0 +1,81 @@
+policies:
+- name: ICTransferPosted
+  version: 1
+  module: intercompany
+  description: Intercompany transfer between entities
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ic.transfer
+  meaning:
+    economic_type: IC_TRANSFER
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INTERCOMPANY_DUE_FROM
+    credit_role: INTERCOMPANY_DUE_TO
+  line_mappings:
+  - role: INTERCOMPANY_DUE_FROM
+    side: debit
+  - role: INTERCOMPANY_DUE_TO
+    side: credit
+- name: ICEliminationPosted
+  version: 1
+  module: intercompany
+  description: Intercompany elimination entry
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ic.elimination
+  meaning:
+    economic_type: IC_ELIMINATION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INTERCOMPANY_DUE_TO
+    credit_role: INTERCOMPANY_DUE_FROM
+  line_mappings:
+  - role: INTERCOMPANY_DUE_TO
+    side: debit
+  - role: INTERCOMPANY_DUE_FROM
+    side: credit
+- name: ICMarkupPosted
+  version: 1
+  module: intercompany
+  description: Intercompany markup / transfer pricing adjustment
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ic.markup
+  meaning:
+    economic_type: IC_MARKUP
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INTERCOMPANY_DUE_FROM
+    credit_role: INCOME_SUMMARY
+  line_mappings:
+  - role: INTERCOMPANY_DUE_FROM
+    side: debit
+  - role: INCOME_SUMMARY
+    side: credit
+- name: ICTransferPricing
+  version: 1
+  module: intercompany
+  description: Transfer pricing adjustment between entities
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ic.transfer_pricing
+  meaning:
+    economic_type: IC_TRANSFER_PRICING
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INTERCOMPANY_DUE_FROM
+    credit_role: INTERCOMPANY_DUE_TO
+  line_mappings:
+  - role: INTERCOMPANY_DUE_FROM
+    side: debit
+  - role: INTERCOMPANY_DUE_TO
+    side: credit

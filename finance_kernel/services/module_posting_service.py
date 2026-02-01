@@ -1,23 +1,55 @@
 """
 ModulePostingService — canonical posting entry point for all modules.
 
-Connects PolicySelector, MeaningBuilder, profile_bridge, and
-InterpretationCoordinator into a single service that modules call
-to post economic events.
+Responsibility:
+    Orchestrates the complete posting pipeline from raw economic event
+    through profile lookup, meaning extraction, intent construction,
+    and atomic journal posting.  Every ERP module (AP, AR, Inventory,
+    Payroll, etc.) enters the kernel through this single service.
+
+Architecture position:
+    Kernel > Services — imperative shell, owns transaction boundaries.
+    Sits at the top of the posting pipeline; delegates pure logic to
+    domain layer and I/O operations to peer kernel services.
 
 Posting flow:
     post_event(event_type, payload, effective_date, actor_id, ...)
-      1. Validate period is open (PeriodService)
-      2. Ingest event record (IngestorService — FK requirement)
-      3. Find profile (PolicySelector.find_for_event with payload)
-      4. Build meaning (MeaningBuilder.build)
-      5. Build intent (profile_bridge.build_accounting_intent)
-      6. Post atomically (InterpretationCoordinator.interpret_and_post)
-      7. Post subledger entries (SL-G1: same transaction)
-      8. Commit or rollback
+      1. Validate actor authorization (G14)
+      2. Validate period is open (PeriodService — R12/R13)
+      3. Ingest event record (IngestorService — R1/R2)
+      4. Find profile (PolicySelector.find_for_event — P1)
+      5. Build meaning (MeaningBuilder.build)
+      6. Build intent (profile_bridge.build_accounting_intent — L1)
+      7. Post atomically (InterpretationCoordinator.interpret_and_post — L5/P11)
+      8. Post subledger entries (SL-G1: same transaction)
+      9. Commit or rollback
 
-R7 Compliance: Manages its own transaction boundary.
-All state-changing operations define their own transaction scope.
+Invariants enforced:
+    R1  — Event immutability (via IngestorService)
+    R2  — Payload hash verification (via IngestorService)
+    R3  — Idempotency key uniqueness (via JournalWriter)
+    R7  — Transaction boundaries (commit/rollback managed here)
+    R12 — Closed period enforcement (via PeriodService)
+    R13 — Adjustment policy enforcement (via PeriodService)
+    P1  — Exactly one profile matches any event (via PolicySelector)
+    P15 — Exactly one InterpretationOutcome per event (via OutcomeRecorder)
+    L5  — Atomic journal + outcome (via InterpretationCoordinator)
+
+Failure modes:
+    - PERIOD_CLOSED / ADJUSTMENTS_NOT_ALLOWED: Period validation rejected.
+    - INGESTION_FAILED: Payload hash mismatch or validation failure.
+    - PROFILE_NOT_FOUND: No matching EconomicProfile for event_type.
+    - MEANING_FAILED: MeaningBuilder could not extract economic event.
+    - GUARD_REJECTED / GUARD_BLOCKED: Policy guard denied posting.
+    - INTENT_FAILED: AccountingIntent construction error.
+    - POSTING_FAILED: JournalWriter or OutcomeRecorder failure.
+    - INVALID_ACTOR / ACTOR_FROZEN: Actor authorization failure (G14).
+
+Audit relevance:
+    Every invocation is logged with correlation_id, event_id, actor_id,
+    and timing metrics.  The IngestorService records an audit event on
+    ingestion.  The InterpretationCoordinator captures the full decision
+    journal for POSTED and REJECTED outcomes.
 """
 
 from __future__ import annotations
@@ -95,11 +127,25 @@ class ModulePostingService:
     """
     Orchestrates profile-driven posting from modules.
 
-    This is the missing service that connects:
-    - PolicySelector (profile lookup by event_type + payload)
-    - MeaningBuilder (economic interpretation)
-    - profile_bridge (AccountingIntent construction)
-    - InterpretationCoordinator (atomic posting)
+    Contract:
+        Accepts a raw economic event described by (event_type, payload,
+        effective_date, actor_id, amount, currency) and drives it through
+        the full posting pipeline, returning a ``ModulePostingResult``
+        that is either successful or contains a machine-readable status
+        code explaining why posting was refused.
+
+    Guarantees:
+        - Exactly-once semantics: duplicate event_id yields ALREADY_POSTED.
+        - R7 transaction safety: commit on success, rollback on failure
+          (when auto_commit=True).
+        - All invariants from R1 through P15 are enforced by delegating
+          to purpose-built kernel services (IngestorService, PeriodService,
+          JournalWriter, OutcomeRecorder, InterpretationCoordinator).
+
+    Non-goals:
+        - Does NOT manage schema migrations or COA maintenance.
+        - Does NOT handle reversal entries (see CorrectionService).
+        - Does NOT own the subledger posting logic (delegated via callable).
 
     Preferred usage (via PostingOrchestrator):
         service = ModulePostingService.from_orchestrator(orchestrator)
@@ -192,8 +238,20 @@ class ModulePostingService:
         """
         Post an economic event through the posting pipeline.
 
-        R7 Compliance: Commits on success, rolls back on failure
-        (when auto_commit=True).
+        Preconditions:
+            - ``event_type`` is a non-empty namespaced string (e.g., "inventory.receipt").
+            - ``amount`` is a ``Decimal`` (never float).
+            - ``currency`` is a valid ISO 4217 code.
+
+        Postconditions:
+            - On success (POSTED/ALREADY_POSTED) the session is committed
+              (when auto_commit=True) and all journal entries, outcomes,
+              and subledger rows are persisted.
+            - On failure, the session is rolled back (when auto_commit=True)
+              and no partial state is visible.
+
+        Raises:
+            Exception: Re-raises any unexpected exception after rollback.
 
         Args:
             event_type: Namespaced event type (e.g., "inventory.receipt").
@@ -254,7 +312,7 @@ class ModulePostingService:
                     dimension_schema_version=dimension_schema_version,
                 )
 
-                # R7: Commit on success
+                # INVARIANT: R7 — Transaction boundaries: commit on success
                 if self._auto_commit and result.is_success:
                     self._session.commit()
 
@@ -300,7 +358,7 @@ class ModulePostingService:
     ) -> ModulePostingResult:
         """Internal posting logic (without transaction management)."""
 
-        # 0. Validate actor (G14: actor authorization at posting boundary)
+        # INVARIANT: G14 — Actor authorization at posting boundary
         if hasattr(self, '_party_service_ref') and self._party_service_ref is not None:
             try:
                 actor_party = self._party_service_ref.get_by_id(actor_id)
@@ -317,7 +375,8 @@ class ModulePostingService:
                     message=f"Actor {actor_id} is not a valid party",
                 )
 
-        # 1. Validate period is open
+        # INVARIANT: R12 — Closed period enforcement
+        # INVARIANT: R13 — Adjustment policy enforcement
         from finance_kernel.exceptions import AdjustmentsNotAllowedError
 
         try:
@@ -337,7 +396,8 @@ class ModulePostingService:
                 message=str(e),
             )
 
-        # 2. Ingest event record (FK requirement for journal entries)
+        # INVARIANT: R1 — Event immutability via IngestorService
+        # INVARIANT: R2 — Payload hash verification via IngestorService
         ingest_result = self._ingestor.ingest(
             event_id=event_id,
             event_type=event_type,
@@ -363,7 +423,7 @@ class ModulePostingService:
                 message="Event already ingested (idempotent duplicate)",
             )
 
-        # 3. Find profile via PolicySelector (with where-clause dispatch)
+        # INVARIANT: P1 — Exactly one EconomicProfile matches any event
         try:
             profile = PolicySelector.find_for_event(
                 event_type, effective_date, payload=payload
@@ -451,7 +511,8 @@ class ModulePostingService:
                 message=str(e),
             )
 
-        # 6. Post atomically (InterpretationCoordinator)
+        # INVARIANT: L5 — Atomic journal + outcome via InterpretationCoordinator
+        # INVARIANT: P11 — Multi-ledger postings are atomic
         interpretation_result = self._coordinator.interpret_and_post(
             meaning_result=meaning_result,
             accounting_intent=accounting_intent,
@@ -485,6 +546,11 @@ class ModulePostingService:
         journal_entry_ids = ()
         if interpretation_result.journal_result:
             journal_entry_ids = interpretation_result.journal_result.entry_ids
+
+        # INVARIANT: L5 — POSTED status requires at least one journal entry
+        assert len(journal_entry_ids) > 0, (
+            "L5 violation: POSTED result must contain at least one journal entry"
+        )
 
         return ModulePostingResult(
             status=ModulePostingStatus.POSTED,

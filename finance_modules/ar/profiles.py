@@ -1,9 +1,38 @@
 """
-Accounts Receivable Economic Profiles -- Kernel format.
+Accounts Receivable Economic Profiles (``finance_modules.ar.profiles``).
 
-Merged authoritative profiles from kernel (guards, where-clauses, multi-ledger)
-and module (line mappings, additional scenarios). Each profile is a kernel
-AccountingPolicy with companion ModuleLineMapping tuples for intent construction.
+Responsibility
+--------------
+Declares all ``AccountingPolicy`` instances and companion
+``ModuleLineMapping`` tuples for the AR module.  Each profile maps a
+single event type to journal-line specifications using account ROLES
+(not COA codes).
+
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue (this layer).
+Profiles are registered into kernel registries by ``register()`` and
+resolved at posting time by the interpretation pipeline (L1).
+
+Invariants enforced
+-------------------
+* R14 -- No ``if/switch`` on event_type in the posting engine.
+* R15 -- Adding a new AR event type requires ONLY a new profile +
+         mapping + registration.
+* L1  -- Account roles are resolved to COA codes at posting time.
+
+Failure modes
+-------------
+* Duplicate profile names cause ``register_rich_profile`` to raise at
+  startup.
+* A guard expression evaluating to ``True`` causes the event to be
+  REJECTED with the declared ``reason_code``.
+
+Audit relevance
+---------------
+* Profile version numbers support replay compatibility (R23).
+* Guard conditions provide machine-readable rejection codes for
+  audit inspection.
 
 Profiles:
     ARInvoice                   -- Invoice issued: Dr AR / Cr Revenue + Tax
@@ -596,6 +625,48 @@ AR_REFUND_ISSUED_MAPPINGS = (
 )
 
 
+# --- Finance Charge -----------------------------------------------------------
+
+AR_FINANCE_CHARGE = AccountingPolicy(
+    name="ARFinanceCharge",
+    version=1,
+    trigger=PolicyTrigger(event_type="ar.finance_charge"),
+    meaning=PolicyMeaning(
+        economic_type="REVENUE_RECOGNITION",
+        dimensions=("org_unit",),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="ACCOUNTS_RECEIVABLE",
+            credit_role="INTEREST_INCOME",
+        ),
+        LedgerEffect(
+            ledger="AR",
+            debit_role="CUSTOMER_BALANCE",
+            credit_role="FINANCE_CHARGE",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Finance charge amount must be positive",
+        ),
+    ),
+    description="Records finance charge for late payment on customer account",
+)
+
+AR_FINANCE_CHARGE_MAPPINGS = (
+    ModuleLineMapping(role="ACCOUNTS_RECEIVABLE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="INTEREST_INCOME", side="credit", ledger="GL"),
+    ModuleLineMapping(role="CUSTOMER_BALANCE", side="debit", ledger="AR"),
+    ModuleLineMapping(role="FINANCE_CHARGE", side="credit", ledger="AR"),
+)
+
+
 # =============================================================================
 # Profile + Mapping pairs for registration
 # =============================================================================
@@ -615,6 +686,8 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     (AR_DEFERRED_REVENUE_RECORDED, AR_DEFERRED_REVENUE_RECORDED_MAPPINGS),
     (AR_DEFERRED_REVENUE_RECOGNIZED, AR_DEFERRED_REVENUE_RECOGNIZED_MAPPINGS),
     (AR_REFUND_ISSUED, AR_REFUND_ISSUED_MAPPINGS),
+    # AR Deepening
+    (AR_FINANCE_CHARGE, AR_FINANCE_CHARGE_MAPPINGS),
 )
 
 

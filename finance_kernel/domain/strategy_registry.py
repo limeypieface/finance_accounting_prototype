@@ -1,14 +1,29 @@
 """
-Strategy registry for event type to posting strategy mapping.
+StrategyRegistry -- Event-type to PostingStrategy dispatch registry.
 
-The registry provides:
-- Registration of strategies by event type
-- Version tracking for replay
-- Strategy lookup by event type and optional version
-- R23: Lifecycle governance validation
+Responsibility:
+    Registers, validates, and looks up PostingStrategy instances by event
+    type and version.  Enforces R14 (no central if/switch), R23 (lifecycle
+    governance), and provides replay-aware strategy retrieval.
 
-R18 Compliance: All exceptions have machine-readable error codes.
-R23 Compliance: Registry validates lifecycle metadata at registration.
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
+
+Invariants enforced:
+    R14 -- Strategy-per-event-type dispatch (no if/switch on event_type)
+    R18 -- All exceptions carry machine-readable ``code`` attributes
+    R23 -- Lifecycle governance validation at registration time
+
+Failure modes:
+    - StrategyNotFoundError       (R18: STRATEGY_NOT_FOUND)
+    - StrategyVersionNotFoundError (R18: STRATEGY_VERSION_NOT_FOUND)
+    - StrategyLifecycleError      (R18: STRATEGY_LIFECYCLE_ERROR)
+    - StrategyIncompatibleError   (R18: STRATEGY_INCOMPATIBLE)
+
+Audit relevance:
+    Strategy version is persisted on every journal entry for deterministic
+    replay.  Auditors use ``get_for_replay()`` to verify that the same
+    strategy version would produce identical results.
 """
 
 from typing import ClassVar
@@ -105,8 +120,22 @@ class StrategyRegistry:
     """
     Registry for posting strategies.
 
-    Strategies are registered by event type and version.
-    Multiple versions can exist for replay purposes.
+    Contract:
+        ``register()`` validates R23 lifecycle metadata before admitting a
+        strategy.  ``get()`` returns exactly one strategy or raises (R14).
+
+    Guarantees:
+        - Duplicate event_type + version is rejected at registration.
+        - ``get_for_replay()`` respects R23 replay policy and version range.
+        - ``get_compatible_strategies()`` filters by system version (R23).
+
+    Non-goals:
+        - Does NOT execute strategies (Bookkeeper / services do that).
+        - Does NOT persist to database (in-memory, populated at startup).
+
+    Invariants enforced:
+        R14 -- One strategy per (event_type, version) -- no if/switch.
+        R23 -- Lifecycle metadata validated at registration.
     """
 
     # Class-level registry for all strategies
@@ -130,7 +159,7 @@ class StrategyRegistry:
         event_type = strategy.event_type
         version = strategy.version
 
-        # R23: Validate lifecycle metadata
+        # INVARIANT: R23 -- validate lifecycle metadata before admission
         cls._validate_lifecycle(strategy)
 
         if event_type not in cls._strategies:

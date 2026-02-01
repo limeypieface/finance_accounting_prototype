@@ -1,18 +1,36 @@
 """
-OutcomeRecorder service for recording interpretation outcomes.
+OutcomeRecorder -- interpretation outcome lifecycle management.
 
-Records the state of event interpretation through its full lifecycle:
-- POSTED: Successfully posted to all required ledgers
-- BLOCKED: Valid event, cannot process yet (awaiting precondition)
-- REJECTED: Invalid economic reality (policy says no)
-- PROVISIONAL: Recorded provisionally, awaiting confirmation
-- NON_POSTING: Valid, but no financial effect per policy
-- FAILED: Guard/engine/system failure (retriable)
-- RETRYING: Retry in progress after FAILED
-- ABANDONED: Permanently given up after repeated failures
+Responsibility:
+    Records and transitions the interpretation outcome for each source
+    event through its full lifecycle: POSTED, BLOCKED, REJECTED,
+    PROVISIONAL, NON_POSTING, FAILED, RETRYING, ABANDONED.
 
-Invariant P15: Every accepted BusinessEvent has exactly one InterpretationOutcome.
-Invariant L5: No journal rows without POSTED outcome; no POSTED outcome without all journal rows.
+Architecture position:
+    Kernel > Services -- imperative shell.
+    Called by InterpretationCoordinator at the end of every posting
+    pipeline, and by RetryService for retry/abandon transitions.
+
+Invariants enforced:
+    P15 -- Exactly one InterpretationOutcome per accepted event.
+           Enforced via ``_check_not_exists()`` plus UNIQUE constraint
+           on ``source_event_id``.
+    L5  -- No journal rows without POSTED outcome; no POSTED outcome
+           without all journal rows.  The POSTED outcome must be
+           recorded in the same transaction as the journal writes.
+
+Failure modes:
+    - OutcomeAlreadyExistsError: A second outcome for the same event
+      is attempted (P15 violation).
+    - InvalidOutcomeTransitionError: Requested state transition is not
+      in ``VALID_TRANSITIONS`` (e.g., POSTED -> FAILED).
+    - ValueError: No outcome found when a transition is requested.
+
+Audit relevance:
+    Every outcome creation and transition is logged with structured
+    fields: status, source_event_id, reason_code, failure_type, and
+    retry_count.  The decision_log field captures the full decision
+    journal for POSTED and REJECTED outcomes.
 """
 
 from __future__ import annotations
@@ -74,9 +92,24 @@ class OutcomeRecorder:
     """
     Service for recording interpretation outcomes.
 
-    Enforces:
-    - P15: One outcome per event (via unique constraint)
-    - Valid status transitions
+    Contract:
+        Accepts a ``source_event_id`` and a target status, creates or
+        transitions the ``InterpretationOutcome`` row, and flushes
+        within the caller's transaction.
+
+    Guarantees:
+        - P15: Exactly one ``InterpretationOutcome`` per source_event_id.
+          Duplicates are detected by ``_check_not_exists()`` and the
+          UNIQUE constraint on the column.
+        - L5: ``record_posted()`` must be called in the same transaction
+          as journal writes to ensure atomicity.
+        - Valid transitions: Only transitions listed in ``VALID_TRANSITIONS``
+          are permitted.  Invalid transitions raise
+          ``InvalidOutcomeTransitionError``.
+
+    Non-goals:
+        - Does NOT call ``session.commit()`` -- caller controls boundaries.
+        - Does NOT interpret policy semantics (that is the coordinator).
 
     Usage:
         recorder = OutcomeRecorder(session, clock)
@@ -125,7 +158,17 @@ class OutcomeRecorder:
         """
         Record a POSTED outcome.
 
-        L5: This must be called in the same transaction as journal writes.
+        Preconditions:
+            - ``journal_entry_ids`` is non-empty (L5: POSTED requires entries).
+            - This method is called in the same transaction as journal writes.
+
+        Postconditions:
+            - Exactly one ``InterpretationOutcome`` exists for this
+              ``source_event_id`` with status POSTED (P15).
+            - ``outcome.journal_entry_ids`` contains all provided entry IDs.
+
+        Raises:
+            OutcomeAlreadyExistsError: If outcome already exists (P15).
 
         Args:
             source_event_id: The source event ID.
@@ -138,11 +181,13 @@ class OutcomeRecorder:
 
         Returns:
             The created InterpretationOutcome.
-
-        Raises:
-            OutcomeAlreadyExistsError: If outcome already exists.
         """
+        # INVARIANT: P15 -- Exactly one outcome per event
         self._check_not_exists(source_event_id)
+        # INVARIANT: L5 -- POSTED outcome requires journal entries
+        assert len(journal_entry_ids) > 0, (
+            "L5 violation: POSTED outcome must reference at least one journal entry"
+        )
 
         outcome = InterpretationOutcome(
             source_event_id=source_event_id,
@@ -186,7 +231,18 @@ class OutcomeRecorder:
         """
         Record a REJECTED outcome.
 
-        REJECTED is terminal - event had invalid economic reality.
+        REJECTED is terminal -- event had invalid economic reality.
+
+        Preconditions:
+            - ``reason_code`` is a non-empty machine-readable string.
+
+        Postconditions:
+            - Exactly one ``InterpretationOutcome`` exists for this
+              ``source_event_id`` with status REJECTED (P15).
+            - No journal entries are referenced (REJECTED has no ledger effect).
+
+        Raises:
+            OutcomeAlreadyExistsError: If outcome already exists (P15).
 
         Args:
             source_event_id: The source event ID.
@@ -200,6 +256,7 @@ class OutcomeRecorder:
         Returns:
             The created InterpretationOutcome.
         """
+        # INVARIANT: P15 -- Exactly one outcome per event
         self._check_not_exists(source_event_id)
 
         outcome = InterpretationOutcome(
@@ -477,7 +534,13 @@ class OutcomeRecorder:
         econ_event_id: UUID,
         journal_entry_ids: list[UUID],
     ) -> InterpretationOutcome:
-        """Transition BLOCKED, PROVISIONAL, or RETRYING → POSTED."""
+        """Transition BLOCKED, PROVISIONAL, or RETRYING -> POSTED.
+
+        Postconditions:
+            - ``outcome.status`` is POSTED.
+            - ``outcome.journal_entry_ids`` contains all provided IDs.
+            - ``outcome.updated_at`` is set to current clock time.
+        """
         outcome = self._validate_and_transition(
             source_event_id, OutcomeStatus.POSTED,
         )
@@ -504,7 +567,12 @@ class OutcomeRecorder:
         reason_code: str,
         reason_detail: dict[str, Any] | None = None,
     ) -> InterpretationOutcome:
-        """Transition BLOCKED or PROVISIONAL → REJECTED."""
+        """Transition BLOCKED or PROVISIONAL -> REJECTED.
+
+        Postconditions:
+            - ``outcome.status`` is REJECTED (terminal).
+            - ``outcome.reason_code`` is set.
+        """
         outcome = self._validate_and_transition(
             source_event_id, OutcomeStatus.REJECTED,
         )
@@ -564,7 +632,12 @@ class OutcomeRecorder:
         self,
         source_event_id: UUID,
     ) -> InterpretationOutcome:
-        """Transition FAILED → RETRYING. Increments retry_count."""
+        """Transition FAILED -> RETRYING. Increments retry_count.
+
+        Postconditions:
+            - ``outcome.status`` is RETRYING.
+            - ``outcome.retry_count`` is incremented by 1.
+        """
         outcome = self._validate_and_transition(
             source_event_id, OutcomeStatus.RETRYING,
         )
@@ -591,7 +664,12 @@ class OutcomeRecorder:
         reason_code: str | None = None,
         reason_detail: dict[str, Any] | None = None,
     ) -> InterpretationOutcome:
-        """Transition FAILED → ABANDONED (terminal)."""
+        """Transition FAILED -> ABANDONED (terminal).
+
+        Postconditions:
+            - ``outcome.status`` is ABANDONED (terminal -- no further
+              transitions are permitted).
+        """
         outcome = self._validate_and_transition(
             source_event_id, OutcomeStatus.ABANDONED,
         )
@@ -676,7 +754,11 @@ class OutcomeRecorder:
     # -----------------------------------------------------------------
 
     def _check_not_exists(self, source_event_id: UUID) -> None:
-        """Check that no outcome exists for this event."""
+        """Check that no outcome exists for this event.
+
+        INVARIANT: P15 -- Exactly one outcome per event. This guard
+        prevents creation of a second outcome for the same source event.
+        """
         existing = self.get_outcome(source_event_id)
         if existing:
             raise OutcomeAlreadyExistsError(source_event_id, existing.status)

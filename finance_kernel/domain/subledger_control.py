@@ -1,21 +1,29 @@
 """
-Subledger Control Contract - Enforces subledger/GL reconciliation invariants.
+SubledgerControl -- Subledger/GL reconciliation invariant enforcement.
 
-The fundamental accounting invariant that subledgers must always reconcile
-with their corresponding GL control accounts. This is not a report - it is
-a hard economic invariant enforced at:
-- Post time (real-time validation)
-- Reconciliation (matching subledger to GL)
-- Period close (cannot close with imbalance)
+Responsibility:
+    Defines and enforces the fundamental accounting invariant that subledgers
+    must always reconcile with their corresponding GL control accounts at
+    post time, daily, or period-end depending on contract configuration.
 
-This contract defines:
-- Which subledger types bind to which GL control account roles
-- Balance equations (subledger total must equal control account)
-- Tolerance rules (how much variance is acceptable)
-- Timing rules (when reconciliation must occur)
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
 
-This prevents the most common class of accounting errors where subledgers
-drift out of sync with GL, causing month-end reconciliation nightmares.
+Invariants enforced:
+    (subledger control invariant -- subledger total == GL control account)
+    R4  -- Balance per currency (indirectly, via reconciliation)
+    R12 -- Period close blocked when subledger is out of balance
+
+Failure modes:
+    - ReconciliationViolation with ``blocking=True`` prevents close/post
+    - ReconciliationViolation with ``blocking=False`` is a warning
+    - ValueError if currencies mismatch during reconciliation
+
+Audit relevance:
+    SubledgerControlContract is the authoritative reconciliation law.
+    ReconciliationResult records subledger vs control balances, variance,
+    and tolerance status.  Auditors verify that period closes satisfied
+    all active contracts.
 """
 
 from __future__ import annotations
@@ -75,8 +83,15 @@ class ControlAccountBinding:
     """
     Binds a subledger type to its GL control account.
 
-    This is the core of the control contract - it declares that
+    This is the core of the control contract -- it declares that
     a subledger's aggregate balance must equal the GL control account.
+
+    Contract:
+        ``control_account_role`` is a semantic role resolved to a COA
+        account by the posting pipeline (L1).
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
     """
 
     subledger_type: SubledgerType
@@ -155,7 +170,17 @@ class SubledgerControlContract:
     """
     Complete control contract for a subledger.
 
-    Defines all reconciliation rules and constraints for a subledger type.
+    Contract:
+        Defines binding, timing, tolerance, and enforcement flags for a
+        single subledger type.
+
+    Guarantees:
+        - Frozen dataclass -- immutable after construction.
+        - ``enforce_on_post`` and ``enforce_on_close`` control when the
+          invariant is checked.
+
+    Non-goals:
+        - Does NOT read balances (SubledgerReconciler receives them as args).
     """
 
     binding: ControlAccountBinding
@@ -258,8 +283,18 @@ class SubledgerReconciler:
     """
     Pure function reconciler for subledger/GL balances.
 
-    Takes balance data as input and produces reconciliation results.
-    Does not access database directly.
+    Contract:
+        Receives balance data as arguments -- zero I/O, zero database.
+
+    Guarantees:
+        - ``reconcile()`` returns a ``ReconciliationResult`` for every call.
+        - ``validate_post()`` returns a list of ``ReconciliationViolation``
+          (empty if the contract is satisfied).
+        - ``validate_period_close()`` returns blocking violations when the
+          subledger cannot close.
+
+    Non-goals:
+        - Does NOT read balances from the database (callers provide them).
     """
 
     def reconcile(

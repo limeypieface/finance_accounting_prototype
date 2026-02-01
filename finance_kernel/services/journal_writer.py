@@ -1,18 +1,52 @@
 """
-JournalWriter service for atomic multi-ledger posting.
+JournalWriter — atomic multi-ledger journal posting service.
 
-The JournalWriter takes an AccountingIntent and creates JournalEntry records
-for all affected ledgers in a single transaction.
+Responsibility:
+    Transforms an AccountingIntent (expressed in account ROLES) into
+    persisted JournalEntry and JournalLine rows (expressed in COA codes).
+    Handles role resolution, balance validation, rounding invariants,
+    sequence assignment, idempotency, and subledger control enforcement.
+
+Architecture position:
+    Kernel > Services — imperative shell, owns transaction boundaries.
+    Called by InterpretationCoordinator; delegates sequence allocation
+    to SequenceService and role resolution to RoleResolver.
 
 Invariants enforced:
-- P11: Multi-ledger postings are atomic (single transaction)
-- L1: Every role resolves to exactly one COA account
-- L5: Coordinated with OutcomeRecorder (same transaction boundary)
+    R3  — Idempotency key uniqueness (via UNIQUE constraint + FOR UPDATE).
+    R4  — Debits = Credits per currency per entry (balance validation).
+    R5  — At most one is_rounding=True line per entry; threshold enforced.
+    R9  — Sequence monotonicity via SequenceService (never raw SQL max+1).
+    R10 — Posted record immutability (status transitions DRAFT -> POSTED).
+    R21 — Reference snapshot versions recorded on every JournalEntry.
+    R22 — Only Bookkeeper may create is_rounding lines (enforced at intent).
+    L1  — Every account role resolves to exactly one COA account.
+    P11 — Multi-ledger postings are atomic (single transaction).
+    L5  — Coordinated with OutcomeRecorder (same transaction boundary).
+    SL-G3 — Per-currency subledger reconciliation (when registry present).
+    SL-G5 — Blocking violations abort the transaction.
+    G10 — Reference snapshot freshness validation (when snapshot service present).
 
-The JournalWriter does NOT:
-- Manage the transaction boundary (caller's responsibility for L5)
-- Create the InterpretationOutcome (that's OutcomeRecorder's job)
-- Transform events (that's MeaningBuilder's job)
+Failure modes:
+    - ROLE_RESOLUTION_FAILED: Account role has no COA binding.
+    - UNBALANCED_INTENT: Debits != Credits for a currency in a ledger.
+    - CONCURRENT_INSERT: Race condition on idempotency key.
+    - FAILED: General write failure.
+    - MultipleRoundingLinesError: More than one rounding line per entry.
+    - RoundingAmountExceededError: Rounding line exceeds threshold.
+    - MissingReferenceSnapshotError: Required snapshot version is NULL.
+    - StaleReferenceSnapshotError: Snapshot has changed since capture.
+    - SubledgerReconciliationError: SL/GL balance out of tolerance.
+
+Audit relevance:
+    Every role resolution, balance validation, line write, and entry
+    finalization is logged with structured fields for the decision journal.
+    The invariant_checked log entry records R21 compliance per entry.
+
+Non-goals:
+    - Does NOT manage the transaction boundary (caller's responsibility).
+    - Does NOT create the InterpretationOutcome (that is OutcomeRecorder).
+    - Does NOT transform events (that is MeaningBuilder).
 """
 
 import time
@@ -282,27 +316,34 @@ class JournalWriter:
     """
     Service for atomic multi-ledger journal posting.
 
-    The JournalWriter:
-    1. Resolves account roles to COA accounts
-    2. Validates balancing for each ledger
-    3. Creates JournalEntry and JournalLine records
-    4. Assigns sequence numbers transactionally
-    5. Handles idempotency per ledger
+    Contract:
+        Accepts an AccountingIntent (which uses abstract account ROLES)
+        and produces persisted JournalEntry + JournalLine rows (which
+        use concrete COA codes).  Returns a JournalWriteResult indicating
+        success, idempotent duplicate, or a typed failure.
 
-    P11: All ledger entries are created in the same transaction.
-    The caller must also create the InterpretationOutcome in the same
-    transaction for L5 compliance.
+    Guarantees:
+        - L1: Every role resolves to exactly one COA account at post time.
+        - R4: Debits = Credits per currency per entry (validated pre-write).
+        - R5: At most one rounding line; rounding amount within threshold.
+        - R9: Sequence assigned via SequenceService (never raw SQL max+1).
+        - R21: Snapshot version columns populated on every JournalEntry.
+        - P11: All ledger entries created in the same transaction.
+        - Idempotent: duplicate idempotency_key yields ALREADY_EXISTS.
+
+    Non-goals:
+        - Does NOT call session.commit() — caller controls boundaries.
+        - Does NOT create the InterpretationOutcome (OutcomeRecorder).
+        - Does NOT enforce period locks (PeriodService / caller).
 
     Usage:
         writer = JournalWriter(session, role_resolver, clock)
         result = writer.write(accounting_intent, actor_id)
 
         if result.is_success:
-            # All entries written
             for entry in result.entries:
                 print(f"Wrote {entry.entry_id} to {entry.ledger_id}")
         else:
-            # Handle failure
             print(f"Failed: {result.error_message}")
     """
 
@@ -347,6 +388,24 @@ class JournalWriter:
         """
         Write journal entries for all ledgers in the intent.
 
+        Preconditions:
+            - ``intent`` contains at least one LedgerIntent.
+            - Each LedgerIntent is balanced per currency (R4).
+            - All account roles in the intent have valid bindings.
+
+        Postconditions:
+            - On success: All JournalEntry rows are POSTED with
+              monotonic sequence numbers and snapshot versions.
+            - On idempotent duplicate: ALREADY_EXISTS with existing IDs.
+            - On failure: No partial entries are left in DRAFT state.
+
+        Raises:
+            MultipleRoundingLinesError: More than one rounding line (R5).
+            RoundingAmountExceededError: Rounding exceeds threshold (R5).
+            MissingReferenceSnapshotError: Snapshot field is NULL (R21).
+            SubledgerReconciliationError: SL/GL imbalance (SL-G5).
+            StaleReferenceSnapshotError: Snapshot data changed (G10).
+
         P11: All ledger entries are written atomically.
 
         Args:
@@ -366,7 +425,7 @@ class JournalWriter:
             },
         )
 
-        # Validate all ledger intents are balanced
+        # INVARIANT: R4 — Debits = Credits per currency per entry
         for ledger_intent in intent.ledger_intents:
             for currency in ledger_intent.currencies:
                 sum_debit = ledger_intent.total_debits(currency)
@@ -401,7 +460,7 @@ class JournalWriter:
                         f"{currency}: imbalance = {imbalance}",
                     )
 
-        # Resolve all roles first
+        # INVARIANT: L1 — Every account role resolves to exactly one COA account
         try:
             resolved_intents = self._resolve_all_roles(intent)
         except RoleResolutionError as e:
@@ -413,7 +472,7 @@ class JournalWriter:
                 (e.role,), str(e)
             )
 
-        # Check idempotency for all ledgers
+        # INVARIANT: R3 — Idempotency key uniqueness check
         existing_entries: list[WrittenEntry] = []
         new_intents: list[tuple[LedgerIntent, list[ResolvedIntentLine]]] = []
 
@@ -668,7 +727,20 @@ class JournalWriter:
         entry_id: UUID,
         lines: list[ResolvedIntentLine],
     ) -> None:
-        """Validate rounding invariants."""
+        """Validate rounding invariants (R5, R22).
+
+        Preconditions:
+            - ``lines`` is a non-empty list of resolved intent lines.
+
+        Postconditions:
+            - At most one line has ``is_rounding=True``.
+            - Rounding amount does not exceed the threshold.
+
+        Raises:
+            MultipleRoundingLinesError: If more than one rounding line.
+            RoundingAmountExceededError: If rounding exceeds threshold.
+        """
+        # INVARIANT: R5 — At most ONE is_rounding=True line per entry
         rounding_lines = [line for line in lines if line.is_rounding]
         non_rounding_lines = [line for line in lines if not line.is_rounding]
 
@@ -695,7 +767,21 @@ class JournalWriter:
                 )
 
     def _finalize_posting(self, entry: JournalEntry) -> None:
-        """Assign sequence and mark as posted."""
+        """Assign sequence and mark as posted.
+
+        Preconditions:
+            - ``entry`` is a DRAFT JournalEntry with lines already flushed.
+
+        Postconditions:
+            - ``entry.status`` is POSTED.
+            - ``entry.seq`` is a monotonically increasing sequence number.
+            - ``entry.posted_at`` is set to the current clock time.
+            - R21 snapshot columns are validated as non-NULL.
+
+        Raises:
+            MissingReferenceSnapshotError: If required snapshot fields are NULL.
+        """
+        # INVARIANT: R21 — Reference snapshot determinism
         # Validate reference snapshots
         self._validate_reference_snapshots(entry)
 
@@ -712,8 +798,9 @@ class JournalWriter:
             },
         )
 
-        # Assign sequence number
+        # INVARIANT: R9 — Sequence monotonicity via locked counter row
         seq = self._sequence_service.next_value(SequenceService.JOURNAL_ENTRY)
+        assert seq > 0, "R9 violation: sequence must be strictly positive"
         entry.seq = seq
         entry.posted_at = self._clock.now()
         entry.status = JournalEntryStatus.POSTED

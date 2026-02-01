@@ -1,7 +1,39 @@
 """
-Procurement Module.
+Procurement Module (``finance_modules.procurement``).
 
-Handles purchase requisitions, purchase orders, and receiving.
+Responsibility
+--------------
+Thin ERP glue for the procure-to-pay cycle: purchase requisitions, purchase
+orders, receiving, three-way matching, encumbrance accounting, commitment
+tracking, PO amendments, and quantity variance recording.
+
+Architecture position
+---------------------
+**Modules layer** -- declarative profiles, workflows, config schemas, and a
+service facade that delegates all journal posting to ``finance_kernel`` via
+``ModulePostingService``.
+
+Invariants enforced
+-------------------
+* R4  -- Double-entry balance guaranteed by kernel posting pipeline.
+* R7  -- Transaction boundary owned by ``ProcurementService``.
+* R14 -- No ``if/switch`` on event_type; profile dispatch via where-clauses.
+* R15 -- New procurement event types require only a new profile + registration.
+* L1  -- Account ROLES used in profiles; COA resolution at posting time.
+* L5  -- Link creation and journal posting share a single transaction.
+
+Failure modes
+-------------
+* ``ModulePostingResult.is_success == False`` -- guard rejection, missing
+  profile, or kernel validation error.
+* Encumbrance relief may fail if no matching encumbrance exists.
+
+Audit relevance
+---------------
+Encumbrance accounting supports budgetary control compliance.  Three-way
+matching (PO/receipt/invoice) is a key SOX control.  All procurement
+transactions produce immutable journal entries with full provenance through
+the kernel audit chain (R11).
 
 Total: ~200 lines of module-specific code.
 Three-way match and approval routing use shared engines.

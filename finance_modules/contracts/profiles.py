@@ -1,11 +1,37 @@
 """
-Contract and DCAA Compliance Economic Profiles — Kernel format.
+Government Contracts Economic Profiles (``finance_modules.contracts.profiles``).
 
-Merged authoritative profiles from kernel (guards, where-clauses, multi-ledger)
-and module (line mappings, additional scenarios). Each profile is a kernel
-AccountingPolicy with companion ModuleLineMapping tuples for intent construction.
+Responsibility
+--------------
+Declares all ``AccountingPolicy`` instances and companion
+``ModuleLineMapping`` tuples for the contracts module.  Each profile maps
+a single event type to journal-line specifications using account ROLES.
 
-Contract Profiles (18):
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue (this layer).
+Profiles are registered into kernel registries by ``register()`` and
+resolved at posting time by the interpretation pipeline (L1).
+
+Invariants enforced
+-------------------
+* R14 -- No ``if/switch`` on event_type in the posting engine.
+* R15 -- Adding a new contract event type requires ONLY a new profile.
+* L1  -- Account roles are resolved to COA codes at posting time.
+* DCAA -- Indirect cost allocation profiles follow FAR/CAS methodology.
+
+Failure modes
+-------------
+* Duplicate profile names cause ``register_rich_profile`` to raise.
+* Guard expression match causes REJECTED outcome.
+
+Audit relevance
+---------------
+* Profile version numbers support replay compatibility (R23).
+* Guard conditions provide machine-readable rejection codes.
+* DCAA-related profiles are tagged for compliance traceability.
+
+Contract Profiles (22):
     ContractCostDirectLabor         — Dr WIP Direct Labor / Cr Labor Clearing
     ContractCostDirectMaterial      — Dr WIP Direct Material / Cr Material Clearing
     ContractCostSubcontract         — Dr WIP Subcontract / Cr AP Clearing
@@ -24,6 +50,10 @@ Contract Profiles (18):
     ContractAllocationOverhead      — Overhead allocation to contract
     ContractAllocationGA            — G&A allocation to contract
     ContractRateAdjustment          — Final vs provisional rate adjustment
+    ContractModified                — Contract modification (scope/funding/admin)
+    ContractSubcost                 — Subcontract cost flow-down
+    ContractEquitableAdj            — Equitable adjustment (REA)
+    ContractCostDisallowed          — DCAA cost disallowance
 
 DCAA Compliance Profiles (11):
     APInvoiceAllowable              — Allowable AP invoice
@@ -1453,6 +1483,170 @@ BANK_WITHDRAWAL_EXPENSE_UNALLOWABLE_MAPPINGS = (
 
 
 # =============================================================================
+# Contract Deepening Profiles
+# =============================================================================
+
+
+# --- Contract Modification ---------------------------------------------------
+
+CONTRACT_MODIFIED = AccountingPolicy(
+    name="ContractModified",
+    version=1,
+    trigger=PolicyTrigger(
+        event_type="contract.modification",
+        schema_version=1,
+    ),
+    meaning=PolicyMeaning(
+        economic_type="CONTRACT_MODIFICATION",
+        dimensions=("org_unit", "contract_number"),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="OBLIGATION_CONTROL",
+            credit_role="RESERVE_FOR_ENCUMBRANCE",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Modification amount must be positive",
+        ),
+    ),
+    description="Records contract modification",
+)
+
+CONTRACT_MODIFIED_MAPPINGS = (
+    ModuleLineMapping(role="OBLIGATION_CONTROL", side="debit", ledger="GL"),
+    ModuleLineMapping(role="RESERVE_FOR_ENCUMBRANCE", side="credit", ledger="GL"),
+)
+
+
+# --- Subcontract Cost -------------------------------------------------------
+
+CONTRACT_SUBCOST = AccountingPolicy(
+    name="ContractSubcost",
+    version=1,
+    trigger=PolicyTrigger(
+        event_type="contract.subcontract_cost",
+        schema_version=1,
+    ),
+    meaning=PolicyMeaning(
+        economic_type="CONTRACT_COST_INCURRENCE",
+        dimensions=("org_unit", "contract_number"),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="WIP_SUBCONTRACT",
+            credit_role="AP_CLEARING",
+        ),
+        LedgerEffect(
+            ledger="CONTRACT",
+            debit_role="CONTRACT_COST_INCURRED",
+            credit_role="COST_CLEARING",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Subcontract cost amount must be positive",
+        ),
+    ),
+    description="Records subcontract cost flow-down",
+)
+
+CONTRACT_SUBCOST_MAPPINGS = (
+    ModuleLineMapping(role="WIP_SUBCONTRACT", side="debit", ledger="GL"),
+    ModuleLineMapping(role="AP_CLEARING", side="credit", ledger="GL"),
+    ModuleLineMapping(role="CONTRACT_COST_INCURRED", side="debit", ledger="CONTRACT"),
+    ModuleLineMapping(role="COST_CLEARING", side="credit", ledger="CONTRACT"),
+)
+
+
+# --- Equitable Adjustment ---------------------------------------------------
+
+CONTRACT_EQUITABLE_ADJ = AccountingPolicy(
+    name="ContractEquitableAdj",
+    version=1,
+    trigger=PolicyTrigger(
+        event_type="contract.equitable_adjustment",
+        schema_version=1,
+    ),
+    meaning=PolicyMeaning(
+        economic_type="CONTRACT_MODIFICATION",
+        dimensions=("org_unit", "contract_number"),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="UNBILLED_AR",
+            credit_role="WIP_BILLED",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Equitable adjustment amount must be positive",
+        ),
+    ),
+    description="Records equitable adjustment (REA)",
+)
+
+CONTRACT_EQUITABLE_ADJ_MAPPINGS = (
+    ModuleLineMapping(role="UNBILLED_AR", side="debit", ledger="GL"),
+    ModuleLineMapping(role="WIP_BILLED", side="credit", ledger="GL"),
+)
+
+
+# --- Cost Disallowance -------------------------------------------------------
+
+CONTRACT_COST_DISALLOWED = AccountingPolicy(
+    name="ContractCostDisallowed",
+    version=1,
+    trigger=PolicyTrigger(
+        event_type="contract.cost_disallowance",
+        schema_version=1,
+    ),
+    meaning=PolicyMeaning(
+        economic_type="COST_DISALLOWANCE",
+        dimensions=("org_unit", "contract_number"),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="EXPENSE_UNALLOWABLE",
+            credit_role="WIP_DIRECT_LABOR",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Disallowance amount must be positive",
+        ),
+    ),
+    description="Records DCAA cost disallowance",
+)
+
+CONTRACT_COST_DISALLOWED_MAPPINGS = (
+    ModuleLineMapping(role="EXPENSE_UNALLOWABLE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="WIP_DIRECT_LABOR", side="credit", ledger="GL"),
+)
+
+
+# =============================================================================
 # Profile + Mapping pairs for registration
 # =============================================================================
 
@@ -1497,6 +1691,11 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     # DCAA bank withdrawal (2)
     (BANK_WITHDRAWAL_EXPENSE_ALLOWABLE, BANK_WITHDRAWAL_EXPENSE_ALLOWABLE_MAPPINGS),
     (BANK_WITHDRAWAL_EXPENSE_UNALLOWABLE, BANK_WITHDRAWAL_EXPENSE_UNALLOWABLE_MAPPINGS),
+    # Contract deepening (4)
+    (CONTRACT_MODIFIED, CONTRACT_MODIFIED_MAPPINGS),
+    (CONTRACT_SUBCOST, CONTRACT_SUBCOST_MAPPINGS),
+    (CONTRACT_EQUITABLE_ADJ, CONTRACT_EQUITABLE_ADJ_MAPPINGS),
+    (CONTRACT_COST_DISALLOWED, CONTRACT_COST_DISALLOWED_MAPPINGS),
 )
 
 

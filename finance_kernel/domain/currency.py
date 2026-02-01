@@ -1,11 +1,24 @@
 """
-Currency registry and validation.
+Currency -- ISO 4217 registry and precision-derived rounding.
 
-This module provides:
-- ISO 4217 currency code validation
-- Currency decimal place information
-- Rounding tolerance derived from currency precision
-- Pure domain validation (no database dependencies)
+Responsibility:
+    Provides the single source of truth for currency validation, decimal place
+    information, and rounding tolerances.
+
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
+
+Invariants enforced:
+    R16 -- ISO 4217 enforcement at boundary
+    R17 -- Precision-derived tolerance (rounding tolerance derived from
+           currency decimal places, never hard-coded)
+
+Failure modes:
+    - ValueError from ``validate()`` if currency code is not ISO 4217
+
+Audit relevance:
+    Currency precision directly controls rounding tolerance (R17) and
+    therefore the maximum hidden amount in a rounding line (R5, R22).
 """
 
 from dataclasses import dataclass
@@ -15,7 +28,18 @@ from typing import ClassVar
 
 @dataclass(frozen=True)
 class CurrencyInfo:
-    """Information about a currency."""
+    """
+    Information about a single ISO 4217 currency.
+
+    Contract:
+        ``code`` is a 3-character uppercase ISO 4217 code.
+        ``decimal_places`` is the number of minor units (0-4).
+
+    Guarantees:
+        - ``rounding_tolerance`` is deterministically derived from
+          ``decimal_places`` (R17).
+        - Frozen dataclass -- cannot be mutated.
+    """
 
     code: str
     decimal_places: int
@@ -49,6 +73,20 @@ class CurrencyRegistry:
 
     This is the single source of truth for currency validation
     and precision information.
+
+    Contract:
+        All monetary operations in the system must validate currencies
+        through this registry (R16).
+
+    Guarantees:
+        - ``is_valid()`` returns ``True`` only for ISO 4217 codes.
+        - ``get_rounding_tolerance()`` always derives tolerance from
+          currency precision (R17 -- never a hard-coded constant).
+        - ``validate()`` returns a normalized uppercase code or raises.
+
+    Non-goals:
+        - Does NOT store exchange rates (that is FX engine territory).
+        - Does NOT perform monetary arithmetic (see ``Money`` value object).
     """
 
     # ISO 4217 currencies with their decimal places

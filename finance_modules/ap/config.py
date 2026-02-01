@@ -1,8 +1,32 @@
 """
-Accounts Payable Configuration Schema.
+Accounts Payable Configuration Schema (``finance_modules.ap.config``).
 
-Defines the structure and sensible defaults for AP settings.
-Actual values are loaded from company configuration at runtime.
+Responsibility
+--------------
+Defines the declarative configuration schema for the AP module: three-way
+match tolerances, approval thresholds, payment terms, aging buckets,
+1099 thresholds, and accrual settings.  Default values represent common
+US industry practices.
+
+Architecture position
+---------------------
+**Modules layer** -- configuration schema only.  Loaded at runtime via
+``finance_config.get_active_config()``; no component reads config files or
+environment variables directly.
+
+Invariants enforced
+-------------------
+* All monetary thresholds use ``Decimal`` (never ``float``).
+* ``__post_init__`` validates internal consistency: discount days <= payment
+  terms, approval levels sorted, aging buckets sorted and unique, etc.
+
+Failure modes
+-------------
+* ``ValueError`` at construction if any constraint is violated.
+
+Audit relevance
+---------------
+Configuration state logged at initialization time with all key settings.
 """
 
 from dataclasses import dataclass, field
@@ -17,7 +41,12 @@ logger = get_logger("modules.ap.config")
 
 @dataclass
 class MatchTolerance:
-    """Tolerance settings for three-way matching."""
+    """Tolerance settings for three-way matching.
+
+    Contract: all percentages are ``Decimal`` in the range [0, 100].
+    Guarantees: validated at construction via ``__post_init__``.
+    Non-goals: does not apply the tolerance -- ``MatchingEngine`` does.
+    """
     price_variance_percent: Decimal = Decimal("0.05")  # 5%
     price_variance_absolute: Decimal = Decimal("10.00")
     quantity_variance_percent: Decimal = Decimal("0.02")  # 2%
@@ -47,7 +76,11 @@ class MatchTolerance:
 
 @dataclass
 class ApprovalLevel:
-    """Approval threshold configuration."""
+    """Approval threshold configuration.
+
+    Contract: ``amount_threshold >= 0``, ``required_role`` non-empty.
+    Guarantees: validated at construction.
+    """
     amount_threshold: Decimal
     required_role: str
     requires_dual_approval: bool = False
@@ -171,13 +204,25 @@ class APConfig:
 
     @classmethod
     def with_defaults(cls) -> Self:
-        """Create config with industry-standard defaults."""
+        """Create config with industry-standard defaults.
+
+        Postconditions:
+            - Returns a valid ``APConfig`` with all defaults applied.
+        """
         logger.info("ap_config_created_with_defaults")
         return cls()
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
-        """Create config from dictionary (e.g., loaded from database/file)."""
+        """Create config from dictionary (e.g., loaded from database/file).
+
+        Preconditions:
+            - ``data`` keys match ``APConfig`` field names.
+        Postconditions:
+            - Nested objects (``MatchTolerance``, ``ApprovalLevel``) hydrated.
+        Raises:
+            ValueError: if validation fails in ``__post_init__``.
+        """
         logger.info(
             "ap_config_loading_from_dict",
             extra={"keys": sorted(data.keys())},

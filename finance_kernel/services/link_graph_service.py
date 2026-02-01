@@ -1,16 +1,35 @@
 """
-Link Graph Service - Graph operations on EconomicLinks.
+LinkGraphService -- graph operations on EconomicLinks.
 
-This service is responsible for:
-- L3 (Acyclic) enforcement during link creation
-- Recursive graph traversal for audit and correction
-- Unconsumed value calculations for AP/Inventory
-- Efficient CTE-based queries for graph navigation
+Responsibility:
+    Persists economic links (the "why pointer" between artifacts),
+    enforces acyclicity for directed link types, provides recursive
+    graph traversal for audit and correction, and computes unconsumed
+    value for AP/Inventory reconciliation.
 
-The service follows the standard kernel service pattern:
-- Accepts a Session from the caller
-- Uses session.flush() within the transaction
-- Does NOT call session.commit() - caller controls boundaries
+Architecture position:
+    Kernel > Services -- imperative shell.
+    Called by module services (AP, AR, Inventory, etc.) when establishing
+    fulfillment, payment, reversal, or allocation relationships.
+
+Invariants enforced:
+    R4-LINK -- Link legality: link types follow ``LINK_TYPE_SPECS`` for
+               allowed parent/child artifact types and max children.
+    L3  -- Acyclic enforcement: directed link types (FULFILLED_BY,
+           SOURCED_FROM, DERIVED_FROM, CONSUMED_BY, CORRECTED_BY) are
+           checked for cycles before persistence via DFS traversal.
+    R1  -- EconomicLink rows are immutable (append-only, protected by
+           ORM listeners and DB triggers on EconomicLinkModel).
+
+Failure modes:
+    - LinkCycleError: Adding the link would create a cycle (L3 violation).
+    - DuplicateLinkError: Link already exists (unless allow_duplicate=True).
+    - MaxChildrenExceededError: Parent has reached max children per spec.
+    - IntegrityError: Concurrent insert race (handled as duplicate).
+
+Audit relevance:
+    Link creation is logged with link_id, link_type, source_ref, and
+    target_ref.  Cycle detection failures are logged at ERROR level.
 """
 
 from __future__ import annotations
@@ -95,8 +114,21 @@ class LinkGraphService:
     """
     Executes graph operations on EconomicLinks.
 
-    This service is responsible for L3 (Acyclic) enforcement and
-    recursive traversal for audit and correction purposes.
+    Contract:
+        Accepts ``EconomicLink`` domain objects and persists them after
+        validating acyclicity, duplicate detection, and max-children
+        constraints.  Provides graph traversal and unconsumed-value
+        calculations.
+
+    Guarantees:
+        - L3: No cycle is introduced for acyclic link types.
+        - R1: Links are immutable once persisted (append-only).
+        - Duplicate detection: same (parent, child, link_type) triple
+          is detected either pre-flush or on IntegrityError.
+
+    Non-goals:
+        - Does NOT call ``session.commit()`` -- caller controls boundaries.
+        - Does NOT create audit events (caller's responsibility).
     """
 
     # Link types that must be acyclic (prevent infinite loops)
@@ -159,7 +191,7 @@ class LinkGraphService:
                 child_ref=str(link.child_ref),
             )
 
-        # L3: Check for cycles in acyclic link types
+        # INVARIANT: L3 -- Acyclic enforcement for directed link types
         if link.link_type in self.ACYCLIC_LINK_TYPES:
             cycle_path = self._detect_cycle(link)
             if cycle_path:
@@ -254,6 +286,16 @@ class LinkGraphService:
         Uses a Recursive Common Table Expression (CTE) for efficient
         single-trip database access.
 
+        Preconditions:
+            - ``query.starting_ref`` is a valid ``ArtifactRef``.
+            - ``query.max_depth`` >= 0.
+
+        Postconditions:
+            - Returns a non-empty list (at minimum, a single-node path
+              containing only the starting artifact).
+            - Every ``LinkPath`` starts with ``query.starting_ref``.
+            - Path depth does not exceed ``query.max_depth``.
+
         Args:
             query: Specifies starting point, direction, depth, and filters.
 
@@ -282,6 +324,12 @@ class LinkGraphService:
     ) -> list[EconomicLink]:
         """
         Get all direct children of an artifact.
+
+        Postconditions:
+            - Every returned ``EconomicLink`` has ``parent_ref`` matching
+              the input ``parent_ref``.
+            - If ``link_types`` is provided, every returned link's
+              ``link_type`` is in the specified set.
 
         Args:
             parent_ref: The parent artifact.
@@ -315,6 +363,12 @@ class LinkGraphService:
     ) -> list[EconomicLink]:
         """
         Get all direct parents of an artifact.
+
+        Postconditions:
+            - Every returned ``EconomicLink`` has ``child_ref`` matching
+              the input ``child_ref``.
+            - If ``link_types`` is provided, every returned link's
+              ``link_type`` is in the specified set.
 
         Args:
             child_ref: The child artifact.
@@ -379,6 +433,11 @@ class LinkGraphService:
         - AP: Invoice balance = Invoice amount - SUM(payments applied)
         - Inventory: Lot balance = Lot value - SUM(consumptions)
 
+        Postconditions:
+            - ``result.remaining_amount == original_amount - consumed_amount``.
+            - ``result.child_count`` equals the number of child links found.
+            - ``result.consumed_amount.currency == original_amount.currency``.
+
         Args:
             parent_ref: The parent artifact (invoice, lot, etc.).
             original_amount: The original amount of the parent.
@@ -406,7 +465,14 @@ class LinkGraphService:
                     amount = Decimal(str(link.metadata[amount_metadata_key]))
                     consumed_total += amount
                 except (ValueError, TypeError):
-                    pass  # Skip invalid metadata
+                    logger.debug(
+                        "skipping_invalid_metadata",
+                        extra={
+                            "link_id": str(link.link_id),
+                            "metadata_key": amount_metadata_key,
+                            "raw_value": str(link.metadata.get(amount_metadata_key)),
+                        },
+                    )
 
         consumed_amount = Money.of(consumed_total, original_amount.currency)
         remaining_amount = original_amount - consumed_amount
@@ -455,7 +521,14 @@ class LinkGraphService:
                     amount = Decimal(str(link.metadata[amount_metadata_key]))
                     total += amount
                 except (ValueError, TypeError):
-                    pass
+                    logger.debug(
+                        "skipping_invalid_metadata",
+                        extra={
+                            "link_id": str(link.link_id),
+                            "metadata_key": amount_metadata_key,
+                            "raw_value": str(link.metadata.get(amount_metadata_key)),
+                        },
+                    )
 
         return total
 

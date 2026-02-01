@@ -1,20 +1,28 @@
 """
-Reference Snapshot - Frozen, named version of economic reality.
+ReferenceSnapshot -- Frozen, named version of economic reality.
 
-A ReferenceSnapshot captures the immutable state of all reference data
-at a point in time. This becomes the ONLY legal input to:
-- MeaningBuilder
-- VarianceEngine
-- AllocationEngine
-- MatchingEngine
-- TaxEngine
+Responsibility:
+    Captures the immutable state of all reference data at a point in time.
+    This becomes the ONLY legal input to MeaningBuilder, VarianceEngine,
+    AllocationEngine, MatchingEngine, and TaxEngine.
 
-This formalizes R21 (Reference Snapshot Determinism) as a first-class concept.
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
 
-Non-goals:
-- No valuation logic
-- No posting logic
-- No schema validation
+Invariants enforced:
+    R21 -- Reference snapshot determinism.  Every operation that transforms
+           economic events must reference a snapshot so that replay produces
+           identical results.
+    L4  -- Guards and valuation read only from frozen snapshots.
+
+Failure modes:
+    - ValueError from ComponentVersion if version < 1 or content_hash empty.
+    - SnapshotIntegrityError when content hashes do not match.
+
+Audit relevance:
+    ReferenceSnapshot is persisted alongside JournalEntry (R21) so that
+    auditors can verify that the same reference data was used at posting
+    time and during replay (L4).
 """
 
 from __future__ import annotations
@@ -68,11 +76,22 @@ class ReferenceSnapshot:
     This is the canonical representation of "economic reality" for a posting.
     Every operation that transforms economic events must reference a snapshot.
 
-    Invariants:
-    - snapshot_id is globally unique
-    - captured_at is immutable once set
-    - component_versions are frozen
-    - Once captured, a snapshot never changes
+    Contract:
+        ``snapshot_id`` is globally unique.  Once captured, a snapshot never
+        changes (frozen + slotted).
+
+    Guarantees:
+        - ``version_dict`` provides R21-compliant version map for persistence.
+        - ``is_compatible_with()`` enables deterministic replay validation (L4).
+        - ``component_versions`` are frozen tuples -- fully immutable.
+
+    Non-goals:
+        - Does NOT contain actual reference data (only version pointers).
+        - Does NOT perform valuation or posting.
+
+    Invariants enforced:
+        R21 -- captured_at and component_versions are immutable after creation.
+        L4  -- snapshot is the only legal input for interpretation.
     """
 
     snapshot_id: UUID

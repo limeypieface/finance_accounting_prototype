@@ -1,13 +1,24 @@
 """
-Deterministic clock abstraction.
+Clock -- Deterministic time abstraction.
 
-The domain layer never calls datetime.now() directly.
-All time is injected via a Clock interface.
+Responsibility:
+    Provides an injectable clock interface so that domain, engine, and service
+    code never call ``datetime.now()`` or ``date.today()`` directly.
 
-This enables:
-- Deterministic testing
-- Replay of historical events
-- Time-travel debugging
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O (except SystemClock,
+    which is the one sanctioned I/O boundary for time).
+
+Invariants enforced:
+    (none directly -- enables deterministic replay for L4 and R21)
+
+Failure modes:
+    - SequentialClock raises RuntimeError if exhausted and no fallback time.
+
+Audit relevance:
+    Deterministic clocks are critical for replay verification (L4).  Every
+    timestamp recorded in journal entries and audit events is traceable to an
+    injected Clock instance.
 """
 
 from abc import ABC, abstractmethod
@@ -19,7 +30,14 @@ class Clock(ABC):
     """
     Abstract clock interface.
 
-    All services that need current time must receive a Clock instance.
+    Contract:
+        All services that need current time must receive a Clock instance
+        via constructor injection.  Domain and engine code must NEVER import
+        ``datetime.now()`` or ``date.today()`` directly.
+
+    Guarantees:
+        - ``now()`` returns a timezone-aware ``datetime``.
+        - ``now_utc()`` returns a UTC-normalized ``datetime``.
     """
 
     @abstractmethod
@@ -37,7 +55,14 @@ class SystemClock(Clock):
     """
     Production clock that returns actual system time.
 
-    Use this in production code.
+    Contract:
+        The sole sanctioned I/O boundary for time in the kernel.
+
+    Guarantees:
+        Returns timezone-aware UTC ``datetime`` instances.
+
+    Non-goals:
+        Not suitable for deterministic replay or testing.
     """
 
     def now(self) -> datetime:
@@ -53,7 +78,13 @@ class DeterministicClock(Clock):
     """
     Test clock with controlled time.
 
-    Use this in tests for deterministic behavior.
+    Contract:
+        Used in tests and replay scenarios for deterministic behavior (L4).
+
+    Guarantees:
+        - ``now()`` returns the same value on repeated calls until ``advance()``
+          or ``set_time()`` is called.
+        - ``tick()`` advances by exactly 1 second and returns the new time.
     """
 
     def __init__(self, fixed_time: datetime | None = None):
@@ -98,7 +129,16 @@ class SequentialClock(Clock):
     """
     Clock that returns sequential times from a predefined list.
 
-    Useful for testing specific time sequences.
+    Contract:
+        Initialized with a non-empty list of ``datetime`` values.  After
+        exhaustion, repeats the last value.
+
+    Guarantees:
+        Returns times in the exact order supplied.
+
+    Raises:
+        ValueError: If initialized with an empty list.
+        RuntimeError: If exhausted with no recorded last time.
     """
 
     def __init__(self, times: list[datetime]):

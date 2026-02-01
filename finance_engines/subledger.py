@@ -1,8 +1,39 @@
 """
-Subledger Pattern - Pure domain types for subledger management.
+finance_engines.subledger -- Pure domain types for subledger management.
 
-Provides immutable value objects for AP, AR, Bank, Inventory, and Fixed Assets subledgers.
-The stateful SubledgerService ABC has moved to finance_services.subledger_service.
+Responsibility:
+    Define immutable value objects for subledger entries, balances, and
+    reconciliation results across AP, AR, Bank, Inventory, and Fixed Assets
+    subledgers.  These are the data contracts exchanged between the engine
+    layer and the service layer.
+
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values and
+    finance_kernel/domain/subledger_control (SL-G9 canonical enum).
+    The stateful SubledgerService ABC lives in
+    finance_services.subledger_service.
+
+Invariants enforced:
+    - SL-G1 (single-sided entries): SubledgerEntry.__post_init__ enforces
+      exactly one of debit/credit is set; never both, never neither.
+    - SL-G2 (GL linkage): gl_entry_id field on SubledgerEntry provides
+      the mandatory GL-to-SL link for reconciliation.
+    - R6 (replay safety): all value objects are frozen dataclasses;
+      with_reconciliation() returns a new instance.
+    - R16 (ISO 4217): currency derived from the Money amount.
+
+Failure modes:
+    - ValueError from SubledgerEntry.__post_init__ if both debit and credit
+      are set, or if neither is set.
+    - Potential currency mismatch if with_reconciliation is called with
+      a Money in a different currency (caught by Money arithmetic).
+
+Audit relevance:
+    Subledger entries are the subsidiary detail behind GL control account
+    balances.  Each entry carries source_document_type/id for traceability,
+    gl_entry_id for GL linkage, and reconciliation state for period-end
+    reconciliation (SL-G6).
 
 Usage:
     from finance_engines.subledger import SubledgerEntry, SubledgerBalance
@@ -53,8 +84,18 @@ class SubledgerEntry:
     """
     Generic subledger entry.
 
-    Immutable value object representing a single entry in a subledger.
-    Links to the GL through gl_entry_id.
+    Contract:
+        Frozen dataclass representing a single entry in a subledger.
+        Links to the GL through gl_entry_id.
+    Guarantees:
+        - Exactly one of debit/credit is set (SL-G1); never both, never
+          neither; enforced in __post_init__.
+        - ``with_reconciliation`` returns a new immutable instance with
+          updated reconciliation state (never mutates self).
+        - ``signed_amount`` is positive for debits, negative for credits.
+    Non-goals:
+        - Does not enforce that gl_entry_id references a real journal entry;
+          that linkage is the service layer's responsibility.
     """
 
     # Identity
@@ -92,6 +133,7 @@ class SubledgerEntry:
     dimensions: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # INVARIANT [SL-G1]: single-sided entry -- exactly one of debit/credit must be set.
         if self.debit is not None and self.credit is not None:
             logger.error("subledger_entry_both_sides", extra={
                 "entry_id": str(self.entry_id),

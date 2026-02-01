@@ -1,9 +1,38 @@
 """
-General Ledger Economic Profiles — Kernel format.
+General Ledger Economic Profiles (``finance_modules.gl.profiles``).
 
-Merged authoritative profiles from kernel (guards, where-clauses) and module
-(line mappings, scenarios). Absorbs deferred revenue/expense and FX profiles
-that were previously in kernel/domain/profiles/.
+Responsibility
+--------------
+Declares all ``AccountingPolicy`` instances and companion
+``ModuleLineMapping`` tuples for the GL module.  Absorbs deferred
+revenue/expense and FX profiles that were previously in
+``kernel/domain/profiles/``.
+
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue (this layer).
+Profiles are registered into kernel registries by ``register()`` and
+resolved at posting time by the interpretation pipeline (L1).
+
+Invariants enforced
+-------------------
+* R14 -- No ``if/switch`` on event_type in the posting engine.
+* R15 -- Adding a new GL event type requires ONLY a new profile +
+         mapping + registration.
+* L1  -- Account roles are resolved to COA codes at posting time.
+
+Failure modes
+-------------
+* Duplicate profile names cause ``register_rich_profile`` to raise at
+  startup.
+* A guard expression evaluating to ``True`` causes the event to be
+  REJECTED with the declared ``reason_code``.
+
+Audit relevance
+---------------
+* Profile version numbers support replay compatibility (R23).
+* Guard conditions provide machine-readable rejection codes for
+  audit inspection.
 
 Profiles:
     YearEndClose                — Close rev/exp to retained earnings
@@ -143,7 +172,7 @@ FX_REVALUATION = AccountingPolicy(
     ledger_effects=(
         LedgerEffect(
             ledger="GL",
-            debit_role="FOREIGN_EXCHANGE_GAIN_LOSS",
+            debit_role="FOREIGN_CURRENCY_BALANCE",
             credit_role="FOREIGN_EXCHANGE_GAIN_LOSS",
         ),
     ),
@@ -153,7 +182,10 @@ FX_REVALUATION = AccountingPolicy(
 
 FX_REVALUATION_MAPPINGS = (
     ModuleLineMapping(
-        role="FOREIGN_EXCHANGE_GAIN_LOSS", side="debit", ledger="GL"
+        role="FOREIGN_CURRENCY_BALANCE", side="debit", ledger="GL"
+    ),
+    ModuleLineMapping(
+        role="FOREIGN_EXCHANGE_GAIN_LOSS", side="credit", ledger="GL"
     ),
 )
 
@@ -412,6 +444,118 @@ FX_REALIZED_LOSS_MAPPINGS = (
 
 
 # =============================================================================
+# Profile definitions — GL Deepening
+# =============================================================================
+
+
+# --- Recurring Entry ---------------------------------------------------------
+
+GL_RECURRING_ENTRY = AccountingPolicy(
+    name="GLRecurringEntry",
+    version=1,
+    trigger=PolicyTrigger(event_type="gl.recurring_entry"),
+    meaning=PolicyMeaning(
+        economic_type="RECURRING_ENTRY",
+        quantity_field="payload.amount",
+        dimensions=("org_unit", "cost_center"),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="EXPENSE",
+            credit_role="ACCRUED_LIABILITY",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Recurring entry amount must be positive",
+        ),
+    ),
+    description="Generate journal entry from recurring template",
+)
+
+GL_RECURRING_ENTRY_MAPPINGS = (
+    ModuleLineMapping(role="EXPENSE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="ACCRUED_LIABILITY", side="credit", ledger="GL"),
+)
+
+
+# --- Retained Earnings Roll -------------------------------------------------
+
+GL_RETAINED_EARNINGS_ROLL = AccountingPolicy(
+    name="GLRetainedEarningsRoll",
+    version=1,
+    trigger=PolicyTrigger(event_type="gl.retained_earnings_roll"),
+    meaning=PolicyMeaning(
+        economic_type="RETAINED_EARNINGS_ROLL",
+        quantity_field="payload.amount",
+        dimensions=("org_unit",),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="INCOME_SUMMARY",
+            credit_role="RETAINED_EARNINGS",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Retained earnings roll amount must be positive",
+        ),
+    ),
+    description="Year-end retained earnings roll: P&L to retained earnings",
+)
+
+GL_RETAINED_EARNINGS_ROLL_MAPPINGS = (
+    ModuleLineMapping(role="INCOME_SUMMARY", side="debit", ledger="GL"),
+    ModuleLineMapping(role="RETAINED_EARNINGS", side="credit", ledger="GL"),
+)
+
+
+# --- FX Translation Adjustment (CTA) ----------------------------------------
+
+FX_TRANSLATION_ADJUSTMENT = AccountingPolicy(
+    name="FXTranslationAdjustment",
+    version=1,
+    trigger=PolicyTrigger(event_type="fx.translation_adjustment"),
+    meaning=PolicyMeaning(
+        economic_type="FX_TRANSLATION",
+        dimensions=("org_unit",),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="UNREALIZED_FX_LOSS",
+            credit_role="CUMULATIVE_TRANSLATION_ADJ",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="CTA amount must be positive",
+        ),
+    ),
+    description="Records cumulative translation adjustment for foreign currency translation (ASC 830)",
+)
+
+FX_TRANSLATION_ADJUSTMENT_MAPPINGS = (
+    ModuleLineMapping(role="UNREALIZED_FX_LOSS", side="debit", ledger="GL"),
+    ModuleLineMapping(role="CUMULATIVE_TRANSLATION_ADJ", side="credit", ledger="GL"),
+)
+
+
+# =============================================================================
 # Profile + Mapping pairs for registration
 # =============================================================================
 
@@ -429,6 +573,11 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     (FX_UNREALIZED_LOSS, FX_UNREALIZED_LOSS_MAPPINGS),
     (FX_REALIZED_GAIN, FX_REALIZED_GAIN_MAPPINGS),
     (FX_REALIZED_LOSS, FX_REALIZED_LOSS_MAPPINGS),
+    # GL Deepening
+    (GL_RECURRING_ENTRY, GL_RECURRING_ENTRY_MAPPINGS),
+    (GL_RETAINED_EARNINGS_ROLL, GL_RETAINED_EARNINGS_ROLL_MAPPINGS),
+    # Multi-Currency Deepening
+    (FX_TRANSLATION_ADJUSTMENT, FX_TRANSLATION_ADJUSTMENT_MAPPINGS),
 )
 
 

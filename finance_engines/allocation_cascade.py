@@ -1,17 +1,38 @@
 """
-Cascading Indirect Cost Allocation Engine for DCAA Compliance.
+Module: finance_engines.allocation_cascade
+Responsibility:
+    Multi-step indirect cost allocation cascade for DCAA / FAR / CAS
+    compliance.  Applies fringe, overhead, and G&A rates in a
+    deterministic sequence to produce fully-burdened contract costs.
 
-Pure functions with deterministic behavior. No I/O.
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values.
 
-This engine handles multi-step indirect cost allocation required for
-government contract accounting (FAR/CAS compliance):
+Invariants enforced:
+    - R6 (replay safety): identical inputs produce identical outputs;
+      input dicts are never mutated.
+    - R17 (precision-derived tolerance): all intermediate amounts are
+      rounded to 2 decimal places using ROUND_HALF_UP.
+    - Purity: no clock access, no I/O.
 
-    Direct Labor → Apply Fringe Rate → Fringe Pool
-                ↓
-    Direct Costs + Fringe → Apply Overhead Rate → Overhead Pool
-                ↓
-    Direct + Fringe + Overhead → Apply G&A Rate → G&A Pool
-                ↓
+Failure modes:
+    - ValueError if an ``AllocationStep`` has an invalid ``base`` type.
+    - Missing pool balances default to zero (logged as warning).
+    - Missing rates default to zero (logged as warning).
+
+Audit relevance:
+    Cascade results directly support the indirect cost schedules filed
+    in DCAA Incurred Cost Electronically (ICE) submissions.  Each
+    cascade execution is traced via ``@traced_engine``.
+
+Allocation flow:
+    Direct Labor -> Apply Fringe Rate -> Fringe Pool
+                 |
+    Direct Costs + Fringe -> Apply Overhead Rate -> Overhead Pool
+                 |
+    Direct + Fringe + Overhead -> Apply G&A Rate -> G&A Pool
+                 |
     Total Cost by Contract
 
 Usage:
@@ -51,7 +72,16 @@ logger = get_logger("engines.allocation_cascade")
 
 
 class AllocationBase:
-    """Constants for allocation base types."""
+    """Constants for allocation base types.
+
+    Contract:
+        Namespace for base-type string constants used by ``AllocationStep``.
+    Guarantees:
+        - Only ``POOL_BALANCE`` and ``CUMULATIVE`` are valid values.
+    Non-goals:
+        - Not an Enum; kept as plain constants for YAML serialisation
+          compatibility.
+    """
 
     POOL_BALANCE = "pool_balance"  # Apply rate to single pool
     CUMULATIVE = "cumulative"  # Apply rate to running total
@@ -62,7 +92,13 @@ class AllocationStep:
     """
     Single step in indirect cost allocation cascade.
 
-    Immutable value object defining how to allocate from one pool to another.
+    Contract:
+        Frozen dataclass defining how to allocate from one pool to another.
+    Guarantees:
+        - ``base`` is validated to be one of ``AllocationBase`` constants.
+    Non-goals:
+        - Does not carry the rate value itself; rates are provided to
+          ``execute_cascade`` at invocation time.
 
     Attributes:
         pool_from: Source pool dimension value (e.g., "DIRECT_LABOR")
@@ -122,7 +158,17 @@ def execute_cascade(
     """
     Execute multi-step indirect cost allocation cascade.
 
-    Pure function - no side effects, no I/O, deterministic output.
+    Pure function -- no side effects, no I/O, deterministic output.
+
+    Preconditions:
+        steps is a non-empty sequence of valid AllocationStep objects.
+        pool_balances maps pool dimension values to Money amounts.
+        rates maps rate_type identifiers to Decimal rates.
+
+    Postconditions:
+        Returns (results, final_balances) where len(results) == len(steps).
+        pool_balances input dict is NEVER mutated (R6).
+        All intermediate amounts are rounded to 2 decimal places (R17).
 
     Args:
         steps: Ordered sequence of allocation steps to execute
@@ -163,6 +209,7 @@ def execute_cascade(
     })
 
     results: list[AllocationStepResult] = []
+    # INVARIANT: R6 — input dict is never mutated; copy for local work
     balances = dict(pool_balances)  # Don't mutate input
     zero = Money.zero(currency)
     cumulative = zero
@@ -189,7 +236,7 @@ def execute_cascade(
                 "pool_to": step.pool_to,
             })
 
-        # Calculate allocation amount with deterministic rounding
+        # INVARIANT: R17 — deterministic rounding to 2 decimal places
         allocated_amount_raw = base_amount.amount * rate
         allocated_amount = Money.of(
             allocated_amount_raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
@@ -244,6 +291,14 @@ def execute_cascade(
 def build_dcaa_cascade() -> tuple[AllocationStep, ...]:
     """
     Build standard DCAA indirect cost allocation cascade.
+
+    Preconditions:
+        None (pure factory function).
+
+    Postconditions:
+        Returns a 3-step cascade: Fringe (pool_balance), Overhead
+        (cumulative), G&A (cumulative).  All steps use standard DCAA
+        pool and rate_type names.
 
     Returns tuple of steps for typical government contract costing:
     1. Fringe benefits applied to direct labor

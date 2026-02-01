@@ -1,16 +1,45 @@
 """
-Accounts Receivable Module Service - Orchestrates AR operations via engines + kernel.
+Accounts Receivable Module Service (``finance_modules.ar.service``).
 
-Thin glue layer that:
-1. Calls ReconciliationManager for payment application and matching
-2. Calls AllocationEngine for distributing payments across invoices
-3. Calls AgingCalculator for AR aging analysis
-4. Calls ModulePostingService for journal entry creation
+Responsibility
+--------------
+Orchestrates AR operations -- customer invoices, payment application,
+credit memos, dunning, aging analysis, write-offs, and auto-apply rules
+-- by delegating pure computation to ``finance_engines`` and journal
+persistence to ``finance_kernel.services.module_posting_service``.
 
-All computation lives in engines. All posting lives in kernel.
-This service owns the transaction boundary (R7 compliance).
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue.  ``ARService`` is the sole public entry
+point for AR operations.  It composes stateless engines (``AllocationEngine``,
+``AgingCalculator``), stateful engines (``ReconciliationManager``,
+``LinkGraphService``), and the kernel ``ModulePostingService``.
 
-Usage:
+Invariants enforced
+-------------------
+* R7  -- Each public method owns the transaction boundary
+          (``commit`` on success, ``rollback`` on failure or exception).
+* R14 -- Event type selection is data-driven; no ``if/switch`` on event_type
+          inside the posting path.
+* L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
+* L5  -- Atomicity: link creation and journal posting share a single
+          transaction (``auto_commit=False``).
+
+Failure modes
+-------------
+* Guard rejection or kernel validation  -> ``ModulePostingResult`` with
+  ``is_success == False``; session rolled back.
+* Unexpected exception  -> session rolled back, exception re-raised.
+* Engine errors (e.g., invalid match)  -> propagate before posting attempt.
+
+Audit relevance
+---------------
+Structured log events emitted at operation start and commit/rollback for
+every public method, carrying IDs, amounts, and statuses.  All journal
+entries feed the kernel audit chain (R11).
+
+Usage::
+
     service = ARService(session, role_resolver, clock)
     result = service.record_invoice(
         invoice_id=uuid4(), customer_id=uuid4(),
@@ -46,6 +75,12 @@ from finance_engines.allocation import (
     AllocationTarget,
 )
 from finance_engines.aging import AgingCalculator, AgingReport
+from finance_modules.ar.models import (
+    AutoApplyRule,
+    CreditDecision,
+    DunningHistory,
+    DunningLevel,
+)
 
 logger = get_logger("modules.ar.service")
 
@@ -53,6 +88,26 @@ logger = get_logger("modules.ar.service")
 class ARService:
     """
     Orchestrates accounts receivable operations through engines and kernel.
+
+    Contract
+    --------
+    * Every posting method returns ``ModulePostingResult``; callers inspect
+      ``result.is_success`` to determine outcome.
+    * Non-posting helpers (``calculate_aging``, ``run_dunning``, etc.) return
+      pure domain objects with no side-effects on the journal.
+
+    Guarantees
+    ----------
+    * Session is committed only on ``result.is_success``; otherwise rolled back.
+    * Engine link writes and journal writes share a single transaction
+      (``ModulePostingService`` runs with ``auto_commit=False``).
+    * Clock is injectable for deterministic testing.
+
+    Non-goals
+    ---------
+    * Does NOT own account-code resolution (delegated to kernel via ROLES).
+    * Does NOT enforce fiscal-period locks directly (kernel ``PeriodService``
+      handles R12/R13).
 
     Engine composition:
     - ReconciliationManager: payment application and receipt matching
@@ -793,6 +848,320 @@ class ARService:
                 self._session.commit()
                 logger.info("ar_record_refund_committed", extra={
                     "refund_id": str(refund_id),
+                    "status": result.status.value,
+                })
+            else:
+                self._session.rollback()
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Dunning
+    # =========================================================================
+
+    def generate_dunning_letters(
+        self,
+        as_of_date: date,
+        overdue_customers: Sequence[dict],
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> list[DunningHistory]:
+        """
+        Generate dunning letters for overdue customers.
+
+        No posting — pure domain operation using AgingCalculator.
+        Assigns dunning levels based on days overdue.
+
+        Args:
+            as_of_date: Date for aging calculation.
+            overdue_customers: Sequence of dicts with:
+                - customer_id, total_overdue, days_overdue, invoice_count
+            actor_id: User generating the dunning run.
+
+        Returns:
+            List of DunningHistory records for each customer.
+        """
+        from uuid import uuid4 as _uuid4
+
+        results: list[DunningHistory] = []
+
+        logger.info("ar_generate_dunning_started", extra={
+            "as_of_date": as_of_date.isoformat(),
+            "customer_count": len(overdue_customers),
+        })
+
+        for customer in overdue_customers:
+            days_overdue = int(customer.get("days_overdue", 0))
+            if days_overdue <= 0:
+                continue
+
+            # Assign dunning level based on days overdue
+            if days_overdue <= 30:
+                level = DunningLevel.REMINDER
+            elif days_overdue <= 60:
+                level = DunningLevel.FIRST_NOTICE
+            elif days_overdue <= 90:
+                level = DunningLevel.SECOND_NOTICE
+            elif days_overdue <= 120:
+                level = DunningLevel.FINAL_NOTICE
+            else:
+                level = DunningLevel.COLLECTION
+
+            record = DunningHistory(
+                id=_uuid4(),
+                customer_id=customer["customer_id"],
+                level=level,
+                sent_date=as_of_date,
+                as_of_date=as_of_date,
+                total_overdue=Decimal(str(customer.get("total_overdue", "0"))),
+                invoice_count=int(customer.get("invoice_count", 0)),
+                currency=currency,
+            )
+            results.append(record)
+
+        logger.info("ar_generate_dunning_completed", extra={
+            "letters_generated": len(results),
+        })
+
+        return results
+
+    # =========================================================================
+    # Auto Cash Application
+    # =========================================================================
+
+    def auto_apply_payment(
+        self,
+        payment_id: UUID,
+        customer_id: UUID,
+        payment_amount: Decimal,
+        open_invoices: Sequence[dict],
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> ModulePostingResult:
+        """
+        Automatically apply a payment to open invoices (oldest-first).
+
+        Engine: AllocationEngine (FIFO) to distribute across invoices.
+        Engine: ReconciliationManager.apply_payment() for link creation.
+        Reuses existing ar.receipt_applied profile — no new profile needed.
+        """
+        try:
+            # Sort invoices oldest-first for FIFO application
+            sorted_invoices = sorted(
+                open_invoices,
+                key=lambda inv: inv.get("due_date", inv.get("invoice_date", "")),
+            )
+
+            invoice_ids = [inv["invoice_id"] for inv in sorted_invoices]
+
+            logger.info("ar_auto_apply_payment_started", extra={
+                "payment_id": str(payment_id),
+                "customer_id": str(customer_id),
+                "payment_amount": str(payment_amount),
+                "invoice_count": len(invoice_ids),
+            })
+
+            # Delegate to existing apply_payment (FIFO allocation + reconciliation)
+            result = self.apply_payment(
+                payment_id=payment_id,
+                invoice_ids=invoice_ids,
+                effective_date=effective_date,
+                actor_id=actor_id,
+                payment_amount=payment_amount,
+                currency=currency,
+                allocation_method=AllocationMethod.FIFO,
+            )
+
+            logger.info("ar_auto_apply_payment_completed", extra={
+                "payment_id": str(payment_id),
+                "status": result.status.value,
+            })
+
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Credit Management
+    # =========================================================================
+
+    def check_credit_limit(
+        self,
+        customer_id: UUID,
+        order_amount: Decimal,
+        current_balance: Decimal,
+        credit_limit: Decimal,
+        actor_id: UUID,
+    ) -> CreditDecision:
+        """
+        Check if an order would exceed the customer credit limit.
+
+        No posting — pure domain evaluation.
+
+        Returns:
+            CreditDecision with approved=True/False.
+        """
+        from uuid import uuid4 as _uuid4
+
+        projected_balance = current_balance + order_amount
+        approved = projected_balance <= credit_limit
+
+        logger.info("ar_check_credit_limit", extra={
+            "customer_id": str(customer_id),
+            "order_amount": str(order_amount),
+            "current_balance": str(current_balance),
+            "credit_limit": str(credit_limit),
+            "projected_balance": str(projected_balance),
+            "approved": approved,
+        })
+
+        return CreditDecision(
+            id=_uuid4(),
+            customer_id=customer_id,
+            decision_date=self._clock.now().date(),
+            previous_limit=credit_limit,
+            new_limit=None,
+            order_amount=order_amount,
+            approved=approved,
+            reason="Within limit" if approved else f"Projected balance {projected_balance} exceeds limit {credit_limit}",
+            decided_by=actor_id,
+        )
+
+    def update_credit_limit(
+        self,
+        customer_id: UUID,
+        previous_limit: Decimal,
+        new_limit: Decimal,
+        actor_id: UUID,
+        reason: str | None = None,
+    ) -> CreditDecision:
+        """
+        Update a customer's credit limit.
+
+        No posting — returns CreditDecision record.
+        """
+        from uuid import uuid4 as _uuid4
+
+        logger.info("ar_update_credit_limit", extra={
+            "customer_id": str(customer_id),
+            "previous_limit": str(previous_limit),
+            "new_limit": str(new_limit),
+        })
+
+        return CreditDecision(
+            id=_uuid4(),
+            customer_id=customer_id,
+            decision_date=self._clock.now().date(),
+            previous_limit=previous_limit,
+            new_limit=new_limit,
+            approved=True,
+            reason=reason or f"Credit limit updated from {previous_limit} to {new_limit}",
+            decided_by=actor_id,
+        )
+
+    # =========================================================================
+    # Small Balance Write-Off
+    # =========================================================================
+
+    def auto_write_off_small_balances(
+        self,
+        threshold: Decimal,
+        small_balance_invoices: Sequence[dict],
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> list[ModulePostingResult]:
+        """
+        Batch write-off small balances below a threshold.
+
+        Loops existing record_write_off() for each qualifying invoice.
+        Reuses existing ar.write_off profile — no new profile needed.
+        """
+        results: list[ModulePostingResult] = []
+
+        logger.info("ar_auto_write_off_started", extra={
+            "threshold": str(threshold),
+            "candidate_count": len(small_balance_invoices),
+        })
+
+        for inv in small_balance_invoices:
+            balance = Decimal(str(inv.get("balance", "0")))
+            if Decimal("0") < balance <= threshold:
+                result = self.record_write_off(
+                    write_off_id=inv["invoice_id"],
+                    invoice_id=inv["invoice_id"],
+                    customer_id=inv["customer_id"],
+                    amount=balance,
+                    effective_date=effective_date,
+                    actor_id=actor_id,
+                    currency=currency,
+                    reason=f"Small balance write-off (threshold: {threshold})",
+                )
+                results.append(result)
+
+        logger.info("ar_auto_write_off_completed", extra={
+            "total_written_off": sum(1 for r in results if r.is_success),
+            "total_failed": sum(1 for r in results if not r.is_success),
+        })
+
+        return results
+
+    # =========================================================================
+    # Finance Charges
+    # =========================================================================
+
+    def record_finance_charge(
+        self,
+        charge_id: UUID,
+        customer_id: UUID,
+        amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+        period: str | None = None,
+        annual_rate: Decimal | None = None,
+    ) -> ModulePostingResult:
+        """
+        Record a finance charge for late payment.
+
+        Profile: ar.finance_charge -> ARFinanceCharge
+        (Dr Accounts Receivable / Cr Interest Income)
+        """
+        try:
+            payload: dict = {
+                "customer_id": str(customer_id),
+                "charge_amount": str(amount),
+                "period": period,
+            }
+            if annual_rate is not None:
+                payload["annual_rate"] = str(annual_rate)
+
+            logger.info("ar_record_finance_charge_started", extra={
+                "charge_id": str(charge_id),
+                "customer_id": str(customer_id),
+                "amount": str(amount),
+                "period": period,
+            })
+
+            result = self._poster.post_event(
+                event_type="ar.finance_charge",
+                payload=payload,
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+            )
+
+            if result.is_success:
+                self._session.commit()
+                logger.info("ar_record_finance_charge_committed", extra={
+                    "charge_id": str(charge_id),
                     "status": result.status.value,
                 })
             else:

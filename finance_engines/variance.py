@@ -1,7 +1,38 @@
 """
-Variance Engine - Calculate price, quantity, and FX variances.
+finance_engines.variance -- Price, quantity, FX, and standard cost variance calculations.
 
-Pure functions with no I/O. All inputs passed explicitly.
+Responsibility:
+    Calculate variances between expected and actual values for prices,
+    quantities, foreign exchange rates, and standard costs.  Provides
+    variance allocation across multiple targets with deterministic
+    rounding (remainder to last target).
+
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values.
+    Consumed by the matching engine and the engine dispatcher (via invokers).
+
+Invariants enforced:
+    - R6 (replay safety): identical inputs produce identical outputs;
+      no internal state or clock access.
+    - R16 (ISO 4217): currency consistency enforced across expected/actual
+      values; mismatches raise ValueError.
+    - R17 (precision-derived tolerance): allocation rounding uses
+      Decimal quantize to 2 decimal places; remainder assigned to last target.
+    - Purity: no clock access, no I/O.
+
+Failure modes:
+    - ValueError from ``price_variance`` and ``standard_cost_variance`` if
+      expected and actual currencies do not match.
+    - ValueError from ``allocate_variance`` if total weight is zero.
+    - Division-by-zero safe: variance_percent returns Decimal("0") when
+      expected is zero.
+
+Audit relevance:
+    Variance results drive PPV (Purchase Price Variance) and SPV (Standard
+    Price Variance) postings to variance accounts.  FX variances support
+    period-end revaluation entries.  All calculations are traced via
+    ``@traced_engine``.
 
 Usage:
     from finance_engines.variance import VarianceCalculator, VarianceType
@@ -96,8 +127,21 @@ class VarianceCalculator:
     """
     Pure function calculator for variances.
 
-    No I/O, no database access, fully deterministic.
-    All reference data passed as parameters.
+    Contract:
+        No I/O, no database access, fully deterministic.
+        All reference data passed as parameters.
+    Guarantees:
+        - ``price_variance`` formula: (Actual - Expected) * Quantity.
+        - ``quantity_variance`` formula: (Actual Qty - Expected Qty) * Standard Price.
+        - ``fx_variance`` formula: Original Amount * (Current Rate - Original Rate).
+        - ``allocate_variance`` distributes proportionally with rounding
+          remainder assigned to the last target (deterministic).
+        - ``is_favorable`` semantics: True when actual < expected for cost
+          variances; True when gain for FX.
+    Non-goals:
+        - Does not interpret favorability in the context of assets vs
+          liabilities for FX; callers must apply context.
+        - Does not persist variance results.
     """
 
     @traced_engine("variance", "1.0", fingerprint_fields=("expected_price", "actual_price", "quantity"))
@@ -110,7 +154,15 @@ class VarianceCalculator:
         """
         Calculate price variance (PPV, SPV, etc.).
 
-        Formula: (Actual Price - Expected Price) × Quantity
+        Formula: (Actual Price - Expected Price) x Quantity
+
+        Preconditions:
+            expected_price and actual_price must be in the same currency.
+            quantity is a Decimal (never float).
+
+        Postconditions:
+            Returns VarianceResult where variance = (actual - expected) * qty.
+            is_favorable is True when actual < expected (cost saving).
 
         Args:
             expected_price: Expected/standard unit price (e.g., PO price)
@@ -176,7 +228,15 @@ class VarianceCalculator:
         """
         Calculate quantity/usage variance.
 
-        Formula: (Actual Quantity - Expected Quantity) × Standard Price
+        Formula: (Actual Quantity - Expected Quantity) x Standard Price
+
+        Preconditions:
+            expected_quantity and actual_quantity are Decimal (never float).
+            standard_price is a valid Money instance.
+
+        Postconditions:
+            Returns VarianceResult where variance = (actual_qty - expected_qty) * price.
+            is_favorable is True when actual_qty < expected_qty (usage saving).
 
         Args:
             expected_quantity: Expected/standard quantity
@@ -231,7 +291,16 @@ class VarianceCalculator:
         """
         Calculate foreign exchange variance.
 
-        Formula: Original Amount × (Current Rate - Original Rate)
+        Formula: Original Amount x (Current Rate - Original Rate)
+
+        Preconditions:
+            original_rate and current_rate are Decimal (never float).
+            functional_currency is a valid ISO 4217 code or Currency.
+
+        Postconditions:
+            Returns VarianceResult where variance = amount * (current - original).
+            Result currency is the functional_currency.
+            is_favorable is True when the rate movement produces a gain.
 
         Args:
             original_amount: Amount in foreign currency
@@ -300,7 +369,15 @@ class VarianceCalculator:
         """
         Calculate standard cost variance.
 
-        Formula: (Actual Cost - Standard Cost) × Quantity
+        Formula: (Actual Cost - Standard Cost) x Quantity
+
+        Preconditions:
+            standard_cost and actual_cost must be in the same currency.
+            quantity is a Decimal (never float).
+
+        Postconditions:
+            Returns VarianceResult where variance = (actual - standard) * qty.
+            is_favorable is True when actual < standard (cost saving).
 
         Args:
             standard_cost: Standard/expected unit cost

@@ -1,0 +1,11 @@
+engines:
+- engine_name: variance
+  version_constraint: 1.*
+  parameters:
+    tolerance_percent: 5.0
+    tolerance_amount: 10.0
+- engine_name: allocation
+  version_constraint: 1.*
+  parameters:
+    method: prorata
+    rounding_method: largest_remainder

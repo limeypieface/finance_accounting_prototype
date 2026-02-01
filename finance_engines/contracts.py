@@ -1,10 +1,33 @@
 """
-Engine Contracts - Typed declarations for each pure engine.
+Module: finance_engines.contracts
+Responsibility:
+    Typed declarations (EngineContract) for each pure engine.  Each
+    contract declares engine name, version, JSON Schema for configurable
+    parameters, and fingerprint rules.  The CompiledPolicyPack compiler
+    validates that every policy's ``required_engines`` exist and that
+    ``engine_parameters_ref`` satisfies the engine's ``parameter_schema``.
 
-Each engine declares its name, version, parameter schema (JSON Schema),
-and fingerprint rules. The CompiledPolicyPack compiler validates that
-every policy's required_engines exist and that engine_parameters_ref
-satisfies the engine's parameter_schema.
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values (no imports needed here).
+
+Invariants enforced:
+    - R14 (no central dispatch): engine registry is declarative; no
+      if/switch on event_type.
+    - R15 (open/closed compliance): adding a new engine requires only a
+      new EngineContract and registration in ``ENGINE_CONTRACTS``.
+    - R23 (strategy lifecycle): engine_version enables replay
+      compatibility checks.
+
+Failure modes:
+    - KeyError when looking up an unregistered engine name in
+      ``ENGINE_CONTRACTS``.
+
+Audit relevance:
+    Engine contracts are the authoritative schema for configuration
+    validation.  Any mismatch between a policy's engine_parameters_ref
+    and the contract's parameter_schema is a compile-time error,
+    preventing misconfigured engine invocations from reaching production.
 
 Usage:
     from finance_engines.contracts import ENGINE_CONTRACTS, EngineContract
@@ -22,6 +45,16 @@ from typing import Any
 @dataclass(frozen=True)
 class EngineContract:
     """Declares the contract for a pure calculation engine.
+
+    Contract:
+        Frozen dataclass serving as the declarative specification for a
+        single engine.  Used by the config compiler and engine dispatcher.
+    Guarantees:
+        - ``engine_name`` is unique within ``ENGINE_CONTRACTS``.
+        - ``parameter_schema`` is a valid JSON Schema dict (validated at
+          compile time by the policy compiler).
+    Non-goals:
+        - Does not contain engine implementation logic; it is metadata only.
 
     Attributes:
         engine_name: Unique engine identifier (matches config references).

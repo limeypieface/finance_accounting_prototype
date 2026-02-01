@@ -1,7 +1,35 @@
 """
-Inventory Domain Models.
+Inventory Domain Models (``finance_modules.inventory.models``).
 
-The nouns of inventory: items, locations, stock levels, movements.
+Responsibility
+--------------
+Frozen value objects representing the nouns of inventory management: items,
+locations, stock levels, receipts, issues, adjustments, transfers, cycle
+counts, ABC classifications, reorder points, and item-value records.
+
+Architecture
+------------
+Layer: **Modules** -- pure domain data structures.  All dataclasses are
+``frozen=True`` (immutable) to align with the event-sourced, append-only
+design.  These models carry NO database identity and NO I/O; they are used
+as DTOs between the service layer and callers.
+
+Invariants
+----------
+- ``StockLevel`` enforces non-negative ``quantity_on_hand`` and
+  ``quantity_reserved``, and validates that
+  ``quantity_available == quantity_on_hand - quantity_reserved``.
+- All monetary fields use ``Decimal`` -- never ``float`` (R16/R17).
+
+Failure Modes
+-------------
+- Construction of a ``StockLevel`` with inconsistent quantities raises
+  ``ValueError`` immediately.
+
+Audit Relevance
+---------------
+These DTOs are ephemeral carriers -- the audit-grade source of truth is the
+``JournalEntry`` / ``JournalLine`` written by the kernel, not these objects.
 """
 
 from dataclasses import dataclass, field
@@ -16,7 +44,7 @@ logger = get_logger("modules.inventory.models")
 
 
 class ItemType(Enum):
-    """Types of inventory items."""
+    """Classification of inventory items by production stage."""
     RAW_MATERIAL = "raw_material"
     WIP = "wip"
     FINISHED_GOODS = "finished_goods"
@@ -25,7 +53,7 @@ class ItemType(Enum):
 
 
 class MovementType(Enum):
-    """Types of inventory movements."""
+    """Enumeration of inventory movement categories for event classification."""
     RECEIPT = "receipt"
     ISSUE = "issue"
     TRANSFER = "transfer"
@@ -60,7 +88,12 @@ class TransferStatus(Enum):
 
 @dataclass(frozen=True)
 class Item:
-    """An inventory item (SKU)."""
+    """
+    An inventory item (SKU / stock-keeping unit).
+
+    Contract: Immutable value object.  ``standard_cost`` is expressed in the
+    entity's functional currency and uses ``Decimal`` (never float).
+    """
     id: UUID
     code: str
     description: str
@@ -78,7 +111,11 @@ class Item:
 
 @dataclass(frozen=True)
 class Location:
-    """A storage location (warehouse, bin, etc.)."""
+    """
+    A storage location (warehouse, bin, staging area, inspection zone).
+
+    Contract: Immutable.  ``parent_id`` enables hierarchical location trees.
+    """
     id: UUID
     code: str
     name: str
@@ -89,7 +126,17 @@ class Location:
 
 @dataclass(frozen=True)
 class StockLevel:
-    """Current stock level for an item at a location."""
+    """
+    Current stock level for an item at a location.
+
+    Contract: Immutable.  Construction validates the quantity invariant:
+    ``quantity_available == quantity_on_hand - quantity_reserved``.
+
+    Guarantees: ``quantity_on_hand >= 0`` and ``quantity_reserved >= 0``.
+
+    Raises:
+        ValueError: If any quantity invariant is violated at construction time.
+    """
     id: UUID
     item_id: UUID
     location_id: UUID
@@ -100,6 +147,7 @@ class StockLevel:
     serial_number: str | None = None
 
     def __post_init__(self):
+        # INVARIANT: stock quantities must be non-negative and internally consistent.
         # Validate quantity_on_hand is non-negative
         if self.quantity_on_hand < 0:
             raise ValueError("quantity_on_hand cannot be negative")
@@ -142,7 +190,12 @@ class StockLevel:
 
 @dataclass(frozen=True)
 class InventoryReceipt:
-    """Receipt of inventory (from PO, production, return)."""
+    """
+    Receipt of inventory (from purchase order, production order, or return).
+
+    Contract: Immutable.  ``total_cost`` should equal ``quantity * unit_cost``
+    (caller-enforced).
+    """
     id: UUID
     item_id: UUID
     location_id: UUID
@@ -158,7 +211,12 @@ class InventoryReceipt:
 
 @dataclass(frozen=True)
 class InventoryIssue:
-    """Issue of inventory (to production, sales, scrap)."""
+    """
+    Issue of inventory (to production, sales, or scrap).
+
+    Contract: Immutable.  ``total_cost`` is determined by the costing engine
+    (FIFO/LIFO consumption), not by the caller.
+    """
     id: UUID
     item_id: UUID
     location_id: UUID
@@ -174,7 +232,11 @@ class InventoryIssue:
 
 @dataclass(frozen=True)
 class InventoryAdjustment:
-    """Adjustment to inventory quantity or value."""
+    """
+    Adjustment to inventory quantity or value (cycle count, physical count, etc.).
+
+    Contract: Immutable.  ``reason_code`` is mandatory for audit traceability.
+    """
     id: UUID
     item_id: UUID
     location_id: UUID
@@ -187,7 +249,11 @@ class InventoryAdjustment:
 
 @dataclass(frozen=True)
 class StockTransfer:
-    """Transfer of inventory between locations."""
+    """
+    Transfer of inventory between locations.
+
+    Contract: Immutable.  ``from_location_id != to_location_id`` (caller-enforced).
+    """
     id: UUID
     item_id: UUID
     from_location_id: UUID
@@ -200,7 +266,12 @@ class StockTransfer:
 
 @dataclass(frozen=True)
 class CycleCount:
-    """A cycle count result for an item at a location."""
+    """
+    A cycle count result for an item at a location.
+
+    Contract: Immutable.  ``variance_quantity`` should equal
+    ``actual_quantity - expected_quantity`` (caller-enforced).
+    """
     id: UUID
     count_date: date
     item_id: str
@@ -216,7 +287,11 @@ class CycleCount:
 
 @dataclass(frozen=True)
 class ABCClassification:
-    """ABC analysis result for an item."""
+    """
+    ABC analysis result for an item (Pareto-based inventory prioritisation).
+
+    Contract: Immutable.  ``classification`` is one of ``"A"``, ``"B"``, ``"C"``.
+    """
     item_id: str
     classification: str  # A, B, C
     annual_value: Decimal
@@ -226,7 +301,12 @@ class ABCClassification:
 
 @dataclass(frozen=True)
 class ReorderPoint:
-    """Computed reorder point parameters for an item."""
+    """
+    Computed reorder-point (ROP) parameters for an item.
+
+    Contract: Immutable.  ``eoq`` is zero when Economic Order Quantity was not
+    requested.
+    """
     item_id: str
     location_id: str | None
     reorder_point: Decimal
@@ -238,6 +318,10 @@ class ReorderPoint:
 
 @dataclass(frozen=True)
 class ItemValue:
-    """Item annual value for ABC classification."""
+    """
+    Item annual value for ABC classification input.
+
+    Contract: Immutable.  ``annual_value`` uses ``Decimal`` (never float).
+    """
     item_id: str
     annual_value: Decimal

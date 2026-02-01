@@ -1,17 +1,46 @@
 """
-Accounts Payable Module Service - Orchestrates AP operations via engines + kernel.
+Accounts Payable Module Service (``finance_modules.ap.service``).
 
-Thin glue layer that:
-1. Calls ReconciliationManager for payment matching and application
-2. Calls AllocationEngine for distributing amounts across invoice lines
-3. Calls MatchingEngine for 3-way PO/receipt/invoice matching
-4. Calls AgingCalculator for AP aging analysis
-5. Calls ModulePostingService for journal entry creation
+Responsibility
+--------------
+Orchestrates AP operations -- vendor invoices, payments, three-way matching,
+aging, accruals, prepayments, and batch payment runs -- by delegating pure
+computation to ``finance_engines`` and journal persistence to
+``finance_kernel.services.module_posting_service``.
 
-All computation lives in engines. All posting lives in kernel.
-This service owns the transaction boundary (R7 compliance).
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue.  ``APService`` is the sole public entry
+point for AP operations.  It composes stateless engines (``AllocationEngine``,
+``MatchingEngine``, ``AgingCalculator``), stateful engines
+(``ReconciliationManager``, ``LinkGraphService``), and the kernel
+``ModulePostingService``.
 
-Usage:
+Invariants enforced
+-------------------
+* R7  -- Each public method owns the transaction boundary
+          (``commit`` on success, ``rollback`` on failure or exception).
+* R14 -- Event type selection is data-driven; no ``if/switch`` on event_type
+          inside the posting path.
+* L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
+* L5  -- Atomicity: link creation and journal posting share a single
+          transaction (``auto_commit=False``).
+
+Failure modes
+-------------
+* Guard rejection or kernel validation  -> ``ModulePostingResult`` with
+  ``is_success == False``; session rolled back.
+* Unexpected exception  -> session rolled back, exception re-raised.
+* Engine errors (e.g., invalid match)  -> propagate before posting attempt.
+
+Audit relevance
+---------------
+Structured log events emitted at operation start and commit/rollback for
+every public method, carrying IDs, amounts, and statuses.  All journal
+entries feed the kernel audit chain (R11).
+
+Usage::
+
     service = APService(session, role_resolver, clock)
     result = service.record_invoice(
         invoice_id=uuid4(), vendor_id=uuid4(),
@@ -54,6 +83,13 @@ from finance_engines.matching import (
     MatchType,
 )
 from finance_engines.aging import AgingCalculator, AgingReport
+from finance_modules.ap.models import (
+    HoldStatus,
+    PaymentRun,
+    PaymentRunLine,
+    PaymentRunStatus,
+    VendorHold,
+)
 
 logger = get_logger("modules.ap.service")
 
@@ -61,6 +97,26 @@ logger = get_logger("modules.ap.service")
 class APService:
     """
     Orchestrates accounts payable operations through engines and kernel.
+
+    Contract
+    --------
+    * Every posting method returns ``ModulePostingResult``; callers inspect
+      ``result.is_success`` to determine outcome.
+    * Non-posting helpers (``calculate_aging``, ``hold_vendor``, etc.) return
+      pure domain objects with no side-effects on the journal.
+
+    Guarantees
+    ----------
+    * Session is committed only on ``result.is_success``; otherwise rolled back.
+    * Engine link writes and journal writes share a single transaction
+      (``ModulePostingService`` runs with ``auto_commit=False``).
+    * Clock is injectable for deterministic testing.
+
+    Non-goals
+    ---------
+    * Does NOT own account-code resolution (delegated to kernel via ROLES).
+    * Does NOT enforce fiscal-period locks directly (kernel ``PeriodService``
+      handles R12/R13).
 
     Engine composition:
     - ReconciliationManager: payment matching and application
@@ -125,6 +181,15 @@ class APService:
         - Without PO: "ap.invoice_received" (where-clause dispatches to expense profile)
 
         Links: Creates INVOICE artifact ref for downstream payment matching.
+
+        Preconditions:
+            - ``amount`` must be a positive ``Decimal`` (guard enforced by profile).
+            - ``currency`` must be a valid ISO 4217 code (R16).
+        Postconditions:
+            - On success: one POSTED journal entry, session committed.
+            - On failure: session rolled back, result describes rejection reason.
+        Raises:
+            Exception: re-raised after rollback for unexpected failures.
         """
         try:
             # Build payload
@@ -196,6 +261,15 @@ class APService:
         Engine: ReconciliationManager.apply_payment() creates PAID_BY link
                 between invoice and payment artifacts.
         Profile: ap.payment or ap.payment_with_discount (if discount present)
+
+        Preconditions:
+            - ``amount`` > 0 (guard enforced by profile).
+            - ``invoice_id`` references a previously recorded invoice.
+        Postconditions:
+            - PAID_BY economic link persisted in same transaction as journal entry.
+            - On success: session committed with link + journal atomically.
+        Raises:
+            Exception: re-raised after rollback for unexpected failures.
         """
         try:
             invoice_ref = ArtifactRef.invoice(invoice_id)
@@ -285,6 +359,15 @@ class APService:
         Engine: MatchingEngine.create_match() evaluates PO/receipt/invoice match.
         Engine: ReconciliationManager creates FULFILLED_BY links in the link graph.
         Profile: ap.invoice_received (PO-matched variant via where-clause dispatch)
+
+        Preconditions:
+            - ``receipt_ids`` must be non-empty for a valid 3-way match.
+            - ``po_id`` references an existing purchase order.
+        Postconditions:
+            - FULFILLED_BY links created: PO -> Receipt(s) -> Invoice.
+            - Match result recorded; journal entry posted if match succeeds.
+        Raises:
+            Exception: re-raised after rollback for unexpected failures.
         """
         try:
             invoice_ref = ArtifactRef.invoice(invoice_id)
@@ -315,7 +398,7 @@ class APService:
             match_result: MatchResult = self._matching.create_match(
                 documents=all_documents,
                 match_type=MatchType.THREE_WAY,
-                as_of_date=date.today(),
+                as_of_date=effective_date,
                 tolerance=tolerance,
             )
 
@@ -452,6 +535,13 @@ class APService:
 
         Profile: ap.invoice_cancelled -> APInvoiceCancelled
         Reverses the original invoice GL entries.
+
+        Preconditions:
+            - ``amount`` matches the original invoice total.
+        Postconditions:
+            - Reversal journal entry posted (R10 -- original entry unchanged).
+        Raises:
+            Exception: re-raised after rollback for unexpected failures.
         """
         try:
             payload: dict = {
@@ -513,6 +603,13 @@ class APService:
 
         Profile: ap.invoice_received_inventory -> APInvoiceInventory
         Debits Inventory (not Expense) and credits AP.
+
+        Preconditions:
+            - ``amount`` > 0, ``currency`` valid ISO 4217.
+        Postconditions:
+            - INVENTORY role debited (resolved to COA at posting time, L1).
+        Raises:
+            Exception: re-raised after rollback for unexpected failures.
         """
         try:
             payload: dict = {
@@ -574,6 +671,13 @@ class APService:
         Record a period-end AP accrual for uninvoiced receipts.
 
         Profile: ap.accrual_recorded -> APAccrualRecorded
+
+        Preconditions:
+            - ``amount`` > 0; period must be OPEN (R12 enforced by kernel).
+        Postconditions:
+            - Dr Expense / Cr Accrued Liability posted.
+        Raises:
+            Exception: re-raised after rollback for unexpected failures.
         """
         try:
             payload: dict = {
@@ -626,6 +730,13 @@ class APService:
         Reverse a previously recorded AP accrual.
 
         Profile: ap.accrual_reversed -> APAccrualReversed
+
+        Preconditions:
+            - ``amount`` matches the original accrual amount.
+        Postconditions:
+            - Dr Accrued Liability / Cr Expense posted (mirror of accrual).
+        Raises:
+            Exception: re-raised after rollback for unexpected failures.
         """
         try:
             payload: dict = {
@@ -679,6 +790,13 @@ class APService:
         Record an advance payment to a vendor.
 
         Profile: ap.prepayment_recorded -> APPrepaymentRecorded
+
+        Preconditions:
+            - ``amount`` > 0.
+        Postconditions:
+            - Dr Prepaid Expense / Cr Cash posted.
+        Raises:
+            Exception: re-raised after rollback for unexpected failures.
         """
         try:
             payload: dict = {
@@ -731,6 +849,14 @@ class APService:
         Engine: ReconciliationManager creates PAID_BY link between
                 prepayment and invoice artifacts.
         Profile: ap.prepayment_applied -> APPrepaymentApplied
+
+        Preconditions:
+            - ``amount`` <= outstanding prepayment balance.
+            - ``invoice_id`` references a recorded invoice.
+        Postconditions:
+            - PAID_BY link persisted; Dr AP / Cr Prepaid Expense posted.
+        Raises:
+            Exception: re-raised after rollback for unexpected failures.
         """
         try:
             # Engine: create link between prepayment and invoice
@@ -782,3 +908,231 @@ class APService:
         except Exception:
             self._session.rollback()
             raise
+
+    # =========================================================================
+    # Batch Payment Runs
+    # =========================================================================
+
+    def create_payment_run(
+        self,
+        run_id: UUID,
+        payment_date: date,
+        invoices: Sequence[dict],
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> PaymentRun:
+        """
+        Create a payment run selecting invoices for batch payment.
+
+        No posting -- pure domain operation. Produces a PaymentRun with
+        lines ready for execution.
+
+        Engine: AgingCalculator used upstream by caller to select invoices.
+
+        Preconditions:
+            - ``invoices`` is a non-empty sequence of dicts with ``amount`` keys.
+        Postconditions:
+            - Returns a ``PaymentRun`` in DRAFT status (no DB side-effects).
+        """
+        from uuid import uuid4
+
+        total = sum(Decimal(str(inv.get("amount", "0"))) for inv in invoices)
+
+        logger.info("ap_create_payment_run", extra={
+            "run_id": str(run_id),
+            "payment_date": payment_date.isoformat(),
+            "invoice_count": len(invoices),
+            "total_amount": str(total),
+        })
+
+        return PaymentRun(
+            id=run_id,
+            payment_date=payment_date,
+            currency=currency,
+            status=PaymentRunStatus.DRAFT,
+            total_amount=total,
+            line_count=len(invoices),
+            created_by=actor_id,
+        )
+
+    def execute_payment_run(
+        self,
+        run: PaymentRun,
+        lines: Sequence[PaymentRunLine],
+        actor_id: UUID,
+    ) -> list[ModulePostingResult]:
+        """
+        Execute a payment run, posting each line via record_payment().
+
+        Reuses existing APPayment profile for each individual payment.
+        Returns list of posting results for each line.
+
+        Preconditions:
+            - ``run`` is in DRAFT or APPROVED status.
+            - Each ``PaymentRunLine`` references a valid invoice.
+        Postconditions:
+            - One ``ModulePostingResult`` per line; each line posts independently.
+        """
+        from uuid import uuid4
+
+        results: list[ModulePostingResult] = []
+
+        logger.info("ap_execute_payment_run_started", extra={
+            "run_id": str(run.id),
+            "line_count": len(lines),
+            "total_amount": str(run.total_amount),
+        })
+
+        for line in lines:
+            payment_id = uuid4()
+            result = self.record_payment(
+                payment_id=payment_id,
+                invoice_id=line.invoice_id,
+                amount=line.amount,
+                effective_date=run.payment_date,
+                actor_id=actor_id,
+                currency=run.currency,
+                vendor_id=line.vendor_id,
+                discount_amount=line.discount_amount if line.discount_amount > 0 else None,
+            )
+            results.append(result)
+
+        logger.info("ap_execute_payment_run_completed", extra={
+            "run_id": str(run.id),
+            "total_posted": sum(1 for r in results if r.is_success),
+            "total_failed": sum(1 for r in results if not r.is_success),
+        })
+
+        return results
+
+    # =========================================================================
+    # Auto-Matching
+    # =========================================================================
+
+    def auto_match_invoices(
+        self,
+        candidates: Sequence[dict],
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+        tolerance: MatchTolerance | None = None,
+    ) -> list[MatchResult]:
+        """
+        Batch auto-match invoices to POs/receipts.
+
+        Engine: MatchingEngine.create_match() for each candidate set.
+        Engine: ReconciliationManager for link creation.
+        No new profile — uses existing ap.invoice_received dispatch.
+
+        Returns list of MatchResults for each attempted match.
+        """
+        results: list[MatchResult] = []
+
+        logger.info("ap_auto_match_started", extra={
+            "candidate_count": len(candidates),
+            "effective_date": effective_date.isoformat(),
+        })
+
+        for candidate in candidates:
+            invoice_id = candidate.get("invoice_id")
+            po_id = candidate.get("po_id")
+            invoice_amount = candidate.get("invoice_amount")
+            po_amount = candidate.get("po_amount")
+
+            invoice_candidate = MatchCandidate(
+                document_type="INVOICE",
+                document_id=invoice_id,
+                amount=Money.of(Decimal(str(invoice_amount)), currency) if invoice_amount else None,
+                date=effective_date,
+            )
+            po_candidate = MatchCandidate(
+                document_type="PO",
+                document_id=po_id,
+                amount=Money.of(Decimal(str(po_amount)), currency) if po_amount else None,
+            )
+
+            match_result = self._matching.create_match(
+                documents=[po_candidate, invoice_candidate],
+                match_type=MatchType.TWO_WAY,
+                as_of_date=effective_date,
+                tolerance=tolerance,
+            )
+            results.append(match_result)
+
+        from finance_engines.matching import MatchStatus
+        matched_statuses = {MatchStatus.MATCHED, MatchStatus.VARIANCE}
+        logger.info("ap_auto_match_completed", extra={
+            "total_matched": sum(1 for r in results if r.status in matched_statuses),
+            "total_unmatched": sum(1 for r in results if r.status not in matched_statuses),
+        })
+
+        return results
+
+    # =========================================================================
+    # Vendor Hold/Release
+    # =========================================================================
+
+    def hold_vendor(
+        self,
+        hold_id: UUID,
+        vendor_id: UUID,
+        reason: str,
+        hold_date: date,
+        actor_id: UUID,
+    ) -> VendorHold:
+        """
+        Place a payment hold on a vendor.
+
+        No posting -- pure domain operation. Returns VendorHold record.
+        Downstream payment methods should check for active holds.
+
+        Preconditions:
+            - ``reason`` is non-empty.
+        Postconditions:
+            - Returns ``VendorHold`` with ``status == ACTIVE`` (no DB write).
+        """
+        logger.info("ap_vendor_hold_placed", extra={
+            "vendor_id": str(vendor_id),
+            "reason": reason,
+            "hold_date": hold_date.isoformat(),
+        })
+
+        return VendorHold(
+            id=hold_id,
+            vendor_id=vendor_id,
+            reason=reason,
+            hold_date=hold_date,
+            held_by=actor_id,
+            status=HoldStatus.ACTIVE,
+        )
+
+    def release_vendor_hold(
+        self,
+        hold: VendorHold,
+        release_date: date,
+        actor_id: UUID,
+    ) -> VendorHold:
+        """
+        Release a vendor payment hold.
+
+        No posting -- returns updated VendorHold with RELEASED status.
+        Since VendorHold is frozen, creates a new instance via ``dataclasses.replace``.
+
+        Preconditions:
+            - ``hold.status`` is ``ACTIVE``.
+        Postconditions:
+            - Returns new ``VendorHold`` with ``status == RELEASED`` (no DB write).
+        """
+        logger.info("ap_vendor_hold_released", extra={
+            "hold_id": str(hold.id),
+            "vendor_id": str(hold.vendor_id),
+            "release_date": release_date.isoformat(),
+        })
+
+        from dataclasses import replace
+        return replace(
+            hold,
+            status=HoldStatus.RELEASED,
+            released_date=release_date,
+            released_by=actor_id,
+        )

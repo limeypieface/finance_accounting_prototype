@@ -1,7 +1,29 @@
 """
 Tax Domain Models.
 
-The nouns of tax: jurisdictions, rates, exemptions, transactions, returns.
+Responsibility:
+    Frozen dataclass DTOs representing the nouns of taxation: jurisdictions,
+    rates, exemptions, transactions, returns, and ASC 740 deferred-tax
+    constructs.
+
+Architecture:
+    finance_modules -- Thin ERP glue (this layer).
+    These models are pure data containers with no I/O, no ORM coupling, and
+    no business logic beyond basic enum classification.
+
+Invariants:
+    - All models are ``frozen=True`` (immutable after construction).
+    - All monetary fields use ``Decimal`` -- NEVER ``float``.
+
+Failure modes:
+    - Construction with invalid enum values raises ``ValueError`` from
+      the ``Enum`` constructor.
+
+Audit relevance:
+    - ``TaxTransaction.is_reported`` and ``TaxReturn.status`` track
+      reporting lifecycle; transitions are governed by ``workflows.py``.
+    - ``TemporaryDifference``, ``DeferredTaxAsset``, ``DeferredTaxLiability``,
+      and ``TaxProvision`` support ASC 740 disclosure.
 """
 
 from dataclasses import dataclass, field
@@ -116,3 +138,58 @@ class TaxReturn:
     status: TaxReturnStatus = TaxReturnStatus.DRAFT
     filed_date: date | None = None
     confirmation_number: str | None = None
+
+
+@dataclass(frozen=True)
+class TemporaryDifference:
+    """A temporary difference between book and tax basis (ASC 740)."""
+    id: UUID
+    description: str
+    book_basis: Decimal
+    tax_basis: Decimal
+    difference_amount: Decimal
+    difference_type: str  # "taxable" or "deductible"
+    tax_rate: Decimal = Decimal("0.21")
+    deferred_amount: Decimal = Decimal("0")
+    period: str = ""
+
+
+@dataclass(frozen=True)
+class DeferredTaxAsset:
+    """A deferred tax asset (ASC 740)."""
+    id: UUID
+    source: str  # e.g. "bad_debt_allowance", "warranty_reserve"
+    amount: Decimal
+    valuation_allowance: Decimal = Decimal("0")
+    net_amount: Decimal = Decimal("0")
+    period: str = ""
+
+
+@dataclass(frozen=True)
+class DeferredTaxLiability:
+    """A deferred tax liability (ASC 740)."""
+    id: UUID
+    source: str  # e.g. "depreciation", "prepaid_expense"
+    amount: Decimal
+    period: str = ""
+
+
+@dataclass(frozen=True)
+class TaxProvision:
+    """Tax provision summary for a period (ASC 740)."""
+    period: str
+    current_tax_expense: Decimal
+    deferred_tax_expense: Decimal
+    total_tax_expense: Decimal
+    effective_rate: Decimal
+    pre_tax_income: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class Jurisdiction:
+    """A tax jurisdiction for multi-jurisdiction calculations."""
+    code: str
+    name: str
+    tax_rate: Decimal
+    jurisdiction_type: str = "state"  # federal, state, local, foreign
+    is_active: bool = True

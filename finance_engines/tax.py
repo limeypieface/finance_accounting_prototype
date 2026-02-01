@@ -1,8 +1,40 @@
 """
-Tax Engine - Calculate taxes for transactions.
+finance_engines.tax -- Tax calculation engine for transactions.
 
-Supports sales tax, VAT, GST, withholding, and compound taxes.
-Pure functions with no I/O - tax rates provided as parameters.
+Responsibility:
+    Calculate taxes for transactions across multiple tax systems:
+    sales tax, VAT, GST, HST, withholding, excise, customs, and use tax.
+    Supports exclusive (tax-on-top), inclusive (tax-included), compound
+    (tax-on-tax), and withholding (tax-deducted) calculation methods.
+
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values.
+    Tax rates are provided as parameters; no config or database access.
+
+Invariants enforced:
+    - R6 (replay safety): identical inputs produce identical outputs;
+      no internal state or clock access.
+    - R16 (ISO 4217): currency propagated through all Money objects;
+      decimal places derived from Currency.decimal_places.
+    - R17 (precision-derived tolerance): all tax amounts rounded using
+      ROUND_HALF_UP to currency-appropriate decimal places.
+    - Purity: no clock access, no I/O.
+
+Failure modes:
+    - ValueError from ``calculate`` if a tax_code is not found in the
+      provided rates dict.
+    - ValueError from ``calculate`` if a rate is not effective on the
+      calculation_date (checked via ``TaxRate.is_effective``).
+    - ValueError from ``calculate_withholding`` if the rate's tax_type
+      is not TaxType.WITHHOLDING.
+    - ValueError from ``TaxRate.__post_init__`` if rate is negative.
+
+Audit relevance:
+    Tax calculations feed directly into GL postings (tax payable/receivable
+    accounts) and tax filing reports.  Each calculation is traced via
+    ``@traced_engine``.  The effective_tax_rate property on results supports
+    variance analysis between expected and actual tax burdens.
 
 Usage:
     from finance_engines.tax import TaxCalculator, TaxRate, TaxType
@@ -213,8 +245,20 @@ class TaxCalculator:
     """
     Calculate taxes for transactions.
 
-    Pure functions - no I/O, no database access.
-    Tax rates provided as parameters.
+    Contract:
+        Pure functions -- no I/O, no database access.
+        Tax rates provided as parameters; no config or env var access.
+    Guarantees:
+        - ``calculate`` applies all requested tax codes in priority order.
+        - Simple taxes are calculated on net amount; compound taxes on
+          the running total (net + prior taxes).
+        - Inclusive calculation correctly extracts taxes from gross amount
+          with rounding remainder assigned to the last simple tax.
+        - Withholding is subtracted, not added.
+    Non-goals:
+        - Does not validate that tax codes match any external tax authority
+          registry; that is the caller's responsibility.
+        - Does not persist tax calculation results.
 
     Handles:
         - Simple tax calculation (exclusive)

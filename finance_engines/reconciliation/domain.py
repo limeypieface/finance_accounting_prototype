@@ -1,8 +1,41 @@
 """
-Reconciliation Domain Objects.
+finance_engines.reconciliation.domain -- Reconciliation domain objects.
 
-Immutable value objects representing reconciliation states, document matches,
-and payment applications. These are pure domain objects with no I/O dependencies.
+Responsibility:
+    Define immutable value objects for reconciliation states, document
+    matches (2-way, 3-way, bank), payment applications, and bank
+    reconciliation lines.  These are the data contracts exchanged between
+    the reconciliation engine and the service layer.
+
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values and
+    finance_kernel/domain/economic_link (ArtifactRef, EconomicLink).
+    The stateful ReconciliationService lives in finance_services/.
+
+Invariants enforced:
+    - SL-G6 (GL-SL reconciliation): ReconciliationState tracks
+      original_amount, applied_amount, remaining_amount and validates
+      their consistency in __post_init__.
+    - R4 (balance conservation): PaymentApplication.create rejects
+      negative applied amounts, preventing silent balance corruption.
+    - R6 (replay safety): all value objects are frozen dataclasses.
+    - Document count guards: DocumentMatch.__post_init__ requires >= 2
+      documents; THREE_WAY requires exactly 3.
+
+Failure modes:
+    - ValueError from ReconciliationState.__post_init__ if amounts are
+      inconsistent (remaining != original - applied, within 0.01 tolerance).
+    - ValueError from PaymentApplication.create if applied_amount is
+      negative.
+    - ValueError from DocumentMatch.__post_init__ if fewer than 2
+      documents or if THREE_WAY has != 3 documents.
+
+Audit relevance:
+    Reconciliation states are used for period-end reporting and subledger
+    GL control reconciliation.  Payment applications create PAID_BY
+    economic links.  Three-way match results produce MATCHED_WITH links
+    and detect price/quantity variances for variance account posting.
 """
 
 from __future__ import annotations
@@ -65,7 +98,7 @@ class ReconciliationState:
     last_activity_date: date | None = None
 
     def __post_init__(self) -> None:
-        # Validate amounts are consistent
+        # INVARIANT [SL-G6]: remaining = original - applied (within rounding tolerance).
         expected_remaining = self.original_amount.amount - self.applied_amount.amount
         if abs(expected_remaining - self.remaining_amount.amount) > Decimal("0.01"):
             logger.critical("reconciliation_state_inconsistent_amounts", extra={
@@ -167,6 +200,7 @@ class PaymentApplication:
         metadata: Mapping[str, Any] | None = None,
     ) -> PaymentApplication:
         """Factory method to create a payment application."""
+        # INVARIANT [R4]: reject negative application amounts to prevent silent balance corruption.
         if applied_amount.is_negative:
             logger.error("payment_application_negative_amount", extra={
                 "source_ref": str(source_ref),
@@ -214,6 +248,7 @@ class DocumentMatch:
     metadata: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        # INVARIANT: a match requires at least 2 documents; THREE_WAY requires exactly 3.
         if len(self.documents) < 2:
             logger.error("document_match_insufficient_documents", extra={
                 "match_id": str(self.match_id),

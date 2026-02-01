@@ -1,0 +1,204 @@
+policies:
+- name: RevenuePointInTime
+  version: 1
+  module: revenue
+  description: Revenue recognized at a point in time (ASC 606 Step 5)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: revenue.recognize_point_in_time
+  meaning:
+    economic_type: REVENUE_RECOGNITION
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCOUNTS_RECEIVABLE
+    credit_role: REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Recognition amount must be positive
+  line_mappings:
+  - role: ACCOUNTS_RECEIVABLE
+    side: debit
+  - role: REVENUE
+    side: credit
+- name: RevenueOverTimeInput
+  version: 1
+  module: revenue
+  description: Revenue recognized over time using input method
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: revenue.recognize_over_time_input
+  meaning:
+    economic_type: REVENUE_RECOGNITION
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: UNBILLED_RECEIVABLE
+    credit_role: REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Recognition amount must be positive
+  line_mappings:
+  - role: UNBILLED_RECEIVABLE
+    side: debit
+  - role: REVENUE
+    side: credit
+- name: RevenueOverTimeOutput
+  version: 1
+  module: revenue
+  description: Revenue recognized over time using output method
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: revenue.recognize_over_time_output
+  meaning:
+    economic_type: REVENUE_RECOGNITION
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: UNBILLED_RECEIVABLE
+    credit_role: REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Recognition amount must be positive
+  line_mappings:
+  - role: UNBILLED_RECEIVABLE
+    side: debit
+  - role: REVENUE
+    side: credit
+- name: RevenuePriceAllocation
+  version: 1
+  module: revenue
+  description: Transaction price allocated to performance obligations
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: revenue.price_allocation
+  meaning:
+    economic_type: REVENUE_ALLOCATION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: CONTRACT_RECEIVABLE
+    credit_role: DEFERRED_REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Allocation amount must be positive
+  line_mappings:
+  - role: CONTRACT_RECEIVABLE
+    side: debit
+  - role: DEFERRED_REVENUE
+    side: credit
+- name: RevenueModificationCumulative
+  version: 1
+  module: revenue
+  description: Contract modification with cumulative catch-up adjustment
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: revenue.modification_cumulative
+  meaning:
+    economic_type: REVENUE_ADJUSTMENT
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCOUNTS_RECEIVABLE
+    credit_role: REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Modification amount must be positive
+  line_mappings:
+  - role: ACCOUNTS_RECEIVABLE
+    side: debit
+  - role: REVENUE
+    side: credit
+- name: RevenueModificationProspective
+  version: 1
+  module: revenue
+  description: Contract modification with prospective treatment
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: revenue.modification_prospective
+  meaning:
+    economic_type: REVENUE_ADJUSTMENT
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: DEFERRED_REVENUE
+    credit_role: REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Modification amount must be positive
+  line_mappings:
+  - role: DEFERRED_REVENUE
+    side: debit
+  - role: REVENUE
+    side: credit
+- name: RevenueVariableUpdate
+  version: 1
+  module: revenue
+  description: Variable consideration estimate updated
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: revenue.variable_consideration_update
+  meaning:
+    economic_type: REVENUE_ADJUSTMENT
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCOUNTS_RECEIVABLE
+    credit_role: REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Variable consideration amount must be positive
+  line_mappings:
+  - role: ACCOUNTS_RECEIVABLE
+    side: debit
+  - role: REVENUE
+    side: credit
+- name: RevenueLicenseRenewal
+  version: 1
+  module: revenue
+  description: License renewal deferred until recognition criteria met
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: revenue.license_renewal
+  meaning:
+    economic_type: REVENUE_RECOGNITION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCOUNTS_RECEIVABLE
+    credit_role: DEFERRED_REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Renewal amount must be positive
+  line_mappings:
+  - role: ACCOUNTS_RECEIVABLE
+    side: debit
+  - role: DEFERRED_REVENUE
+    side: credit

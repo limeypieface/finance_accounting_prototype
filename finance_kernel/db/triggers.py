@@ -1,33 +1,38 @@
 """
-Database-level immutability triggers (R10 Compliance - Defense in Depth).
+Module: finance_kernel.db.triggers
+Responsibility: Loading, installing, and verifying PostgreSQL immutability
+    triggers (R10 Compliance - Layer 2 of 2).  This is the database-level
+    complement to the ORM-level listeners in db/immutability.py.
+Architecture position: Kernel > DB.  May import from db/ only (pathlib for
+    SQL file loading, sqlalchemy for execution).  MUST NOT import from
+    models/, services/, selectors/, domain/, or outer layers.
 
-This module provides PostgreSQL triggers that enforce immutability rules
-at the database level, protecting against:
-- Bulk UPDATE statements
-- Raw SQL modifications
-- Direct database access
-- Migration scripts (unless explicitly disabled)
+Invariants enforced (via 26 PostgreSQL triggers across 10 SQL files):
+    R10 -- Posted JournalEntry rows: no UPDATE, no DELETE.
+    R10 -- JournalLine rows: no UPDATE/DELETE when parent entry is posted.
+    R10 -- AuditEvent rows: always immutable (no UPDATE/DELETE ever).
+    R10 -- Account structural fields (type, normal_balance, code) immutable
+           once referenced by posted journal lines.
+    R5  -- At most one is_rounding=True line per entry; rounding threshold.
+    R10 -- Closed FiscalPeriod: no UPDATE/DELETE.
+    R10 -- Dimension.code immutable when values exist.
+    R10 -- DimensionValue structural fields always immutable.
+    R10 -- ExchangeRate immutable when referenced by journal lines.
+    R1  -- Event rows: always immutable (no UPDATE/DELETE).
+    R4  -- Balance enforcement trigger on posted entries.
 
-These triggers complement the ORM-level listeners in immutability.py,
-providing defense-in-depth for critical financial records.
+Failure modes:
+    - PostgreSQL RAISE EXCEPTION on any trigger violation (caught as
+      IntegrityError or OperationalError by SQLAlchemy).
+    - FileNotFoundError if SQL files are missing from the sql/ directory.
+    - OperationalError on deadlock during installation (caller retries).
 
-Trigger SQL files are stored in the `sql/` subdirectory for:
-- Syntax highlighting in editors
-- IDE support for SQL
-- Easier maintenance and review
-- Independent testing
-
-Hard invariants enforced:
-- Posted JournalEntry records cannot be modified or deleted
-- JournalLine records cannot be modified or deleted when parent is posted
-- AuditEvent records are always immutable (no updates or deletes ever)
-- Account structural fields (type, normal_balance, code) immutable once
-  referenced by posted journal lines
-- Last rounding account per currency cannot be deleted
-- Closed FiscalPeriod records cannot be modified or deleted (one-way OPEN->CLOSED)
-- Dimension.code immutable when dimension values exist
-- DimensionValue structural fields (code, name, dimension_code) always immutable
-- DimensionValue cannot be deleted when referenced by posted journal lines
+Audit relevance:
+    These triggers are the last line of defense against data tampering.
+    Even if the ORM layer is bypassed (raw SQL, bulk operations, direct
+    psql access, compromised migrations), the database triggers prevent
+    modification of financial records.  Both layers must be bypassed
+    simultaneously to tamper with data -- this is intentional redundancy.
 """
 
 from pathlib import Path
@@ -103,6 +108,9 @@ def _load_sql_file(filename: str) -> str:
     """
     Load SQL content from a file in the sql/ directory.
 
+    Preconditions: filename exists in SQL_DIR.
+    Postconditions: Returns the full text content of the file, UTF-8 decoded.
+
     Args:
         filename: Name of the SQL file (e.g., "01_journal_entry.sql")
 
@@ -118,7 +126,11 @@ def _load_sql_file(filename: str) -> str:
 
 def _load_all_trigger_sql() -> str:
     """
-    Load and concatenate all trigger SQL files in order.
+    Load and concatenate all trigger SQL files in numbered order.
+
+    Postconditions: Returns a single SQL string containing all trigger
+        definitions, separated by comment headers identifying each source file.
+        File order matches TRIGGER_FILES (numerical prefix ordering).
 
     Returns:
         Combined SQL content for all triggers.
@@ -151,15 +163,17 @@ def install_immutability_triggers(engine: Engine) -> None:
     """
     Install database-level immutability triggers.
 
-    This should be called after create_tables() to add PostgreSQL triggers
-    that enforce R10 compliance at the database level.
+    INVARIANT R10: This function installs 26 PostgreSQL triggers that
+    enforce immutability at the database level, providing defense-in-depth
+    complementing the ORM listeners in db/immutability.py.
 
-    The triggers are loaded from SQL files in the sql/ subdirectory,
-    making them easier to maintain, review, and test independently.
+    Preconditions: Tables must exist (call after create_tables()).
+        Engine must be connected to PostgreSQL.
+    Postconditions: All triggers in ALL_TRIGGER_NAMES are installed.
+        Trigger functions are created with CREATE OR REPLACE (idempotent).
 
     Args:
         engine: SQLAlchemy engine connected to PostgreSQL.
-
     """
     sql_content = _load_all_trigger_sql()
 
@@ -173,7 +187,11 @@ def uninstall_immutability_triggers(engine: Engine) -> None:
     Remove database-level immutability triggers.
 
     WARNING: Only use this for migrations that need to modify historical data.
-    Re-install triggers immediately after the migration completes.
+    Re-install triggers IMMEDIATELY after the migration completes.  Leaving
+    triggers uninstalled in production is a critical security vulnerability.
+
+    Preconditions: Engine must be connected to PostgreSQL.
+    Postconditions: All triggers and their backing functions are removed.
 
     Args:
         engine: SQLAlchemy engine connected to PostgreSQL.
@@ -187,7 +205,11 @@ def uninstall_immutability_triggers(engine: Engine) -> None:
 
 def triggers_installed(engine: Engine) -> bool:
     """
-    Check if immutability triggers are installed.
+    Check if all immutability triggers are installed.
+
+    Preconditions: Engine must be connected to PostgreSQL.
+    Postconditions: Returns True iff the count of installed triggers in
+        pg_trigger matches len(ALL_TRIGGER_NAMES).
 
     Args:
         engine: SQLAlchemy engine.

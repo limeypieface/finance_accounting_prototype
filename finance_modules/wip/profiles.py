@@ -1,9 +1,34 @@
 """
-Work-in-Process Economic Profiles — Kernel format.
+Work-in-Process Economic Profiles (``finance_modules.wip.profiles``).
 
-Merged authoritative profiles from kernel (guards, where-clauses, multi-ledger)
-and module (line mappings, additional scenarios). Each profile is a kernel
-AccountingPolicy with companion ModuleLineMapping tuples for intent construction.
+Responsibility
+--------------
+Declares all ``AccountingPolicy`` instances and companion
+``ModuleLineMapping`` tuples for the WIP module.  Each profile maps a
+single event type to journal-line specifications using account ROLES.
+
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue (this layer).
+Profiles are registered into kernel registries by ``register()`` and
+resolved at posting time by the interpretation pipeline (L1).
+
+Invariants enforced
+-------------------
+* R14 -- No ``if/switch`` on event_type in the posting engine.
+* R15 -- Adding a new WIP event type requires ONLY a new profile.
+* L1  -- Account roles are resolved to COA codes at posting time.
+
+Failure modes
+-------------
+* Duplicate profile names cause ``register_rich_profile`` to raise.
+* Guard expression match causes REJECTED outcome.
+
+Audit relevance
+---------------
+* Profile version numbers support replay compatibility (R23).
+* Guard conditions provide machine-readable rejection codes.
+* WIP variance profiles support standard cost accounting compliance.
 
 Profiles:
     WipMaterialIssued       — Raw materials issued to work order
@@ -326,6 +351,29 @@ WIP_OVERHEAD_VARIANCE_MAPPINGS = (
 )
 
 
+# --- Byproduct Recorded -------------------------------------------------------
+
+WIP_BYPRODUCT_RECORDED = AccountingPolicy(
+    name="WIPByproductRecorded",
+    version=1,
+    trigger=PolicyTrigger(event_type="wip.byproduct"),
+    meaning=PolicyMeaning(
+        economic_type="WIP_BYPRODUCT",
+        dimensions=("cost_center",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="INVENTORY", credit_role="WIP"),
+    ),
+    effective_from=date(2024, 1, 1),
+    description="Byproduct value recognition from production",
+)
+
+WIP_BYPRODUCT_RECORDED_MAPPINGS = (
+    ModuleLineMapping(role="INVENTORY", side="debit", ledger="GL"),
+    ModuleLineMapping(role="WIP", side="credit", ledger="GL"),
+)
+
+
 # =============================================================================
 # Profile + Mapping pairs for registration
 # =============================================================================
@@ -340,6 +388,7 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     (WIP_LABOR_VARIANCE, WIP_LABOR_VARIANCE_MAPPINGS),
     (WIP_MATERIAL_VARIANCE, WIP_MATERIAL_VARIANCE_MAPPINGS),
     (WIP_OVERHEAD_VARIANCE, WIP_OVERHEAD_VARIANCE_MAPPINGS),
+    (WIP_BYPRODUCT_RECORDED, WIP_BYPRODUCT_RECORDED_MAPPINGS),
 )
 
 

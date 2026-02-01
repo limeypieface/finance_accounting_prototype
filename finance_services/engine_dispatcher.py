@@ -1,12 +1,43 @@
 """
-Engine Dispatcher — runtime engine invocation from compiled policy fields.
+finance_services.engine_dispatcher -- Runtime engine invocation from compiled policy fields.
 
-Reads `required_engines` and `engine_parameters_ref` from CompiledPolicy,
-looks up `resolved_engine_params` from CompiledPolicyPack, invokes
-registered engine invokers, and collects trace records.
+Responsibility:
+    Reads ``required_engines`` and ``engine_parameters_ref`` from a
+    CompiledPolicy, looks up ``resolved_engine_params`` from the
+    CompiledPolicyPack, invokes registered EngineInvoker callables,
+    and collects EngineTraceRecord records for auditor provenance.
 
-This is the ONLY runtime path for policy-driven engine invocation.
-Modules must not instantiate posting-path engines directly.
+    This is the ONLY runtime path for policy-driven engine invocation.
+    Modules must not instantiate posting-path engines directly.
+
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    Bridges the config layer (CompiledPolicyPack) to the engine layer
+    (pure calculation engines) at posting time.
+
+Invariants enforced:
+    - R14 (No central dispatch on event_type): engine dispatch is driven
+      by the ``required_engines`` list on CompiledPolicy, not by if/switch
+      on event_type.
+    - R15 (Open/closed compliance): new engines are added by registering a
+      new EngineInvoker; no existing code paths change.
+    - Engine name consistency: EngineInvoker.engine_name must match the
+      registration key (asserted at register-time).
+
+Failure modes:
+    - Missing invoker: if policy.required_engines references an
+      unregistered engine, an error trace is recorded and
+      EngineDispatchResult.all_succeeded is False.
+    - Engine exception: caught per-engine, recorded in trace, does not
+      abort other engine invocations in the same dispatch.
+    - Missing parameters: empty FrozenEngineParams are synthesised; the
+      engine itself must validate.
+
+Audit relevance:
+    - Every invocation produces an EngineTraceRecord with engine_name,
+      engine_version, input_fingerprint, duration_ms, parameters_used,
+      and success/error status -- persisted by the interpretation
+      coordinator for post-hoc audit.
 """
 
 from __future__ import annotations
@@ -34,10 +65,18 @@ _logger = logging.getLogger("finance_services.engine_dispatcher")
 class EngineInvoker:
     """A registered engine callable.
 
-    The invoke function receives:
-      - payload: dict — the event payload (read-only context)
-      - params: FrozenEngineParams — resolved configuration parameters
-    and returns an arbitrary result object.
+    Contract:
+        The invoke function receives:
+          - payload: dict -- the event payload (read-only context)
+          - params: FrozenEngineParams -- resolved configuration parameters
+        and returns an arbitrary result object.
+
+    Guarantees:
+        Frozen dataclass; once created, the invoker is immutable.
+
+    Non-goals:
+        Does not manage engine lifecycle or caching; each invoke call is
+        stateless from the dispatcher's perspective.
     """
 
     engine_name: str
@@ -52,7 +91,23 @@ class EngineInvoker:
 
 
 class EngineDispatcher:
-    """Runtime engine dispatch — reads CompiledPolicyPack fields.
+    """Runtime engine dispatch -- reads CompiledPolicyPack fields.
+
+    Contract:
+        Given a CompiledPolicy and event payload, dispatch all engines
+        listed in ``policy.required_engines``, resolve their parameters
+        from the CompiledPolicyPack, and return an EngineDispatchResult.
+
+    Guarantees:
+        - Each engine invocation is independent; an exception in one
+          engine does not prevent others from running.
+        - A full EngineTraceRecord is emitted for every engine, whether
+          it succeeds or fails.
+        - An empty required_engines list returns an empty success result.
+
+    Non-goals:
+        - Does not enforce ordering among engines.
+        - Does not persist trace records (caller's responsibility).
 
     Usage:
         dispatcher = EngineDispatcher(compiled_pack)
@@ -68,9 +123,17 @@ class EngineDispatcher:
     def register(self, engine_name: str, invoker: EngineInvoker) -> None:
         """Register an engine invoker.
 
-        Raises ValueError if the invoker's engine_name doesn't match
-        the registration key.
+        Preconditions:
+            invoker.engine_name == engine_name (consistency check).
+
+        Postconditions:
+            The invoker is stored in the internal registry under
+            engine_name, replacing any previous registration.
+
+        Raises:
+            ValueError: If invoker.engine_name does not match engine_name.
         """
+        # INVARIANT [R14]: Registration-key must match invoker identity.
         if invoker.engine_name != engine_name:
             raise ValueError(
                 f"Invoker engine_name '{invoker.engine_name}' "
@@ -84,6 +147,18 @@ class EngineDispatcher:
         payload: dict[str, Any],
     ) -> EngineDispatchResult:
         """Dispatch all required engines for a policy.
+
+        Preconditions:
+            policy is a valid CompiledPolicy from the active pack.
+            payload is a read-only dict (engine must not mutate it).
+
+        Postconditions:
+            Returns EngineDispatchResult where len(traces) ==
+            len(policy.required_engines).
+
+        Raises:
+            No exceptions are raised to the caller; individual engine
+            failures are captured in EngineDispatchResult.errors.
 
         For each engine in policy.required_engines:
           1. Look up resolved_engine_params via policy.engine_parameters_ref
@@ -222,7 +297,16 @@ class EngineDispatcher:
     def validate_registration(self) -> list[str]:
         """Check that every engine contract has a registered invoker.
 
-        Returns list of unregistered engine names (empty = all good).
+        Preconditions:
+            None.
+
+        Postconditions:
+            Returns a list of engine names present in the pack's
+            engine_contracts but missing from the registry.
+            Empty list means all engines are covered.
+
+        Raises:
+            Nothing.
         """
         unregistered = []
         for engine_name in self._pack.engine_contracts:

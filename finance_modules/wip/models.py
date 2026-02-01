@@ -1,7 +1,32 @@
 """
-Work-in-Process Domain Models.
+Work-in-Process Domain Models (``finance_modules.wip.models``).
 
-The nouns of manufacturing: work orders, operations, labor, overhead.
+Responsibility
+--------------
+Frozen dataclass value objects representing the nouns of manufacturing:
+work orders, operations, labor charges, overhead allocation, scrap records,
+byproduct records, production cost summaries, and unit cost breakdowns.
+
+Architecture position
+---------------------
+**Modules layer** -- pure data definitions with ZERO I/O.  Consumed by
+``WipService`` and returned to callers.  No dependency on kernel services,
+database, or engines.
+
+Invariants enforced
+-------------------
+* All models are ``frozen=True`` (immutable after construction).
+* All monetary fields use ``Decimal`` -- NEVER ``float``.
+
+Failure modes
+-------------
+* Construction with invalid enum values raises ``ValueError``.
+
+Audit relevance
+---------------
+* ``ProductionCostSummary`` records support cost accounting disclosure.
+* ``UnitCostBreakdown`` records support standard cost variance analysis.
+* ``ByproductRecord`` records track byproduct value for full cost traceability.
 """
 
 from dataclasses import dataclass, field
@@ -144,3 +169,36 @@ class OverheadApplication:
     rate: Decimal
     quantity: Decimal
     amount: Decimal
+
+
+@dataclass(frozen=True)
+class ProductionCostSummary:
+    """Aggregated production costs for a job."""
+    job_id: UUID
+    material_cost: Decimal = Decimal("0")
+    labor_cost: Decimal = Decimal("0")
+    overhead_cost: Decimal = Decimal("0")
+    total_cost: Decimal = Decimal("0")
+    units_produced: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class ByproductRecord:
+    """A byproduct from a production job."""
+    id: UUID
+    job_id: UUID
+    item_id: UUID
+    description: str
+    value: Decimal
+    quantity: Decimal = Decimal("1")
+
+
+@dataclass(frozen=True)
+class UnitCostBreakdown:
+    """Per-unit cost breakdown by component."""
+    job_id: UUID
+    units_produced: Decimal
+    material_per_unit: Decimal
+    labor_per_unit: Decimal
+    overhead_per_unit: Decimal
+    total_per_unit: Decimal

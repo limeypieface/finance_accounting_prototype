@@ -1,14 +1,38 @@
 """
-Subledger Service - Stateful subledger service base class.
+finance_services.subledger_service -- Stateful subledger service base class.
 
-This module provides the abstract base class for subledger management services.
-It defines the interface and shared logic for AP, AR, Bank, Inventory, and
-Fixed Assets subledgers, with session injection for persistence.
+Responsibility:
+    Provide the abstract base class (ABC) for subledger management services.
+    Define the interface (post, get_balance, get_open_items) and shared
+    logic (reconcile, calculate_balance, validate_entry) for AP, AR, Bank,
+    Inventory, WIP, and Fixed Assets subledgers.
 
-The pure domain types (SubledgerEntry, SubledgerBalance, ReconciliationResult,
-ReconciliationStatus, EntryDirection) live in finance_engines.subledger.
-This module re-exports only the stateful SubledgerService ABC that concrete
-implementations extend.
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    Concrete implementations (APSubledgerService, ARSubledgerService, etc.)
+    receive a Session via constructor injection and delegate to
+    SubledgerSelector for persistence.  Pure domain types (SubledgerEntry,
+    SubledgerBalance, ReconciliationResult) live in finance_engines.subledger.
+
+Invariants enforced:
+    - SL-G1 (single-sided entries): validate_entry delegates to
+      SubledgerEntry.__post_init__ which enforces exactly one of debit/credit.
+    - SL-G2 (GL linkage): post() requires gl_entry_id; the concrete
+      implementations persist this link.
+    - SL-G5 (immutable entries): SubledgerEntry is a frozen dataclass;
+      reconcile() returns a new ReconciliationResult rather than mutating.
+    - R16 (ISO 4217): reconcile() validates currency match between entries.
+
+Failure modes:
+    - ValueError from reconcile() if entries are from different subledgers,
+      different entities, different currencies, or are not open.
+    - ValueError from calculate_balance() if entries list is empty or
+      as_of_date is None (clock injection enforcement).
+
+Audit relevance:
+    Every post() call is logged with entry_id, subledger_type, entity_id,
+    and journal_entry_id.  Reconciliation events are logged with amounts
+    and timing.
 
 Usage:
     from finance_services.subledger_service import SubledgerService
@@ -61,13 +85,23 @@ class SubledgerService(ABC, Generic[EntityT]):
     """
     Base class for subledger management.
 
-    Abstract class - each subledger type (AP, AR, Bank) extends this
-    and implements specific business rules.
-
-    Design:
-        - Pure domain logic in this base class
-        - Persistence handled by concrete implementations
-        - Session injection for database access
+    Contract:
+        Abstract class -- each subledger type (AP, AR, Bank, Inventory,
+        WIP) extends this and implements specific business rules.
+        Concrete implementations receive Session via constructor injection.
+    Guarantees:
+        - ``reconcile`` validates subledger type match, entity match,
+          currency match, and open status before producing a
+          ReconciliationResult.
+        - ``calculate_balance`` respects the normal-balance side
+          convention (credit-normal for AP/PAYROLL, debit-normal for
+          AR/BANK/INVENTORY/WIP).
+        - ``validate_entry`` checks required fields and non-zero amount.
+    Non-goals:
+        - Does not persist entries directly; persistence is the concrete
+          implementation's responsibility.
+        - Does not manage transactions; session lifecycle is the caller's
+          responsibility.
     """
 
     # Override in subclass with canonical SubledgerType enum value

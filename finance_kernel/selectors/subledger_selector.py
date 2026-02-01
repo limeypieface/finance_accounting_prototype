@@ -1,18 +1,31 @@
 """
-Subledger query selector.
+Module: finance_kernel.selectors.subledger_selector
+Responsibility: Read-only query access to subledger entries, entity balances,
+    aggregate balances (for GL/SL reconciliation), and reconciliation history.
+Architecture position: Kernel > Selectors.  May import from models/ and
+    selectors/base.py.  MUST NOT import from services/, domain/, or outer layers.
 
-Provides read-only access to subledger entries and balances.
+Invariants enforced:
+    SL-G3 -- Per-currency reconciliation.  All balance queries require a
+             currency parameter, ensuring that multi-currency subledgers
+             are reconciled per-currency against the GL.
+    SL-G4 -- Snapshot isolation.  Uses the caller's Session (never creates
+             its own), ensuring that balance queries and GL queries within
+             the same transaction see a consistent snapshot.
+    SL-G10 - Currency codes are uppercase ISO 4217 (assumed normalized at
+             ingestion boundary).
 
-Key design decisions:
-- Returns DTOs (frozen dataclasses), not ORM models
-- Uses the caller's Session (SL-G4: snapshot isolation for G9)
-- All balance methods accept currency filter (SL-G3: per-currency reconciliation)
-- get_aggregate_balance() is the primary method for G9 control account comparison
+Failure modes:
+    - Returns empty lists or zero-valued BalanceDTOs when no matching entries
+      exist (never raises on absence of data).
+    - Balance sign is determined by subledger type normal balance side
+      (credit-normal for AP/PAYROLL, debit-normal for all others).
 
-Invariants:
-- SL-G3: Per-currency reconciliation — all balance queries are per-currency
-- SL-G4: Snapshot isolation — uses caller's session, never creates its own
-- SL-G10: Currency codes are uppercase ISO 4217 (assumed normalized at ingestion)
+Audit relevance:
+    SubledgerSelector is the primary read path for subledger reconciliation.
+    get_aggregate_balance() returns the total subledger balance that must
+    match the GL control account balance (G9 control account comparison).
+    Period-close orchestrators use this selector to detect GL/SL divergence.
 """
 
 from dataclasses import dataclass
@@ -115,8 +128,21 @@ class SubledgerSelector(BaseSelector[SubledgerEntryModel]):
     """
     Selector for subledger queries.
 
-    Returns DTOs rather than ORM models for clean separation.
-    Uses the caller's Session for snapshot isolation (SL-G4).
+    Contract:
+        All public methods return frozen DTOs (SubledgerEntryDTO,
+        SubledgerBalanceDTO, ReconciliationDTO, or Money).  Uses the
+        caller's Session for snapshot isolation (SL-G4).
+
+    Guarantees:
+        - Read-only: No mutations are performed.
+        - Per-currency: All balance queries enforce currency filtering (SL-G3).
+        - Balance sign convention: credit-normal for AP/PAYROLL,
+          debit-normal for AR/INVENTORY/all others.
+
+    Non-goals:
+        - This selector does NOT perform GL/SL reconciliation; it provides
+          the data for reconciliation.  Actual comparison is done by
+          ReconciliationService.
     """
 
     def __init__(self, session: Session):
@@ -193,6 +219,10 @@ class SubledgerSelector(BaseSelector[SubledgerEntryModel]):
         """
         Get all entries for an entity in a subledger.
 
+        Preconditions: entity_id and subledger_type are required.
+        Postconditions: Returns entries ordered by effective_date.
+            Empty list if no matching entries exist.
+
         Args:
             entity_id: Entity (vendor, customer, etc.).
             subledger_type: Subledger type.
@@ -250,6 +280,10 @@ class SubledgerSelector(BaseSelector[SubledgerEntryModel]):
         """
         Get unreconciled/open items for an entity.
 
+        Preconditions: entity_id and subledger_type are required.
+        Postconditions: Returns entries with reconciliation_status in
+            (OPEN, PARTIAL), ordered by effective_date.
+
         Args:
             entity_id: Entity to get open items for.
             subledger_type: Subledger type.
@@ -291,11 +325,17 @@ class SubledgerSelector(BaseSelector[SubledgerEntryModel]):
         """
         Get balance for a single entity in a subledger.
 
+        Preconditions: as_of_date and currency are required (SL-G3 per-currency,
+            no clock access in selectors).
+        Postconditions: Returns SubledgerBalanceDTO with debit_total, credit_total,
+            and balance computed from entries where effective_date <= as_of_date.
+            Balance sign: credit-normal for AP/PAYROLL, debit-normal otherwise.
+
         Args:
             entity_id: Entity (vendor, customer, etc.).
             subledger_type: Subledger type.
-            as_of_date: Cutoff date (required — no clock access).
-            currency: Currency filter (required — SL-G3 per-currency).
+            as_of_date: Cutoff date (required -- no clock access).
+            currency: Currency filter (required -- SL-G3 per-currency).
 
         Returns:
             SubledgerBalanceDTO with computed totals.
@@ -368,14 +408,19 @@ class SubledgerSelector(BaseSelector[SubledgerEntryModel]):
         """
         Get total balance across all entities for a subledger type.
 
-        This is the primary method for G9 control account comparison.
-        Returns the aggregate subledger balance that should match the
-        GL control account balance.
+        INVARIANT G9: This is the primary method for control account comparison.
+        The returned aggregate subledger balance MUST match the GL control
+        account balance for the same subledger type, currency, and date.
+        Any divergence indicates a reconciliation failure.
+
+        Preconditions: as_of_date and currency are required (SL-G3).
+        Postconditions: Returns Money with the net aggregate balance.
+            Balance sign: credit-normal for AP/PAYROLL, debit-normal otherwise.
 
         Args:
             subledger_type: Subledger type.
             as_of_date: Cutoff date (required).
-            currency: Currency (required — SL-G3 per-currency).
+            currency: Currency (required -- SL-G3 per-currency).
 
         Returns:
             Money representing the aggregate balance.
@@ -422,8 +467,10 @@ class SubledgerSelector(BaseSelector[SubledgerEntryModel]):
         """
         Get reconciliation history for a subledger entry.
 
-        Returns all reconciliation records where the entry appears
-        as either the debit or credit side.
+        Preconditions: entry_id is a valid UUID.
+        Postconditions: Returns all reconciliation records where the entry
+            appears as either the debit or credit side, ordered by reconciled_at.
+            Empty list if the entry has no reconciliation history.
 
         Args:
             entry_id: Subledger entry ID.
@@ -484,7 +531,11 @@ class SubledgerSelector(BaseSelector[SubledgerEntryModel]):
         """
         Get all distinct entity IDs for a subledger type.
 
-        Useful for period-close reconciliation iteration.
+        Useful for period-close reconciliation iteration -- enumerates all
+        entities that have at least one subledger entry for the given type.
+
+        Preconditions: subledger_type is a valid SubledgerType.
+        Postconditions: Returns sorted list of distinct entity_id strings.
 
         Args:
             subledger_type: Subledger type.

@@ -1,15 +1,29 @@
 """
-Accounting Policy domain model.
+AccountingPolicy -- Declarative governance object for event interpretation.
 
-The AccountingPolicy is the single source of policy truth. It defines:
-1. Trigger — Which facts it applies to
-2. Meaning — What economic meaning is derived
-3. Effects — What ledgers and lifecycles are impacted
-4. Guards — When it must reject or block
-5. Lifecycle — Whether it must flow through a time-based process
+Responsibility:
+    Defines the single source of policy truth.  An AccountingPolicy declares
+    which business events it applies to (trigger), what economic meaning it
+    derives (meaning), what ledger effects it creates, and what guard
+    conditions can reject or block processing.
 
-This is a pure domain object (no I/O, no ORM). Profiles are source artifacts,
-not database tables.
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
+
+Invariants enforced:
+    P1  -- Exactly one profile matches any event (overlap detection at compile)
+    P7  -- Ledger semantic completeness (required roles provided)
+    P10 -- Field references validated against EventSchema
+    P12 -- Guard conditions: REJECT is terminal, BLOCK is resumable
+    L1  -- Ledger effects use account ROLES, not COA codes
+
+Failure modes:
+    - ValueError if name is empty, version < 1, or required fields missing
+
+Audit relevance:
+    AccountingPolicy is the authoritative interpretation law.  Auditors verify
+    that the correct profile was selected (P1) and that guard conditions were
+    evaluated honestly (P12).
 """
 
 from dataclasses import dataclass, field
@@ -23,23 +37,48 @@ logger = get_logger("domain.accounting_policy")
 
 
 class PrecedenceMode(str, Enum):
-    """Profile precedence mode."""
+    """
+    Profile precedence mode.
+
+    Contract:
+        Used by PolicySelector to resolve overlap when multiple profiles
+        match the same event.
+
+    Guarantees:
+        OVERRIDE profiles are evaluated before NORMAL profiles.
+    """
 
     NORMAL = "normal"
     OVERRIDE = "override"
 
 
 class GuardType(str, Enum):
-    """Type of guard condition."""
+    """
+    Type of guard condition (P12).
 
-    REJECT = "reject"  # Terminal — invalid economic reality
-    BLOCK = "block"  # Resumable — system cannot safely process yet
+    Contract:
+        REJECT is terminal -- the event represents invalid economic reality.
+        BLOCK is resumable -- the system cannot safely process yet but may retry.
+
+    Guarantees:
+        Guard evaluation produces deterministic, auditable outcomes.
+    """
+
+    REJECT = "reject"  # Terminal -- invalid economic reality
+    BLOCK = "block"  # Resumable -- system cannot safely process yet
 
 
 @dataclass(frozen=True)
 class PolicyTrigger:
     """
     Defines when a profile applies to an event.
+
+    Contract:
+        Immutable trigger specification.  ``event_type`` must be non-empty.
+        ``where`` clauses narrow dispatch (P1 overlap resolution).
+
+    Guarantees:
+        Frozen dataclass -- cannot be mutated after construction.
 
     Attributes:
         event_type: The event type this profile handles (e.g., "inventory.receipt")
@@ -61,6 +100,13 @@ class PolicyMeaning:
     """
     Defines the economic meaning derived from an event.
 
+    Contract:
+        ``economic_type`` must be non-empty.  ``quantity_field`` and
+        ``dimensions`` are optional and validated by P10 field reference checks.
+
+    Guarantees:
+        Frozen dataclass -- cannot be mutated after construction.
+
     Attributes:
         economic_type: The type of economic event (e.g., "InventoryIncrease")
         quantity_field: Field path for quantity (e.g., "payload.quantity")
@@ -79,6 +125,17 @@ class LedgerEffect:
 
     Uses AccountRoles, not COA accounts (per L1 invariant).
 
+    Contract:
+        ``debit_role`` and ``credit_role`` are semantic role names resolved
+        to COA accounts at posting time by the JournalWriter (L1).
+
+    Guarantees:
+        Frozen dataclass -- cannot be mutated after construction.
+
+    Non-goals:
+        Does NOT verify that the roles exist in the LedgerRegistry (that
+        is P7 validation in PolicyCompiler).
+
     Attributes:
         ledger: Ledger identifier (e.g., "GL", "inventory_subledger")
         debit_role: AccountRole for debit side
@@ -93,12 +150,19 @@ class LedgerEffect:
 @dataclass(frozen=True)
 class GuardCondition:
     """
-    A guard condition that can reject or block event processing.
+    A guard condition that can reject or block event processing (P12).
+
+    Contract:
+        ``guard_type`` is either REJECT (terminal) or BLOCK (resumable).
+        ``reason_code`` is machine-readable (R18).
+
+    Guarantees:
+        Frozen dataclass -- cannot be mutated after construction.
 
     Attributes:
         guard_type: REJECT (terminal) or BLOCK (resumable)
         expression: The condition expression (e.g., "payload.quantity <= 0")
-        reason_code: Machine-readable reason code
+        reason_code: Machine-readable reason code (R18)
         message: Human-readable message
     """
 
@@ -129,7 +193,23 @@ class AccountingPolicy:
     """
     The primary governance object for event interpretation.
 
-    Profiles define the law. The engine enforces it.
+    Profiles define the law.  The engine enforces it.
+
+    Contract:
+        ``name`` must be non-empty, ``version`` >= 1, ``trigger.event_type``
+        and ``meaning.economic_type`` must be non-empty.
+
+    Guarantees:
+        - Frozen dataclass -- cannot be mutated after construction.
+        - ``is_effective_on(date)`` checks effective date range.
+        - ``matches_scope(value)`` provides wildcard-based scope matching.
+        - ``get_field_references()`` returns all referenced payload fields for
+          P10 validation.
+
+    Non-goals:
+        - Does NOT store in a database (pure domain artifact).
+        - Does NOT evaluate guards (MeaningBuilder does that).
+        - Does NOT resolve roles to COA accounts (JournalWriter does that).
 
     Attributes:
         name: Unique profile name
@@ -141,8 +221,8 @@ class AccountingPolicy:
         effective_to: End of effective date range (None = open-ended)
         scope: Scope pattern for matching (e.g., "SKU:*", "project:PRJ-001")
         precedence: Precedence rules for overlap resolution
-        valuation_model: Reference to valuation model (no inline expressions)
-        guards: Reject and block conditions
+        valuation_model: Reference to valuation model (no inline expressions -- P8)
+        guards: Reject and block conditions (P12)
         description: Human-readable description
     """
 
@@ -175,10 +255,12 @@ class AccountingPolicy:
 
     def __post_init__(self) -> None:
         """Validate profile configuration."""
+        # INVARIANT: P1 -- profile must have a name for unique identification
         if not self.name:
             raise ValueError("Profile name is required")
         if self.version < 1:
             raise ValueError("Profile version must be >= 1")
+        # INVARIANT: P1 -- trigger must specify which event type to match
         if not self.trigger.event_type:
             raise ValueError("Trigger event_type is required")
         if not self.meaning.economic_type:

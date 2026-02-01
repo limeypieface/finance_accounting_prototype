@@ -1,22 +1,52 @@
 """
-Restricted AST for guard and control expressions.
+Restricted AST Validator (``finance_config.guard_ast``).
 
-Guard expressions in configuration must use a fixed operator set.
-This module parses and validates expressions, rejecting anything
-that could execute arbitrary code.
+Responsibility
+--------------
+Parses and validates guard and control expressions against a restricted
+AST, ensuring that only safe, auditable operations are permitted in
+configuration-driven guard conditions.  Rejects anything that could
+execute arbitrary code.
 
-Allowed:
-  - Comparisons: <, <=, >, >=, ==, !=, is, is not
-  - Logical: and, or, not
-  - Field access: context_root.field_name (payload, party, contract, event)
-  - Literals: numbers, strings, booleans, None
-  - Functions: abs(), len(), check_credit_limit()
-  - Membership: in, not in
-  - Conditional: ternary (a if b else c)
+Architecture position
+---------------------
+**Config layer** -- security boundary.  Called by ``validator.py`` during
+build-time validation.  Has no dependency on kernel, modules, or engines.
 
-Rejected:
-  - imports, arbitrary function calls, deep attribute chains,
-    lambda, eval, exec, arbitrary names
+Invariants enforced
+-------------------
+* Only whitelisted AST node types are accepted.
+* Function calls are restricted to ``ALLOWED_FUNCTIONS``:
+  ``abs()``, ``len()``, ``check_credit_limit()``.
+* Field access is restricted to one-level dotted access from
+  ``ALLOWED_CONTEXT_ROOTS``: ``payload``, ``party``, ``contract``,
+  ``event``.
+* Deep attribute chains, lambda, eval, exec, and arbitrary names are
+  rejected.
+
+Allowed constructs
+------------------
+* Comparisons: ``<``, ``<=``, ``>``, ``>=``, ``==``, ``!=``, ``is``,
+  ``is not``, ``in``, ``not in``
+* Logical: ``and``, ``or``, ``not``
+* Arithmetic: ``+``, ``-``, ``*``, ``/``
+* Field access: ``context_root.field_name``
+* Literals: numbers, strings, booleans, ``None``
+* Functions: ``abs()``, ``len()``, ``check_credit_limit()``
+* Conditional: ternary (``a if b else c``)
+
+Failure modes
+-------------
+* Syntax error  -> ``GuardASTError`` with parse error details.
+* Disallowed node type  -> ``GuardASTError`` identifying the violation.
+* Returns empty list for valid expressions.
+
+Audit relevance
+---------------
+Guard expressions control whether business events are accepted or
+rejected by the kernel.  Restricting the expression language to a safe
+subset prevents injection of arbitrary logic and ensures that all
+guard conditions are reviewable by auditors.
 """
 
 import ast
@@ -49,9 +79,16 @@ class GuardASTError:
 
 
 def validate_guard_expression(expression: str) -> list[GuardASTError]:
-    """Validate a guard expression against the restricted AST.
+    """
+    Validate a guard expression against the restricted AST.
 
-    Returns a list of errors. Empty list means the expression is valid.
+    Preconditions:
+        - ``expression`` must be a non-empty string containing a Python
+          expression (not a statement).
+    Postconditions:
+        - Returns an empty list if the expression is valid.
+        - Returns a list of ``GuardASTError`` instances describing each
+          violation if the expression is invalid.
     """
     errors: list[GuardASTError] = []
 

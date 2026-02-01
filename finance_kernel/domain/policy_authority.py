@@ -1,22 +1,26 @@
 """
-Policy Registry - Declares economic authority, not behavior.
+PolicyAuthority -- Governance layer controlling economic capabilities.
 
-The PolicyAuthority is the governance layer that controls:
-- Which modules may create/clear balances, capitalize, recognize revenue, write off
-- Which economic types can post to which ledgers
-- Which ledger roles map to which control accounts
+Responsibility:
+    Controls which modules may create/clear balances, capitalize, recognize
+    revenue, write off, and which economic types can post to which ledgers.
+    Prevents "creative accounting by configuration."
 
-This prevents "creative accounting by configuration" by enforcing that:
-- AR cannot accidentally behave like GL
-- Inventory cannot bypass AP
-- Only authorized modules can perform specific economic actions
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
 
-Enforcement points:
-- MeaningBuilder: Can this profile exist?
-- AccountingIntentBuilder: Can this intent be formed?
-- JournalWriter: Can this role be posted?
+Invariants enforced:
+    (governance-level -- enforced at MeaningBuilder, AccountingIntent, and
+    JournalWriter enforcement points)
 
-All policies are versioned and snapshotable for audit and replay.
+Failure modes:
+    - PolicyViolation returned (never raises) when capability, ledger
+      access, or economic type constraints are violated.
+
+Audit relevance:
+    All policies are versioned and snapshotable for audit and replay.
+    Auditors verify that modules operated within their authorized
+    capabilities and did not post to forbidden ledgers.
 """
 
 from __future__ import annotations
@@ -98,7 +102,14 @@ class ModuleAuthorization:
     """
     Authorization for a module to perform economic actions.
 
-    Defines what capabilities a module has and any constraints.
+    Contract:
+        Defines capabilities, allowed ledgers, and restricted roles for
+        a single module type.
+
+    Guarantees:
+        - Frozen dataclass -- immutable after construction.
+        - ``has_capability()`` / ``can_post_to_ledger()`` / ``can_use_role()``
+          are deterministic membership checks.
     """
 
     module_type: ModuleType
@@ -216,9 +227,19 @@ class PolicyAuthority:
     Central registry of all economic policies.
 
     This is the source of truth for what actions are permitted
-    in the system. All enforcement points consult this registry.
+    in the system.  All enforcement points consult this registry.
 
-    The registry itself is immutable - changes create new versions.
+    Contract:
+        Immutable, versioned.  Changes create new versions (never mutate).
+
+    Guarantees:
+        - ``validate_module_action()`` and ``validate_economic_type_posting()``
+          return lists of ``PolicyViolation`` (empty if valid).
+        - Frozen dataclass -- the registry itself is immutable.
+
+    Non-goals:
+        - Does NOT persist policies (services handle serialisation).
+        - Does NOT enforce at posting time (enforcement points consult it).
     """
 
     version: int
@@ -427,7 +448,15 @@ class PolicyAuthorityBuilder:
     """
     Builder for constructing PolicyAuthority instances.
 
-    Provides a fluent API for building policy configurations.
+    Contract:
+        Fluent API: call ``authorize_module()``, ``map_ledger_role()``,
+        ``constrain_economic_type()``, then ``build()``.
+
+    Guarantees:
+        ``build()`` returns an immutable ``PolicyAuthority``.
+
+    Non-goals:
+        - Not thread-safe during construction (builder is mutable).
     """
 
     def __init__(self, version: int = 1):

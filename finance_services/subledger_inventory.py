@@ -1,8 +1,33 @@
 """
-Inventory Subledger Service.
+finance_services.subledger_inventory -- Inventory subledger service.
 
-Inventory subledger — tracks item-level receipts, issues, adjustments, and revaluations.
-Entity type: Item/SKU identifier.
+Responsibility:
+    Manage item-level subledger entries linked to GL journal entries.
+    Track receipts, issues, adjustments, revaluations, transfers,
+    and reversals per item/SKU.
+
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    Extends SubledgerService ABC with Inventory-specific document type
+    validation.  Delegates to shared _post_entry/_get_balance helpers in
+    subledger_ap.
+    Entity type: Item/SKU identifier.
+
+Invariants enforced:
+    - SL-G1 (single-sided entries): delegated to SubledgerEntry.__post_init__.
+    - SL-G2 (GL linkage): _post_entry stores journal_entry_id on the ORM model.
+    - Document type whitelist: only RECEIPT, ISSUE, ADJUSTMENT,
+      REVALUATION, TRANSFER, REVERSAL are accepted.
+
+Failure modes:
+    - ValueError from post() if entry validation fails.
+    - ValueError from post() if source_document_type is not in
+      INVENTORY_DOCUMENT_TYPES.
+
+Audit relevance:
+    Inventory subledger entries support COGS calculations and inventory
+    valuation reports.  Every post is logged with entry_id, subledger_type,
+    entity_id (item_id), and journal_entry_id.
 """
 
 from __future__ import annotations
@@ -32,7 +57,18 @@ class InventorySubledgerService(SubledgerService):
     """
     Inventory subledger service.
 
-    Manages item-level subledger entries linked to GL journal entries.
+    Contract:
+        Manages item-level subledger entries linked to GL journal entries.
+        Receives Session and Clock via constructor injection.
+    Guarantees:
+        - ``post`` validates entry fields and document type before persisting.
+        - ``get_balance`` returns a SubledgerBalance with debit-normal
+          convention (inventory is an asset).
+        - ``get_open_items`` returns only unreconciled entries.
+    Non-goals:
+        - Does not manage cost lot tracking or FIFO/LIFO ordering;
+          that is the ValuationLayer's responsibility.
+        - Does not perform physical count reconciliation.
     """
 
     subledger_type = SubledgerType.INVENTORY

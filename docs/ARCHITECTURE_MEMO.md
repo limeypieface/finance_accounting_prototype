@@ -1,38 +1,60 @@
-# Architecture Memo: Event-Sourced Double-Entry Accounting System
+# Architecture Memo: Prototype Event-Sourced Double-Entry Accounting System
 
 **Date:** January 2026
-**Last Updated:** 2026-01-30
-**Status:** Complete — all subsystems implemented and tested (0 failures, 3,214 passing)
 
 ---
 
-## 1. Executive Summary
+This memo describes a prototype finance and accounting module I built as an experiment. The goal was not to match the feature surface area of a mature ERP. The goal was to pressure-test a different architecture for finance: one that reduces module-by-module accounting logic, increases determinism and traceability, and makes configuration and governance a first-class part of the system rather than a side effect of code.
 
-### What We Built
+The experiment started from a set of problems I've repeatedly seen in legacy ERP finance systems.
 
-We built an event-sourced, append-only, double-entry accounting system from first principles. The system accepts business events — a purchase order receipt, a payroll run, an invoice payment — and produces immutable journal entries that comply with generally accepted accounting principles. Every financial truth in the system is a journal line. There are no stored balances, no running totals, no mutable state. Trial balances, financial statements, and audit trails are all derived by reading the journal forward.
+In a typical ERP, each module embeds its own accounting logic. Accounts payable, accounts receivable, inventory, payroll, fixed assets, WIP, contracts, and tax all implement some version of "how do we translate business activity into financial entries." The rules are scattered across application code, configuration screens, stored procedures, and operational habits. Over time, these paths drift. The same economic reality is handled slightly differently depending on which module touched it and which version of the system is deployed. When issues occur, the work to answer "why does this number exist" becomes a reconstruction exercise across multiple systems, rule versions, and manual reconciliations.
 
-The system is designed for organizations that require auditable, deterministic, regulation-compliant financial records — from commercial enterprises operating under US GAAP to defense contractors subject to DCAA cost accounting standards and FAR/DFARS compliance.
+Configuration changes are also difficult. In many systems, changing posting behavior is effectively a deployment problem: code changes, migrations, environment coordination, and wide regression risk. End users experience this as "finance policy changes are risky," not because policy is inherently risky, but because the system doesn't isolate and govern policy as its own artifact.
 
-### Why We Built It This Way
+Finally, these systems are hard to operate with modern automation. Agents can move data and trigger workflows, but they struggle to explain outcomes because meaning is implicit in code and spread across many layers. Without a structured, durable record of decisions, an agent can only infer, not know.
 
-Traditional ERP accounting systems embed posting rules in application code, scatter business logic across stored procedures, and rely on mutable ledger balances that drift over time. When an auditor asks "why does this number exist?", the answer requires archeology across multiple systems, versions, and manual reconciliations.
-
-We took a different approach. Every business event enters the system exactly once, is interpreted by a declarative policy, and produces journal entries that are cryptographically sealed and immutable. The system records not just *what* happened, but *why* — the policy that was in force, the configuration version that governed the posting, and the complete decision trail that led from event to journal entry. This decision journal is persisted on every posting and can be queried after the fact by auditors, compliance teams, or AI systems seeking to understand the financial narrative.
-
-### Key Learnings
-
-**Immutability.** When records cannot be changed, there are no race conditions on balances, no "last write wins" bugs, no reconciliation drift. Corrections are explicit reversal entries that tell their own story.
-
-**Declarative policy.** Moving posting rules into YAML policy definitions — rather than embedding them in code — means accountants and auditors can review, version, and approve the rules that govern financial recording without reading Python.
-
-**Audit trail.** Structured logs captured during every posting are persisted alongside the outcome. This means any journal entry can be traced back to the exact policy, configuration version, role resolution, balance check, and sequence allocation that produced it. An LLM reading this trail can explain in plain language why a specific dollar amount landed in a specific account.
-
-**Pure functions and clock injection make replay deterministic.** Because the domain core has zero side effects and all timestamps are injected, the same event processed with the same configuration will always produce the same journal entry — a property that underpins audit replay and regulatory compliance.
+This prototype was built to test whether those problems are architectural, and whether they can be addressed by concentrating financial meaning into a small number of stable, auditable mechanisms.
 
 ---
 
-## 2. Architecture Overview
+## 1. What I Built
+
+I built an event-sourced, append-only, double-entry accounting system from first principles. The system accepts business events — a purchase order receipt, a payroll run, an invoice payment — and produces immutable journal entries that comply with generally accepted accounting principles. Every financial truth in the system is a journal line. There are no stored balances, no running totals, no mutable state. Trial balances, financial statements, and audit trails are all derived by reading the journal forward.
+
+The prototype is intended for organizations that require auditable, deterministic, regulation-compliant financial records — from commercial enterprises operating under US GAAP to defense contractors subject to cost accounting standards and FAR/DFARS compliance.
+
+---
+
+## 2. Why I Built It This Way
+
+Traditional ERP accounting systems embed posting rules in application code, scatter logic across stored procedures, and rely on mutable ledger balances that drift over time. When an auditor asks why a number exists, the answer frequently requires reconstructing intent across implementations and reconciliations.
+
+This prototype takes a different approach. Every business event enters the system exactly once, is interpreted by a declarative policy, and produces journal entries that are cryptographically sealed and immutable. The system records not just what happened, but why: the policy in force, the configuration version that governed posting, and a complete decision trail that led from event to journal entry. That decision record is persisted on every posting and can be queried after the fact by auditors, compliance teams, or automated systems that need to understand the financial narrative.
+
+---
+
+## 3. Key Learnings
+
+**Immutability matters operationally.** When records cannot be changed, there are no race conditions on balances, no "last write wins" bugs, and less drift that forces reconciliation. Corrections are explicit reversal entries that tell their own story. In practice, a single enforcement layer — ORM listeners alone, or database triggers alone — is insufficient, because each layer can be bypassed independently. The combination of ORM event listeners, PostgreSQL triggers, and session-level flush guards creates a defense-in-depth that requires circumventing all three to modify a protected record. This eliminated the entire category of "mysterious balance changes" that plague mutable-ledger systems.
+
+**Declarative policy changes who can safely reason about the system.** Moving posting rules into YAML policy definitions, rather than embedding them in code, means accountants and auditors can review, version, and approve the rules that govern financial recording without reading Python. The difficult part was building a dispatch system that guarantees exactly one policy matches any given event. Where-clause predicates, specificity scoring, and precedence rules were necessary to prevent ambiguous dispatch — where two policies both claim to handle the same event type. The system rejects ambiguity at compile time rather than resolving it heuristically at runtime.
+
+**Audit trail should be produced during posting, not reconstructed later.** Structured logs captured during every posting are persisted alongside outcomes. Any journal entry can be traced back to the exact policy, configuration version, role resolution, balance check, engine computation, and sequence allocation that produced it. An LLM reading this trail can explain in plain language why a specific amount landed in a specific account, without guessing. This transforms audit from archeology into conversation.
+
+**Pure functions and clock injection make replay deterministic.** When the domain core has zero side effects and timestamps are injected, the same event processed with the same configuration produces the same journal entry. That property underpins audit replay and regulatory defensibility. Every journal entry records the exact versions of the chart of accounts, dimension schema, rounding policy, and currency registry in force at posting time. Given those versions and the original event, the posting can be reproduced mechanically.
+
+**Real-time subledger reconciliation is feasible but requires architectural discipline.** Enforcing subledger-to-GL balance contracts at posting time means the GL balance query and the subledger balance query must run in the same database transaction (snapshot isolation). The subledger entry and the journal entry must be committed atomically. Tolerance must be evaluated per currency, not on FX-converted aggregates. These constraints drove significant architectural decisions — particularly the choice to persist subledger entries from the services layer via callable injection, rather than from the kernel's JournalWriter.
+
+**The larger insight I take from this experiment is that much of the complexity in finance modules is duplicated structure.** Many concepts are similar across modules — policy selection, meaning construction, line mapping, role resolution, balance checks, trace capture, idempotency, sequencing, period enforcement, and reconciliation contracts. By abstracting these shared concepts into a unified architecture, you can reduce module-specific accounting logic substantially. Once that unified layer exists, you get a more stable system that is easier to maintain, easier to test, and easier to extend.
+
+I also believe this approach can scale both up and down. It can serve very large enterprises without hardcoding enterprise-only behavior, because capabilities and modules can be defined by configuration rather than code. That same configuration mechanism can serve smaller companies by exposing only the capabilities they need, and gradually revealing complexity as the company matures, without breaking the accounting model or forcing architectural rewrites.
+
+And because accounting behavior is centralized and traced, explaining why something happened becomes far more approachable for auditors and more executable for operations teams. The system carries the rationale alongside the result.
+
+---
+
+## 4. Architecture Overview
 
 ### The Five-Layer Stack
 
@@ -54,17 +76,25 @@ finance_config/       YAML-driven configuration, single entrypoint
 finance_kernel/       Core: domain, services, models, db, selectors
 ```
 
-**Who:** The kernel is the foundational truth layer — it owns journal entries, events, audit trails, and immutability enforcement. Engines perform pure mathematical computations (allocation, tax, variance analysis) and are invoked at runtime through a central `EngineDispatcher` that reads engine requirements from compiled policies. Configuration defines the accounting policies, chart of accounts, and governance controls for a specific organization. Services orchestrate stateful operations that span engines and kernel, coordinated by a `PostingOrchestrator` that owns the lifecycle of all kernel services. Modules represent the ERP-level business processes (accounts payable, inventory, payroll) that translate business activities into accounting events.
+The outer layer is **finance modules**: thin ERP modules like AP, AR, Inventory, Payroll. Their job is to express business activity as events and maintain operational state, not to embed accounting logic.
 
-**What:** The system processes business events into immutable journal entries through a policy-driven interpretation pipeline. Events are matched to accounting policies, policies define which accounts to debit and credit using semantic roles, and those roles are resolved to specific chart-of-accounts codes at posting time. When a policy declares engine dependencies (variance, allocation, tax), the `EngineDispatcher` invokes those engines with configuration-driven parameters before intent construction, and every invocation produces a traced audit record.
+Below that is **finance services**: stateful orchestration over engines and kernel components. This layer owns transactions and process coordination.
 
-**When:** Configuration is assembled and compiled at build time from YAML fragments. At runtime, the sole entrypoint `get_active_config()` returns a frozen, validated `CompiledPolicyPack`. The pack's engine contracts, resolved parameters, and policy-level engine bindings are consumed by the `EngineDispatcher` at posting time. Posting happens within a single database transaction — either all journal lines for an event are committed, or none are.
+Below that is **finance engines**: pure calculation engines such as variance, allocation, and tax. Engines are deterministic and may only import value objects from the kernel domain.
 
-**Where:** The system runs against PostgreSQL 15+, which provides the transaction isolation, row-level locking, and trigger-based immutability enforcement the architecture requires.
+Below that is **finance configuration**: YAML-driven configuration with a single entrypoint that returns a frozen, validated compiled policy pack.
 
-**Why:** Audit compliance, regulatory determinism, and the ability to answer "why does this number exist?" from the data alone — without relying on tribal knowledge, manual reconciliation, or reading application source code.
+At the center is the **finance kernel**: the foundational truth layer. It owns journal entries, events, audit trails, economic links, immutability enforcement, selectors, and core invariants.
 
-### Why These Properties Matter
+### How Events Become Journal Entries
+
+The system processes business events into immutable journal entries through a policy-driven interpretation pipeline. Events are matched to accounting policies. Policies define which accounts to debit and credit using semantic roles, not hardcoded account codes. Those roles are resolved to specific chart-of-accounts codes at posting time. If a policy declares engine dependencies (variance, allocation, tax), those engines are invoked with configuration-driven parameters before the final intent is constructed, and every invocation produces trace data that becomes part of the posting record.
+
+Configuration is assembled and compiled at build time from YAML fragments. At runtime, the sole entrypoint `get_active_config()` returns a frozen, validated `CompiledPolicyPack`. The pack's engine contracts, resolved parameters, and policy-level engine bindings are consumed by the `EngineDispatcher` at posting time. Posting happens within a single database transaction — either all journal lines for an event are committed, or none are.
+
+### Database and Storage Properties
+
+The system runs against PostgreSQL 15+, which provides the transaction isolation, row-level locking, and trigger-based immutability enforcement the architecture requires.
 
 **Append-only immutability** means the ledger is a sealed record. Once a journal entry is posted, no code path — not ORM, not raw SQL, not direct database access — can modify it. This is enforced at three levels: ORM event listeners, PostgreSQL triggers, and session-level guards. An auditor can trust that the journal they see today is the same journal that existed at close-of-period.
 
@@ -76,11 +106,11 @@ finance_kernel/       Core: domain, services, models, db, selectors
 
 ---
 
-## 3. The Finance Kernel
+## 5. The Finance Kernel
 
 The kernel is the innermost layer of the system. It owns the foundational primitives — journal entries, events, audit trails, economic links, immutability enforcement — and exposes them through pure domain logic, ORM models, stateful services, and read-only selectors.
 
-### 3.1 Domain Layer (`finance_kernel/domain/`)
+### 5.1 Domain Layer (`finance_kernel/domain/`)
 
 The domain layer is pure logic with zero I/O. It cannot import from the database, services, or selectors packages. Every function in this layer is a deterministic transformation from inputs to outputs.
 
@@ -102,7 +132,7 @@ The domain layer is pure logic with zero I/O. It cannot import from the database
 
 **Valuation (`valuation.py`).** Pure valuation functions for inventory costing (FIFO, LIFO, weighted average, standard cost) and cost-layer management. No I/O — these are mathematical functions over cost lot data.
 
-### 3.2 Models Layer (`finance_kernel/models/`)
+### 5.2 Models Layer (`finance_kernel/models/`)
 
 The models layer defines SQLAlchemy ORM models that map to PostgreSQL tables. Each model declares its immutability constraints.
 
@@ -134,11 +164,11 @@ The models layer defines SQLAlchemy ORM models that map to PostgreSQL tables. Ea
 
 **SubledgerPeriodStatusModel.** Tracks the close state of each subledger per fiscal period. Status enum: OPEN, RECONCILING, CLOSED. Unique constraint on `(subledger_type, period_code)`. FK to FiscalPeriod for referential integrity. Links to ReconciliationFailureReportModel when close fails. Makes close state auditable and queryable.
 
-### 3.3 Services Layer (`finance_kernel/services/`)
+### 5.3 Services Layer (`finance_kernel/services/`)
 
 Services are the imperative shell — they perform I/O, own transaction boundaries, and orchestrate the pure domain logic.
 
-**PostingOrchestrator.** The central DI container and service factory for all kernel and service-layer services. Every service is created once by the orchestrator and injected into consumers — no service may create other services internally. This eliminates duplicate instances (e.g., multiple SequenceService objects competing for sequence numbers), enables test double injection, and provides a single point of lifecycle control. The orchestrator accepts a database session, a `CompiledPolicyPack`, a `RoleResolver`, and an optional clock. It creates and exposes: AuditorService, PeriodService, LinkGraphService, ReferenceSnapshotService, PartyService, ContractService, IngestorService, JournalWriter, OutcomeRecorder, EngineDispatcher, InterpretationCoordinator, MeaningBuilder, and a dictionary of subledger services keyed by SubledgerType.
+**PostingOrchestrator.** The central DI container and service factory. It creates services once per transaction and injects them, preventing duplicate instances that could compete for sequencing or decision capture. The orchestrator accepts a database session, a `CompiledPolicyPack`, a `RoleResolver`, and an optional clock. It creates and exposes: AuditorService, PeriodService, LinkGraphService, ReferenceSnapshotService, PartyService, ContractService, IngestorService, JournalWriter, OutcomeRecorder, EngineDispatcher, InterpretationCoordinator, MeaningBuilder, and a dictionary of subledger services keyed by SubledgerType.
 
 **EngineDispatcher.** The runtime engine dispatch layer. When a policy declares `required_engines` (e.g., `["variance", "allocation"]`), the dispatcher reads the policy's `engine_parameters_ref`, looks up `resolved_engine_params` from the compiled pack, validates inputs against the engine contract's parameter schema, invokes the registered engine invoker, and collects `EngineTraceRecord` entries. The dispatcher is wired into InterpretationCoordinator — engine invocation happens after policy selection and meaning building, but before intent construction. Engine outputs are merged into the event payload for downstream line mapping. If no engines are required, the dispatcher is a no-op.
 
@@ -170,7 +200,7 @@ Services are the imperative shell — they perform I/O, own transaction boundari
 2. **Compilation receipt is required.** PolicySelector.register() requires a `CompilationReceipt` produced by PolicyCompiler. Uncompiled policies cannot enter the dispatch index.
 3. **Actor validation is required.** ModulePostingService.post_event() verifies that the `actor_id` references a valid, active party before processing. Frozen or nonexistent actors are rejected.
 
-### 3.4 Selectors Layer (`finance_kernel/selectors/`)
+### 5.4 Selectors Layer (`finance_kernel/selectors/`)
 
 Selectors are read-only query services that assemble derived views from existing data without creating new persistent state.
 
@@ -180,7 +210,7 @@ Selectors are read-only query services that assemble derived views from existing
 
 **SubledgerSelector.** Read-only query service for subledger data. Provides eight query methods: `get_entry`, `get_entries_by_entity`, `get_entries_by_journal_entry`, `get_open_items`, `get_balance` (per entity), `get_aggregate_balance` (across all entities — the primary method for G9 control account comparison), `get_reconciliation_history`, and `count_entries`. All balance methods require a currency parameter (invariant SL-G3 — per-currency reconciliation). Uses the caller's SQLAlchemy session, not its own (invariant SL-G4 — snapshot isolation). Returns frozen DTOs: `SubledgerEntryDTO`, `SubledgerBalanceDTO`, `ReconciliationDTO`.
 
-### 3.5 Database Layer (`finance_kernel/db/`)
+### 5.5 Database Layer (`finance_kernel/db/`)
 
 **Engine Management (`engine.py`).** PostgreSQL connection pooling, session factory, and transactional scope management.
 
@@ -190,61 +220,61 @@ Selectors are read-only query services that assemble derived views from existing
 
 ---
 
-## 4. Finance Modules
+## 6. Finance Modules
 
-Modules are thin ERP-level wrappers that translate business processes into accounting events. Each module follows a uniform structure: profiles (declarative accounting policies), config (account mappings and module settings), service (stateful business operations), workflows (multi-step business processes), and models (module-specific data structures).
+Modules are thin ERP-level wrappers that translate business processes into accounting events. Each module follows a uniform structure: profiles (declarative accounting policies), config (account mappings and module settings), service (stateful business operations), workflows (multi-step business processes), and models (module-specific data structures). Modules emit events and manage workflows, but they do not embed accounting logic.
 
-### 4.1 General Ledger (GL)
+### 6.1 General Ledger (GL)
 
 The General Ledger module handles core GL operations that don't belong to a specific subledger: manual journal entries, period-end closing entries, intercompany transactions, retained earnings calculations, and dividend distributions. It provides the foundational debit/credit mechanics that all other modules build upon.
 
-### 4.2 Accounts Payable (AP)
+### 6.2 Accounts Payable (AP)
 
 The AP module manages the supplier payment lifecycle: invoice receipt, three-way matching (PO to receipt to invoice), payment processing, credit memo application, and supplier balance tracking. Profiles define the accounting entries for each stage — invoice recording debits expense and credits AP; payment debits AP and credits cash. The AP subledger maintains per-supplier balances that reconcile to the GL control account.
 
-### 4.3 Accounts Receivable (AR)
+### 6.3 Accounts Receivable (AR)
 
 AR manages the customer revenue cycle: invoice issuance, payment receipt, discount application, bad debt provisioning, and aging analysis. The module tracks open receivables, applies cash receipts, and manages allowance for doubtful accounts. Each customer interaction flows through a profile that produces the appropriate journal entries.
 
-### 4.4 Inventory
+### 6.4 Inventory
 
 The inventory module handles physical stock movements and their financial effects: receipts from purchase orders, issues to production or sales, inter-location transfers, physical count adjustments, scrap write-offs, and standard cost revaluations. It maintains a dual-ledger model — the GL records the aggregate financial position while the inventory subledger tracks individual stock movements (stock on hand, in transit, in production, sold, scrapped).
 
-### 4.5 Procurement
+### 6.5 Procurement
 
 Procurement manages the purchasing lifecycle from requisition through purchase order to goods receipt. It handles encumbrance accounting (committing budget before spending), purchase commitments, and the linkage between PO lines and inventory receipts. Procurement events trigger the economic links that connect purchase orders to receipts to invoices.
 
-### 4.6 Payroll
+### 6.6 Payroll
 
 The payroll module processes compensation events: salary accruals, wage payments, overtime calculations, PTO accruals, tax withholdings (federal, state, FICA), and benefits processing. Each payroll run produces journal entries that debit expense accounts by category and credit accrued liabilities and tax payable accounts. The module supports labor cost distribution for organizations that allocate labor to projects or cost centers.
 
-### 4.7 Cash Management
+### 6.7 Cash Management
 
 Cash management tracks bank account activity: deposits, withdrawals, transfers between accounts, bank fee processing, and bank reconciliation. It maintains a bank subledger with reconciliation status tracking (available, deposit, withdrawal, reconciled, pending) and supports the matching of bank statement lines to internal transactions.
 
-### 4.8 Fixed Assets
+### 6.8 Fixed Assets
 
 The assets module manages the lifecycle of capital assets: acquisition, depreciation (straight-line and other methods), impairment, disposal, and construction-in-progress (CIP). Each depreciation run produces journal entries debiting depreciation expense and crediting accumulated depreciation. Asset disposals calculate gain or loss and reverse the accumulated depreciation.
 
-### 4.9 Expense Management
+### 6.9 Expense Management
 
 Expense management processes employee expense reports: submission, approval workflows, reimbursement, corporate card reconciliation, and advance clearing. The module distinguishes between project-billable expenses (which flow to WIP) and general expenses, and supports cost allowability classification for government contractors.
 
-### 4.10 Tax
+### 6.10 Tax
 
 The tax module computes and records tax obligations: sales tax collection, use tax accrual, income tax provision, VAT settlement, and tax refund processing. It maintains separate accounts for each tax type and jurisdiction, and produces the journal entries for periodic tax remittance and filing.
 
-### 4.11 Work-in-Process (WIP)
+### 6.11 Work-in-Process (WIP)
 
 WIP tracks manufacturing and production costs: material issues to production, labor charges, overhead allocation, job completion, variance analysis (labor, material, overhead), scrap, and rework. It bridges inventory, payroll, and overhead allocation into a unified cost accumulation model.
 
-### 4.12 Contracts
+### 6.12 Contracts
 
 The contracts module supports government and commercial contract accounting: contract lifecycle management (active, completed, closed-out), CLIN-level cost tracking, billing by contract type (CPFF — Cost Plus Fixed Fee, T&M — Time and Materials, FFP — Firm Fixed Price), indirect rate application, and DCAA compliance. It handles the specialized accounting requirements of defense contractors, including incurred cost reporting, provisional billing rates, and cost allowability determination.
 
 ---
 
-## 5. Calculation Engines
+## 7. Calculation Engines
 
 Engines are pure functions — no I/O, no database access, fully deterministic. They accept value objects from the kernel domain and return computed results.
 
@@ -272,7 +302,7 @@ Engines are pure functions — no I/O, no database access, fully deterministic. 
 
 **Tracer Engine.** Pure computation support for trace bundle assembly.
 
-### 5.1 Engine Contracts and Runtime Dispatch
+### 7.1 Engine Contracts and Runtime Dispatch
 
 Every engine declares a contract (`finance_engines/contracts.py`) that specifies:
 
@@ -282,7 +312,7 @@ Every engine declares a contract (`finance_engines/contracts.py`) that specifies
 
 At runtime, policies declare their engine dependencies via `required_engines` and `engine_parameters_ref` in the YAML policy definition. The `EngineDispatcher` reads these declarations from the compiled policy, resolves the parameters from `CompiledPolicyPack.resolved_engine_params`, and invokes the correct engine with the correct configuration. This means engine behavior is driven by YAML configuration, not hardcoded in module services.
 
-### 5.2 Engine Tracing
+### 7.2 Engine Tracing
 
 Every engine entry point is decorated with `@traced_engine`, which produces a `FINANCE_ENGINE_TRACE` structured log record containing:
 
@@ -293,7 +323,7 @@ Every engine entry point is decorated with `@traced_engine`, which produces a `F
 
 These trace records are captured by the InterpretationCoordinator's LogCapture and persisted in the `InterpretationOutcome.decision_log`. This means every engine computation that contributed to a journal entry is recoverable from the database — an auditor can see exactly which variance calculation, allocation method, or tax computation produced a given financial result.
 
-### 5.3 Variance Disposition
+### 7.3 Variance Disposition
 
 When a variance engine computes a difference between expected and actual costs, the `VarianceDisposition` determines what happens to that variance:
 
@@ -306,13 +336,13 @@ The disposition is declared in the policy YAML (`variance_disposition` field) an
 
 ---
 
-## 6. Configuration System
+## 8. Configuration System
 
-### 6.1 Design Philosophy
+### 8.1 Design Philosophy
 
-The configuration system is built on a key insight: accounting rules should be *data*, not *code*. When a policy that governs how inventory receipts are recorded lives in a YAML file rather than a Python function, it can be reviewed by accountants, versioned alongside the chart of accounts, and approved through a governed lifecycle — all without deploying new software.
+The configuration system is built on a simple idea: accounting rules should be data, not code. When a policy that governs how inventory receipts are recorded lives in a YAML file rather than a Python function, it can be reviewed by accountants, versioned alongside the chart of accounts, and approved through a governed lifecycle — all without deploying new software.
 
-### 6.2 Configuration Structure
+### 8.2 Configuration Structure
 
 A configuration set is a directory of YAML fragments that collectively define how an organization does its accounting:
 
@@ -332,7 +362,7 @@ sets/US-GAAP-2026-v1/
      ... (12 domain files)
 ```
 
-### 6.3 Core Components
+### 8.3 Core Components
 
 **Root Manifest (`root.yaml`).** Declares the configuration identity, version, scope (legal entity, jurisdiction, regulatory regime, currency, effective dates), enabled capabilities (which modules are active), and precedence rules for policy conflict resolution. The scope determines which organization and time period this configuration governs.
 
@@ -355,7 +385,7 @@ sets/US-GAAP-2026-v1/
 
 **Controls (`controls.yaml`).** Global governance rules that apply across all events. For example, a control requiring `payload.amount > 0` rejects any event with a non-positive amount regardless of event type.
 
-### 6.4 Build Pipeline
+### 8.4 Build Pipeline
 
 Configuration flows through a three-stage pipeline:
 
@@ -365,7 +395,7 @@ Configuration flows through a three-stage pipeline:
 
 3. **Compilation.** The compiler (`compiler.py`) produces a `CompiledPolicyPack` — the frozen, machine-validated runtime artifact. Guard expressions are pre-validated, policies are indexed for fast dispatch, engine contracts are resolved and parameter schemas validated, subledger control contracts are compiled with role-to-COA resolution, and the pack receives a canonical fingerprint. The `CompiledPolicyPack` is the *only* object that the runtime posting pipeline accepts. Every compiled field is consumed at runtime — engine contracts by the `EngineDispatcher`, resolved engine parameters by engine invokers, policies by the `PolicySelector`, role bindings by the `JournalWriter`, subledger contracts by the `SubledgerControlRegistry`, and the canonical fingerprint by the integrity verifier. Architecture tests enforce that no compiled field exists without a runtime consumer.
 
-### 6.5 Configuration Lifecycle
+### 8.5 Configuration Lifecycle
 
 Configuration sets follow a governed lifecycle with explicit state transitions:
 
@@ -377,7 +407,7 @@ Only PUBLISHED configurations can be used for posting. Superseded configurations
 
 An optional fingerprint pin mechanism (`integrity.py`) allows organizations to cryptographically seal an approved configuration. If a pin file exists, the system verifies that the compiled pack's canonical fingerprint matches the pinned value. Any unauthorized modification to the YAML fragments would produce a different fingerprint and be rejected at runtime.
 
-### 6.6 Tailoring to Company Needs
+### 8.6 Tailoring to Company Needs
 
 To configure the system for a specific organization, an implementer creates a new configuration set directory:
 
@@ -397,9 +427,9 @@ The result is a complete accounting configuration that can be reviewed, approved
 
 ---
 
-## 7. Traceability, Testing, and Audit
+## 9. Traceability, Testing, and Audit
 
-### 7.1 The Decision Journal
+### 9.1 The Decision Journal
 
 Every posting through the InterpretationCoordinator automatically captures a complete decision journal — a structured log of every function, role resolution, balance check, and posting decision that occurred during the pipeline. This journal is persisted as a JSON array on the `InterpretationOutcome` record, making it queryable from the database without any external log infrastructure.
 
@@ -418,7 +448,7 @@ The decision journal captures:
 - **Reproducibility Proof:** Canonical hashes of the input (accounting intent) and output (journal entries), enabling mechanical verification that the same inputs produce the same outputs.
 - **FINANCE_KERNEL_TRACE:** A final summary with policy name, version, outcome status, and hash proofs.
 
-### 7.2 The Trace Bundle
+### 9.2 The Trace Bundle
 
 The TraceSelector assembles a complete `TraceBundle` for any financial artifact — given an event ID or journal entry ID, it reconstructs the full lifecycle:
 
@@ -439,7 +469,7 @@ python3 scripts/trace.py --entry-id <uuid>         # Trace from journal entry
 python3 scripts/trace.py --event-id <uuid> --json  # Machine-readable JSON
 ```
 
-### 7.3 LLM-Readable Audit Trails
+### 9.3 LLM-Readable Audit Trails
 
 The trace bundle and decision journal are designed to be consumed by large language models for audit analysis. When an auditor or compliance officer needs to understand why a specific dollar amount appears in a specific account, they can:
 
@@ -449,7 +479,7 @@ The trace bundle and decision journal are designed to be consumed by large langu
 
 This capability transforms audit from archeology into conversation. The decision journal provides the structured data; the LLM provides the narrative interpretation.
 
-### 7.4 Test Suite
+### 9.4 Test Suite
 
 The test suite contains over 3,200 tests organized across 24 categories:
 
@@ -480,7 +510,7 @@ The test suite contains over 3,200 tests organized across 24 categories:
 
 Every invariant (R1-R24, L1-L5, P1-P15) has corresponding tests in at least the unit, concurrency, and adversarial categories. The architecture tests enforce import boundaries automatically — if a developer accidentally imports from `finance_modules` inside `finance_kernel`, the test fails.
 
-### 7.5 Invariant Summary
+### 9.5 Invariant Summary
 
 The system enforces 24 kernel invariants, 5 interpretation-layer invariants, and 3 posting invariants. Six of these are designated as non-negotiable — no configuration or policy may override them:
 
@@ -508,7 +538,7 @@ The subledger system adds ten additional invariants (SL-G1 through SL-G10):
 | SL-G9 | **Engine-to-kernel dependency direction** — `finance_engines/` may import from `finance_kernel/domain/`. `finance_kernel/domain/` must never import from `finance_engines/`. | Architecture tests. |
 | SL-G10 | **Currency code normalization** — All currency values are normalized to uppercase 3-letter ISO 4217 at ingestion. | R16 enforcement at system boundary. |
 
-### 7.6 Runtime Guard Enforcement
+### 9.6 Runtime Guard Enforcement
 
 Beyond the six core invariants, the system enforces a set of runtime guard layers that prevent bypass:
 
@@ -524,7 +554,7 @@ Beyond the six core invariants, the system enforces a set of runtime guard layer
 
 **Correction period lock.** The CorrectionEngine validates that artifacts being voided or corrected are not in closed fiscal periods. A document posted in a closed period cannot be unwound — the correction must use a current-period adjusting entry instead.
 
-### 7.7 Financial Exception Lifecycle
+### 9.7 Financial Exception Lifecycle
 
 Every posting attempt — whether it succeeds or fails — produces a durable outcome record. Failed postings do not disappear into transient errors or log files. They become first-class financial cases that are visible, owned, and retriable.
 
@@ -549,102 +579,34 @@ POSTED and ABANDONED are terminal states. A POSTED outcome implies a correspondi
 
 ---
 
-## 8. Problems Solved and How
+## 10. What This Means for End Users
 
-This section documents the key engineering problems we encountered during implementation and the solutions we developed.
+For end users, the practical shift is that accounting behavior becomes more stable and more understandable.
 
-### 8.1 The Subledger Wiring Problem
+Accounting changes can be handled as configuration and policy changes with review and approval, rather than as unpredictable effects of code changes scattered across modules. The rules that govern financial recording — which accounts to debit, which to credit, under what conditions, with what guards and tolerances — live in YAML policy definitions that accountants can read, auditors can review, and compliance teams can approve, all without deploying new software.
 
-**Problem.** The subledger subsystem had substantial code (~1,200 lines across pure domain, control contracts, and an abstract base class) but none of it was connected end-to-end. Subledger entries existed only as in-memory value objects. There was no persistent storage, no concrete service implementations, no selectors for querying balances, no config-driven contracts, and no actual enforcement at post-time or period-close. The codebase gave the appearance of a working subledger system but could not actually track a vendor balance, reconcile an AP control account, or block a period close.
+When something looks wrong, the system can explain itself. You can trace a number back to the event that created it, the policy that interpreted it, the accounts that were selected through role resolution, and any computations that were performed. This reduces dependence on institutional memory and reduces the time spent doing manual reconstruction.
 
-**Solution.** We delivered the full subledger system in 10 phases, each gated by a passing test suite (SL-G7). The key architectural decisions were:
-
-- **Services persist, not kernel.** The kernel's `JournalWriter` cannot import `finance_services/` (layer boundary violation). Subledger entry persistence belongs in the services layer because it requires entity-level domain knowledge (vendor validation, document type rules). We bridged the boundary via callable injection — `ModulePostingService` receives a subledger posting callable from `PostingOrchestrator` and calls it after the journal write, in the same database transaction (SL-G1).
-
-- **Config-driven contracts.** Control contracts are compiled from `subledger_contracts.yaml` at startup. Each contract's `control_account_role` (e.g., `AP_CONTROL`) is resolved to a concrete COA account code at compile time via `RoleResolver`. This means G9 enforcement never performs runtime role lookup — the resolved account is baked into the compiled registry.
-
-- **Same-transaction atomicity.** Subledger entries and journal entries are committed in the same database transaction. If subledger persistence fails, the journal write rolls back. If the journal write fails, no subledger entry is created. There is no intermediate state where GL and subledger are out of sync.
-
-**Scale:** ~3,400 lines of production code, ~1,560 lines of tests, 10 formally defined invariants (SL-G1 through SL-G10), 5 concrete services, 4 new ORM models, 1 config YAML.
-
-### 8.2 The Test State Pollution Problem
-
-**Problem.** The test suite had 128 failures and 3 errors that appeared only when running the full suite — every failing test passed in isolation. The root cause was a class-level registry (`PolicySelector._profiles` and `PolicySelector._by_event_type`) that persists across test modules in a pytest session. Four test fixtures called `PolicySelector.clear()` during teardown without restoring the registry. Since the session-scoped `register_modules` fixture runs only once (registering 130 profiles across 93 event types), all subsequent module tests found an empty registry and returned `PROFILE_NOT_FOUND`.
-
-The difficulty was diagnosis. The failure required all six of a specific set of domain test files to be present — removing any single file made the problem vanish. The interaction was between session-scoped registration, module-level imports that trigger registration, and function-scoped fixtures that clear without restoring.
-
-**Solution.** Changed all four offending fixtures to the save/restore pattern: before clearing, save `PolicySelector._profiles` and `_by_event_type` to local variables; after yield, restore them. Also added `PolicySelector.clear()` to the session-scoped `register_modules` fixture's setup and teardown for clean session boundaries.
-
-This was a 124-failure fix from a 20-line change across 5 files. The remaining 4 failures and 3 errors had independent root causes (test assertion mismatches, a SQL type mismatch, a missing fixture, and a Decimal formatting issue) that required targeted individual fixes.
-
-**Result:** 128 failures + 3 errors -> 0 failures, 0 errors, 3,214 passing.
-
-### 8.3 The LedgerEffect Architecture Constraint
-
-**Problem.** Two contract billing tests expected 3 `LedgerEffect` entries per profile (two for GL, one for the contract subledger). Adding a third GL effect for the fee line caused an idempotency key collision — the journal writer generates idempotency keys as `{econ_event_id}:{ledger}:{version}`, so two GL effects produce two entries with the same key, triggering a `CONCURRENT_INSERT` conflict.
-
-**Solution.** The architecture mandates exactly 1 `LedgerEffect` per ledger. Multiple lines within a ledger (e.g., costs and fee) are expressed through `ModuleLineMapping` entries on a single `LedgerEffect`. The fee line is handled by the module's line mappings, not by a separate effect. The fix was correcting the test assertions to expect 2 effects (GL + CONTRACT), not 3.
-
-This is a load-bearing constraint: the idempotency mechanism depends on ledger-effect-level granularity for key generation. Violating it produces runtime conflicts.
-
-### 8.4 The Dead Code Confusion Problem
-
-**Problem.** `LedgerService` (~476 lines) was dead code — no production or test code ever called `LedgerService.persist()`. But `PostingOrchestrator` instantiated it on every session, and the codebase used "Pipeline A" and "Pipeline B" naming that implied two active posting paths. This created confusion for new developers and cluttered the dependency graph. PostingOrchestrator also instantiated a `SequenceService` that nothing external accessed.
-
-**Solution.** Deleted `LedgerService` entirely. Removed the dead `SequenceService` instantiation from `PostingOrchestrator` (services that need it create their own). Replaced all 41 "Pipeline A" / "Pipeline B" references across 18 files with neutral language ("the posting pipeline"). Updated `CLAUDE.md`, service README, and all documentation. There is now one posting pipeline and it is unnamed — it's just the pipeline.
-
-### 8.5 The Decimal Formatting Trap
-
-**Problem.** Python's `Decimal.normalize()` removes trailing zeros but can produce scientific notation. `Decimal('500.00') / Decimal('10')` produces `Decimal('50.000000000')`. Calling `.normalize()` gives `Decimal('5E+1')`, which converts to the string `'5E+1'` rather than `'50'`. This broke an error message assertion in the valuation engine.
-
-**Solution.** Use `format(decimal.normalize(), 'f')` instead of `str(decimal.normalize())`. The `'f'` format specifier forces fixed-point notation, so `Decimal('5E+1')` renders as `'50'` rather than `'5E+1'`. This pattern should be used anywhere Decimal values appear in user-facing strings.
-
-### 8.6 The Dual Enum Problem
-
-**Problem.** Two `SubledgerType` enums existed in different layers with different casing and different members. The engine layer had `SubledgerType(AP, AR, BANK, INVENTORY, FA, IC)` and the kernel domain had `SubledgerType(ap, ar, inventory, fixed_assets, bank, payroll, wip)`. The `_validate_subledger_controls()` method called `registry.get(ledger_intent.ledger_id)` where the registry was keyed by the domain enum but `ledger_id` was a string. This type mismatch would have failed at runtime if the stub had been completed.
-
-**Solution.** Chose the kernel domain enum as the canonical source of truth (it had more types and lived in the correct layer). Removed the engine-layer duplicate and had `finance_engines/subledger.py` import from `finance_kernel/domain/`. Standardized on uppercase values to match config ledger IDs. Added conversion logic where strings meet enum keys. The dependency direction (engine imports kernel domain) is enforced by architecture tests (SL-G9).
-
-### 8.7 The Clock Injection Gaps
-
-**Problem.** Three clock violations existed in the subledger code: `SubledgerReconciler.reconcile()` called `datetime.now()` (domain purity violation), `SubledgerService.reconcile()` called `datetime.now()` (service clock injection violation), and `SubledgerService.calculate_balance()` called `date.today()` (non-deterministic for replay). Additionally, the bank subledger's balance calculation used the wrong sign convention — treating bank accounts as credit-normal (like liabilities) instead of debit-normal (like assets).
-
-**Solution.** Made all timestamps explicit required parameters. `SubledgerReconciler.reconcile()` now takes `checked_at: datetime`. `SubledgerService.reconcile()` takes `reconciled_at: datetime`. `SubledgerService.calculate_balance()` requires `as_of_date: date`. The bank sign bug was fixed by removing BANK from the credit-normal branch so it uses `debit - credit` like other asset accounts.
+The same architecture also supports gradual adoption. A smaller company can run with limited capabilities, simpler policy sets, and fewer subledgers. As the company grows, capabilities can be enabled by configuration without requiring a rewrite of the finance model.
 
 ---
 
-## 9. Operational Notes
+## 11. What This Means for Engineers
 
-### Current Test Baseline
+For engineers, the practical shift is that financial meaning has a single home.
 
-```
-3,276 tests collected
-3,214 passed, 11 skipped, 13 xfailed, 10 xpassed
-0 failed, 0 errors
-```
+Modules emit events and manage workflows, but they do not embed accounting logic. That reduces duplicated posting logic across modules and reduces the drift that accumulates over years of incremental changes. The accounting rules live in the policy system, the calculations live in the engines, and the posting mechanics live in the kernel. A developer adding a new module writes profiles and event definitions — not posting logic.
 
-### Running Tests
+The architecture creates a bounded place to reason about accounting: the policy system, the engines, and the posting pipeline. Tests enforce layer boundaries so "quick fixes" do not silently reintroduce module-specific logic. Import boundary tests, dead-scaffolding detection, and primitive reuse tests all run on every build, catching architectural drift before it accumulates.
 
-```bash
-python3 -m pytest tests/ -v --tb=short
-```
+It also creates a stable interface for automation. Agents do not need to infer why the system did something. They can read the decision record produced during posting and provide explanations grounded in the same facts an auditor would use.
 
-### Interactive Demo
+---
 
-```bash
-python3 scripts/interactive.py
-```
+## 12. Conclusion
 
-Supports GL posting, subledger operations (AP/AR/Inventory/Bank), trace bundles, and subledger balance reports.
+This prototype suggests it is possible to reduce a large amount of ERP finance complexity by pulling the shared accounting concepts out of individual modules and consolidating them into a unified architecture.
 
-### Configuration
+The resulting system is more maintainable because accounting meaning is centralized and governed. It is more stable because it reduces drift between modules and relies on immutable source-of-truth records. It scales up because capabilities and complexity can be managed through configuration rather than hardcoded behavior. It scales down because smaller deployments can start with minimal capability sets without changing the core model.
 
-Single entrypoint:
-```python
-from finance_config import get_active_config
-pack = get_active_config(legal_entity="ACME", as_of_date=date.today())
-```
-
-### Database
-
-PostgreSQL 15+ required. Connection: `postgresql://finance:finance_test_pwd@localhost:5432/finance_kernel_test`
+And because the system captures the rationale of posting as structured data, tracing and explaining financial behavior becomes far more approachable for operators and far more executable for audits, investigations, and agent-driven workflows.

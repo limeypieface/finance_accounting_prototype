@@ -1,7 +1,31 @@
 """
-Allocation Engine - Allocate amounts across multiple targets.
+Module: finance_engines.allocation
+Responsibility:
+    Allocate monetary amounts across multiple targets using configurable
+    methods (pro-rata, FIFO, LIFO, specific, weighted, equal) with
+    deterministic rounding.
 
-Pure functions with deterministic rounding. No I/O.
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values.
+
+Invariants enforced:
+    - R4 (balance per currency): total_allocated + unallocated == source_amount.
+    - R5 / R17 (rounding): rounding difference is deterministically assigned
+      to a single designated target so penny totals are preserved.
+    - R16 (ISO 4217): currency consistency enforced across targets and source.
+    - Purity: no clock access, no I/O (R6).
+
+Failure modes:
+    - ValueError on currency mismatch between source and targets.
+    - ValueError on zero total weight (weighted method).
+    - ValueError on missing eligible_amount for pro-rata method.
+    - ValueError on unknown allocation method.
+
+Audit relevance:
+    Allocation results feed journal line generation. The deterministic
+    rounding guarantee ensures that any replay produces identical penny
+    assignments, satisfying R6.
 
 Usage:
     from finance_engines.allocation import AllocationEngine, AllocationTarget, AllocationMethod
@@ -51,7 +75,13 @@ class AllocationTarget:
     """
     A target that can receive an allocation.
 
-    Immutable value object.
+    Contract:
+        Frozen dataclass representing one potential allocation recipient.
+    Guarantees:
+        - ``weight`` is non-negative.
+    Non-goals:
+        - Does not validate currency of ``eligible_amount``; the engine
+          performs that check at allocation time.
     """
 
     target_id: str | UUID
@@ -71,7 +101,12 @@ class AllocationLine:
     """
     Result of allocation to a single target.
 
-    Immutable value object.
+    Contract:
+        Frozen dataclass representing the outcome for one target.
+    Guarantees:
+        - ``allocated + remaining == eligible_amount`` (when eligible is set).
+    Non-goals:
+        - Does not carry allocation method metadata; see ``AllocationResult``.
     """
 
     target_id: str | UUID
@@ -94,7 +129,13 @@ class AllocationResult:
     """
     Complete allocation result.
 
-    Immutable value object with all allocation details.
+    Contract:
+        Frozen dataclass summarising an allocation run.
+    Guarantees:
+        - ``total_allocated + unallocated == source_amount`` (R4 conservation).
+        - ``rounding_adjustment`` records the deterministic penny fixup.
+    Non-goals:
+        - Does not persist the result; callers are responsible for storage.
     """
 
     source_amount: Money
@@ -119,14 +160,19 @@ class AllocationEngine:
     """
     Allocate amounts across multiple targets.
 
-    Pure functions with deterministic rounding.
-    No I/O, no database access.
-
-    Rounding Strategy:
-        - All intermediate calculations use full precision
-        - Final amounts rounded to currency decimal places
-        - Rounding difference assigned to designated target (last by default)
-        - This ensures total allocated always equals source amount
+    Contract:
+        Pure functions with deterministic rounding.
+        No I/O, no database access.
+    Guarantees:
+        - Rounding Strategy:
+            * All intermediate calculations use full precision.
+            * Final amounts rounded to currency decimal places (ROUND_HALF_UP).
+            * Rounding difference assigned to designated target (last by default).
+            * This ensures total allocated always equals source amount (R4).
+        - Currency consistency: all targets must share the source currency (R16).
+    Non-goals:
+        - Does not decide *which* method to use; callers select the method.
+        - Does not perform I/O or persist results.
     """
 
     @traced_engine("allocation", "1.0", fingerprint_fields=("amount", "method"))
@@ -308,10 +354,22 @@ class AllocationEngine:
         get_ratio: callable,
         rounding_target_index: int | None,
     ) -> AllocationResult:
-        """Common logic for ratio-based allocations."""
+        """Common logic for ratio-based allocations.
+
+        Preconditions:
+            - ``targets`` is non-empty.
+            - ``get_ratio`` returns a Decimal in [0, 1] for each target
+              and the ratios sum to 1.
+        Postconditions:
+            - Sum of all ``allocated`` amounts == ``amount`` (the rounding
+              target absorbs the penny residual).
+        Raises:
+            - No direct raises; delegates to ``Money`` arithmetic.
+        """
         if rounding_target_index is None:
             rounding_target_index = len(targets) - 1
 
+        # INVARIANT: R17 — rounding precision derived from currency decimal places
         currency = amount.currency
         decimal_places = Decimal(10) ** -currency.decimal_places
         lines: list[AllocationLine] = []
@@ -321,6 +379,7 @@ class AllocationEngine:
             is_rounding_target = i == rounding_target_index
 
             if is_rounding_target:
+                # INVARIANT: R5 — rounding difference assigned to exactly one target
                 # Rounding target gets remainder
                 allocated_amount = amount.amount - allocated_so_far
             else:
@@ -360,6 +419,12 @@ class AllocationEngine:
         )
         total_allocated_money = Money.of(total_allocated, currency)
         unallocated = amount - total_allocated_money
+
+        # INVARIANT: R4 — total_allocated + unallocated == source_amount
+        assert total_allocated_money.amount + unallocated.amount == amount.amount, (
+            f"Allocation conservation violated: "
+            f"{total_allocated_money.amount} + {unallocated.amount} != {amount.amount}"
+        )
 
         # Calculate rounding adjustment (difference from naive allocation)
         naive_total = sum(

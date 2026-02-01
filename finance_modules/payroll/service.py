@@ -1,16 +1,52 @@
 """
-Payroll Module Service - Orchestrates payroll operations via engines + kernel.
+Payroll Module Service (``finance_modules.payroll.service``).
 
-Thin glue layer that:
-1. Calls AllocationEngine for distributing payroll across cost centers
-2. Calls AllocationCascade for fringe/overhead/G&A cascade (DCAA compliance)
-3. Calls VarianceCalculator for budget vs actual variances
-4. Calls ModulePostingService for journal entry creation
+Responsibility
+--------------
+Orchestrates payroll operations -- payroll runs, tax withholding (federal,
+state, FICA), employer tax accruals, benefit deductions, cost-center
+allocation, DCAA fringe/overhead/G&A cascade, variance analysis, and ACH
+batch generation -- by delegating pure computation to ``finance_engines``
+and ``helpers.py``, and journal persistence to
+``finance_kernel.services.module_posting_service``.
 
-All computation lives in engines. All posting lives in kernel.
-This service owns the transaction boundary (R7 compliance).
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue.  ``PayrollService`` is the sole public
+entry point for payroll operations.  It composes stateless engines
+(``AllocationEngine``, ``AllocationCascade``, ``VarianceCalculator``) and
+pure helper functions (``calculate_federal_withholding``, ``calculate_fica``,
+``calculate_state_withholding``, ``generate_nacha_batch``), plus the kernel
+``ModulePostingService``.
 
-Usage:
+Invariants enforced
+-------------------
+* R7  -- Each public method owns the transaction boundary
+          (``commit`` on success, ``rollback`` on failure or exception).
+* R14 -- Event type selection is data-driven; no ``if/switch`` on
+          event_type inside the posting path.
+* L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
+* DCAA -- Indirect cost allocation follows FAR/CAS methodology via
+           ``build_dcaa_cascade``.
+
+Failure modes
+-------------
+* Guard rejection or kernel validation  -> ``ModulePostingResult`` with
+  ``is_success == False``; session rolled back.
+* Unexpected exception  -> session rolled back, exception re-raised.
+* Engine errors (e.g., zero-length allocation targets)  -> propagate before
+  posting attempt.
+
+Audit relevance
+---------------
+Structured log events emitted at operation start and commit/rollback for
+every public method, carrying run IDs, employee IDs, gross pay amounts,
+and withholding breakdowns.  All journal entries feed the kernel audit
+chain (R11).  Payroll is SOX-critical and requires full withholding
+traceability.
+
+Usage::
+
     service = PayrollService(session, role_resolver, clock)
     result = service.record_payroll_run(
         run_id=uuid4(), employee_id="EMP-001",
@@ -52,6 +88,17 @@ from finance_engines.allocation_cascade import (
     build_dcaa_cascade,
 )
 from finance_engines.variance import VarianceCalculator, VarianceResult
+from finance_modules.payroll.helpers import (
+    calculate_federal_withholding,
+    calculate_fica,
+    calculate_state_withholding,
+    generate_nacha_batch,
+)
+from finance_modules.payroll.models import (
+    BenefitsDeduction,
+    EmployerContribution,
+    WithholdingResult,
+)
 
 logger = get_logger("modules.payroll.service")
 
@@ -59,6 +106,30 @@ logger = get_logger("modules.payroll.service")
 class PayrollService:
     """
     Orchestrates payroll operations through engines and kernel.
+
+    Contract
+    --------
+    * Every posting method returns ``ModulePostingResult``; callers inspect
+      ``result.is_success`` to determine outcome.
+    * Non-posting helpers (``calculate_withholding_breakdown``,
+      ``generate_nacha_batch``, etc.) return pure domain objects with no
+      side-effects on the journal.
+
+    Guarantees
+    ----------
+    * Session is committed only on ``result.is_success``; otherwise rolled back.
+    * Engine writes and journal writes share a single transaction
+      (``ModulePostingService`` runs with ``auto_commit=False``).
+    * Clock is injectable for deterministic testing.
+    * DCAA fringe/overhead/G&A cascade follows FAR/CAS methodology.
+
+    Non-goals
+    ---------
+    * Does NOT own account-code resolution (delegated to kernel via ROLES).
+    * Does NOT enforce fiscal-period locks directly (kernel ``PeriodService``
+      handles R12/R13).
+    * Does NOT persist payroll domain models -- only journal entries are
+      persisted.
 
     Engine composition:
     - AllocationEngine: distributes payroll costs across cost centers/projects
@@ -191,8 +262,6 @@ class PayrollService:
         try:
             # Engine: link tax deposit to payroll run
             from finance_kernel.domain.economic_link import EconomicLink, LinkType
-            from datetime import datetime
-
             tax_event_id = uuid4()
             run_ref = ArtifactRef(ArtifactType.EVENT, run_id)
             tax_ref = ArtifactRef(ArtifactType.PAYMENT, tax_event_id)
@@ -203,7 +272,7 @@ class PayrollService:
                 parent_ref=run_ref,
                 child_ref=tax_ref,
                 creating_event_id=tax_event_id,
-                created_at=datetime.utcnow(),
+                created_at=self._clock.now(),
                 metadata={
                     "tax_type": tax_type,
                     "amount": str(amount),
@@ -677,3 +746,213 @@ class PayrollService:
         })
 
         return variance_result
+
+    # =========================================================================
+    # Gross-to-Net Calculation (Pure)
+    # =========================================================================
+
+    def calculate_gross_to_net(
+        self,
+        employee_id: UUID,
+        gross_pay: Decimal,
+        filing_status: str = "single",
+        allowances: int = 0,
+        state_rate: Decimal = Decimal("0.05"),
+        ytd_earnings: Decimal = Decimal("0"),
+    ) -> WithholdingResult:
+        """
+        Calculate gross-to-net payroll breakdown using helper functions.
+
+        This is a pure computation method -- no posting or side effects.
+        Uses helpers for federal withholding, state withholding, and FICA.
+
+        Returns:
+            WithholdingResult with all tax breakdowns and net pay.
+        """
+        federal = calculate_federal_withholding(gross_pay, filing_status, allowances)
+        state = calculate_state_withholding(gross_pay, state_rate)
+        ss_tax, medicare_tax = calculate_fica(gross_pay, ytd_earnings)
+
+        total_deductions = federal + state + ss_tax + medicare_tax
+        net_pay = gross_pay - total_deductions
+
+        logger.info("gross_to_net_calculated", extra={
+            "employee_id": str(employee_id),
+            "gross_pay": str(gross_pay),
+            "federal": str(federal),
+            "state": str(state),
+            "ss_tax": str(ss_tax),
+            "medicare": str(medicare_tax),
+            "net_pay": str(net_pay),
+        })
+
+        return WithholdingResult(
+            id=uuid4(),
+            employee_id=employee_id,
+            gross_pay=gross_pay,
+            federal_withholding=federal,
+            state_withholding=state,
+            social_security=ss_tax,
+            medicare=medicare_tax,
+            total_deductions=total_deductions,
+            net_pay=net_pay,
+        )
+
+    # =========================================================================
+    # Benefits Deduction
+    # =========================================================================
+
+    def record_benefits_deduction(
+        self,
+        employee_id: UUID,
+        plan_name: str,
+        employee_amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        employer_amount: Decimal = Decimal("0"),
+        currency: str = "USD",
+    ) -> tuple[BenefitsDeduction, ModulePostingResult]:
+        """
+        Record an employee benefits deduction from paycheck.
+
+        Creates a BenefitsDeduction model and posts via payroll.benefits_deduction.
+
+        Returns:
+            Tuple of (BenefitsDeduction, ModulePostingResult).
+        """
+        deduction = BenefitsDeduction(
+            id=uuid4(),
+            employee_id=employee_id,
+            plan_name=plan_name,
+            employee_amount=employee_amount,
+            employer_amount=employer_amount,
+        )
+
+        try:
+            logger.info("benefits_deduction_started", extra={
+                "employee_id": str(employee_id),
+                "plan_name": plan_name,
+                "employee_amount": str(employee_amount),
+                "employer_amount": str(employer_amount),
+            })
+
+            result = self._poster.post_event(
+                event_type="payroll.benefits_deduction",
+                payload={
+                    "employee_id": str(employee_id),
+                    "plan_name": plan_name,
+                    "employee_amount": str(employee_amount),
+                    "employer_amount": str(employer_amount),
+                },
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=Decimal(str(employee_amount)),
+                currency=currency,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return deduction, result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # NACHA File Generation (Pure)
+    # =========================================================================
+
+    def generate_nacha_file(
+        self,
+        payments: list[dict],
+        company_name: str,
+        company_id: str,
+        effective_date: str,
+    ) -> str:
+        """
+        Generate a NACHA/ACH batch for payroll direct deposits.
+
+        This is a pure computation method -- no posting or side effects.
+        Delegates to generate_nacha_batch helper.
+
+        Args:
+            payments: List of dicts with name, account, routing, amount.
+            company_name: Company name for ACH header.
+            company_id: Company EIN/ID for ACH header.
+            effective_date: Settlement date string.
+
+        Returns:
+            Pipe-delimited representation of ACH batch.
+        """
+        logger.info("nacha_file_generated", extra={
+            "company_name": company_name,
+            "payment_count": len(payments),
+        })
+
+        return generate_nacha_batch(
+            payments=payments,
+            company_name=company_name,
+            company_id=company_id,
+            effective_date=effective_date,
+        )
+
+    # =========================================================================
+    # Employer Contribution
+    # =========================================================================
+
+    def record_employer_contribution(
+        self,
+        employee_id: UUID,
+        plan_name: str,
+        amount: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> tuple[EmployerContribution, ModulePostingResult]:
+        """
+        Record an employer contribution to a benefits plan.
+
+        Creates an EmployerContribution model and posts via
+        payroll.employer_contribution.
+
+        Returns:
+            Tuple of (EmployerContribution, ModulePostingResult).
+        """
+        contribution = EmployerContribution(
+            id=uuid4(),
+            employee_id=employee_id,
+            plan_name=plan_name,
+            amount=amount,
+        )
+
+        try:
+            logger.info("employer_contribution_started", extra={
+                "employee_id": str(employee_id),
+                "plan_name": plan_name,
+                "amount": str(amount),
+            })
+
+            result = self._poster.post_event(
+                event_type="payroll.employer_contribution",
+                payload={
+                    "employee_id": str(employee_id),
+                    "plan_name": plan_name,
+                    "amount": str(amount),
+                },
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=Decimal(str(amount)),
+                currency=currency,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return contribution, result
+
+        except Exception:
+            self._session.rollback()
+            raise

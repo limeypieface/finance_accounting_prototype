@@ -1,8 +1,30 @@
 """
 Tax Configuration Schema.
 
-Defines the structure and sensible defaults for tax settings.
-Actual values are loaded from company configuration at runtime.
+Responsibility:
+    Defines the structure and sensible defaults for tax settings.
+    Actual values are loaded from company configuration at runtime via
+    ``finance_config.get_active_config``.
+
+Architecture:
+    finance_modules -- Thin ERP glue (this layer).
+    No component may read config files or env vars directly; all values
+    are injected through constructor parameters or ``from_dict``.
+
+Invariants:
+    - All validation is performed in ``__post_init__``; an invalid config
+      is never silently accepted.
+    - Nexus state codes must be unique (no duplicate jurisdictions).
+    - Monetary thresholds use ``Decimal`` -- NEVER ``float``.
+
+Failure modes:
+    - ``__post_init__`` raises ``ValueError`` for any out-of-range or
+      invalid field.
+
+Audit relevance:
+    - Configuration state is logged at initialization for reproducibility.
+    - ``filing_frequency`` and ``primary_tax_type`` affect compliance
+      reporting cadence and must be auditable.
 """
 
 from dataclasses import dataclass, field

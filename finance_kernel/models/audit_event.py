@@ -1,19 +1,29 @@
 """
-Audit Event model with hash chain.
+Module: finance_kernel.models.audit_event
+Responsibility: ORM persistence for the tamper-evident audit hash chain.
+Architecture position: Kernel > Models.  May import from db/base.py only.
 
-Provides tamper-evident audit trail for all financial operations.
+Invariants enforced:
+    R10 -- Audit records are append-only; no UPDATE or DELETE (ORM + DB trigger).
+    R11 -- Hash chain integrity: hash = H(entity_type | entity_id | action |
+           payload_hash | prev_hash).  Validated by AuditorService.
+    R9  -- seq is monotonically increasing, allocated by SequenceService.
 
-Hard invariants:
-- Hash chain must validate end-to-end
-- Audit records are append-only
+Failure modes:
+    - ImmutabilityViolationError on any UPDATE/DELETE attempt (R10).
+    - AuditChainBrokenError when chain validation detects a hash mismatch (R11).
 
-Minimum coverage:
-- Event ingested
-- Event rejected
-- JournalEntry posted
-- JournalEntry reversed
-- Period violation detected
-- Protocol violation detected
+Audit relevance:
+    AuditEvent IS the audit trail.  Every significant financial action --
+    event ingestion, journal posting, reversal, period close, protocol
+    violation -- produces an AuditEvent.  The hash chain makes any
+    retroactive tampering mathematically detectable.
+
+Minimum coverage (each action type generates at least one AuditEvent):
+    - EVENT_INGESTED, EVENT_REJECTED
+    - JOURNAL_POSTED, JOURNAL_REVERSED
+    - PERIOD_OPENED, PERIOD_CLOSED
+    - PROTOCOL_VIOLATION, PAYLOAD_MISMATCH
 """
 
 from datetime import datetime
@@ -28,7 +38,12 @@ from finance_kernel.db.base import Base, UUIDString
 
 
 class AuditAction(str, Enum):
-    """Types of auditable actions."""
+    """Types of auditable actions.
+
+    Contract: Every member represents one class of financial event that
+    MUST be recorded in the audit chain.  Adding a new action type requires
+    updating AuditorService to produce the corresponding AuditEvent.
+    """
 
     # Event lifecycle
     EVENT_INGESTED = "event_ingested"
@@ -49,6 +64,12 @@ class AuditAction(str, Enum):
     PAYLOAD_MISMATCH = "payload_mismatch"
     VALIDATION_FAILURE = "validation_failure"
 
+    # Close lifecycle
+    CLOSE_BEGUN = "close_begun"
+    SUBLEDGER_CLOSED = "subledger_closed"
+    CLOSE_CERTIFIED = "close_certified"
+    CLOSE_CANCELLED = "close_cancelled"
+
     # Account lifecycle
     ACCOUNT_CREATED = "account_created"
     ACCOUNT_DEACTIVATED = "account_deactivated"
@@ -58,9 +79,19 @@ class AuditEvent(Base):
     """
     Audit event with hash chain for tamper evidence.
 
-    Every significant action in the finance kernel creates an audit event.
-    Events are linked via hash chain - each event's hash includes the
-    previous event's hash, making tampering detectable.
+    Contract:
+        AuditEvent rows are sacred -- append-only, never updated or deleted.
+        Each row's hash includes the previous row's hash, creating a
+        tamper-evident chain (R11).
+
+    Guarantees:
+        - seq is globally unique and monotonically increasing (R9).
+        - hash = H(entity_type | entity_id | action | payload_hash | prev_hash).
+        - prev_hash is None only for the genesis event.
+
+    Non-goals:
+        - This model does NOT enforce hash correctness at INSERT time;
+          that is the responsibility of AuditorService.
     """
 
     __tablename__ = "audit_events"
@@ -139,5 +170,8 @@ class AuditEvent(Base):
 
     @property
     def is_genesis(self) -> bool:
-        """Check if this is the first event in the chain."""
+        """Check if this is the first event in the hash chain (R11).
+
+        Postconditions: Returns True iff prev_hash is None.
+        """
         return self.prev_hash is None

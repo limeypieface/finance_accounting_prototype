@@ -1,15 +1,33 @@
 """
-Economic Event model.
+Module: finance_kernel.models.economic_event
+Responsibility: ORM persistence for the interpreted economic meaning of a
+    business event.  Each EconomicEvent is derived from exactly one source
+    Event by applying an AccountingPolicy, recording the economic classification,
+    valuation, and reference snapshots needed for deterministic replay.
+Architecture position: Kernel > Models.  May import from db/base.py only.
+    MUST NOT import from services/, selectors/, domain/, or outer layers.
 
-The EconomicEvent represents the interpreted meaning of a BusinessEvent.
-It captures:
-- What economic activity occurred (economic_type)
-- The quantity and value
-- The dimensions for reporting
-- Which profile interpreted it
-- Reference snapshots for deterministic replay
+Invariants enforced:
+    L4  -- Replay determinism.  Reference snapshot fields (coa_version,
+           dimension_schema_version, currency_registry_version, fx_policy_version)
+           are recorded at interpretation time so that replaying the same event
+           against the same reference data versions produces identical results.
+    R10 -- Immutability.  EconomicEvent rows are append-only; once created,
+           no fields may be updated or deleted.
+    R21 -- Reference snapshot determinism (mirrored from JournalEntry).  The
+           snapshot versions on EconomicEvent are the economic-layer complement
+           to the posting-layer versions on JournalEntry.
 
-Invariant L4: Replay using stored snapshots produces identical results.
+Failure modes:
+    - ImmutabilityViolationError on any UPDATE or DELETE attempt (R10).
+    - IntegrityError if source_event_id does not exist in events table.
+
+Audit relevance:
+    EconomicEvent provides the interpretive bridge between raw business events
+    and their journal postings.  The profile_id/profile_version/profile_hash
+    fields record exactly which accounting policy version produced this
+    interpretation, enabling full audit traceability and replay verification.
+    The optional hash chain (prev_hash, hash) supports tamper detection.
 """
 
 from datetime import date, datetime
@@ -25,10 +43,27 @@ from finance_kernel.db.base import Base, UUIDString
 
 class EconomicEvent(Base):
     """
-    Immutable interpreted fact.
+    Immutable interpreted economic fact.
 
-    Represents the economic meaning derived from a BusinessEvent
-    by applying an AccountingPolicy.
+    Contract:
+        Each EconomicEvent is derived from exactly one source Event by
+        applying an EconomicProfile (identified by profile_id + profile_version).
+        Once created, the row is immutable -- corrections produce new events,
+        not mutations.
+
+    Guarantees:
+        - source_event_id always references the originating Event (NOT NULL).
+        - economic_type classifies the economic activity for downstream dispatch.
+        - profile_id + profile_version + profile_hash fully identify the
+          interpretation logic version (L4 replay determinism).
+        - Reference snapshot fields enable deterministic replay against the
+          exact reference data versions used at interpretation time (L4/R21).
+
+    Non-goals:
+        - This model does NOT enforce profile existence; the posting pipeline
+          validates profile registration before creating EconomicEvent rows.
+        - This model does NOT validate economic_type against a closed set;
+          new types are added via new profiles (R14/R15).
     """
 
     __tablename__ = "economic_events"
@@ -122,7 +157,12 @@ class EconomicEvent(Base):
         nullable=True,
     )
 
-    # Reference snapshot fields (for audit replay - L4/R21)
+    # ==========================================================================
+    # INVARIANT L4/R21: Reference Snapshot Determinism
+    # These version fields record the exact reference data state at
+    # interpretation time.  Replay with these versions MUST produce
+    # identical results.
+    # ==========================================================================
     coa_version: Mapped[int | None] = mapped_column(
         nullable=True,
     )

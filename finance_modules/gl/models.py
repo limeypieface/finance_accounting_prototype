@@ -1,7 +1,33 @@
 """
-General Ledger Domain Models.
+General Ledger Domain Models (``finance_modules.gl.models``).
 
-The nouns of GL: accounts, periods, batches, recurring entries.
+Responsibility
+--------------
+Frozen dataclass value objects representing the nouns of the general ledger:
+account reconciliation records, period close tasks, recurring entries,
+revaluation results, and translation results.
+
+Architecture position
+---------------------
+**Modules layer** -- pure data definitions with ZERO I/O.  Consumed by
+``GeneralLedgerService`` and returned to callers.  No dependency on kernel
+services, database, or engines.
+
+Invariants enforced
+-------------------
+* All models are ``frozen=True`` (immutable after construction).
+* All monetary fields use ``Decimal`` -- NEVER ``float``.
+
+Failure modes
+-------------
+* Construction with invalid enum values raises ``ValueError``.
+
+Audit relevance
+---------------
+* ``AccountReconciliation`` records track reconciliation status per period.
+* ``PeriodCloseTask`` records support period-close checklist compliance.
+* ``RevaluationResult`` and ``TranslationResult`` records support
+  multi-currency disclosure requirements.
 """
 
 from dataclasses import dataclass, field
@@ -143,6 +169,21 @@ class JournalBatch:
     approved_by: UUID | None = None
 
 
+class ReconciliationStatus(Enum):
+    """Account reconciliation status."""
+    PENDING = "pending"
+    RECONCILED = "reconciled"
+    EXCEPTION = "exception"
+
+
+class CloseTaskStatus(Enum):
+    """Period close task status."""
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+
+
 @dataclass(frozen=True)
 class RecurringEntry:
     """A recurring journal entry template."""
@@ -155,3 +196,60 @@ class RecurringEntry:
     last_generated_date: date | None = None
     is_active: bool = True
     # Lines stored separately, linked by recurring_entry_id
+
+
+@dataclass(frozen=True)
+class AccountReconciliation:
+    """Period-end account reconciliation sign-off."""
+    id: UUID
+    account_id: UUID
+    period: str  # e.g., "2025-12"
+    reconciled_date: date
+    reconciled_by: UUID
+    status: ReconciliationStatus = ReconciliationStatus.PENDING
+    notes: str | None = None
+    balance_confirmed: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class PeriodCloseTask:
+    """Tracks individual period-close checklist items."""
+    id: UUID
+    period: str  # e.g., "2025-12"
+    task_name: str  # e.g., "reconcile_bank", "post_depreciation"
+    module: str  # e.g., "gl", "ap", "ar"
+    status: CloseTaskStatus = CloseTaskStatus.PENDING
+    completed_by: UUID | None = None
+    completed_date: date | None = None
+
+
+class TranslationMethod(Enum):
+    """Currency translation methods per ASC 830."""
+    CURRENT_RATE = "current_rate"
+    TEMPORAL = "temporal"
+
+
+@dataclass(frozen=True)
+class TranslationResult:
+    """Result of a currency translation calculation."""
+    id: UUID
+    entity_id: str
+    period: str
+    source_currency: str
+    target_currency: str
+    method: TranslationMethod
+    translated_amount: Decimal
+    cta_amount: Decimal  # cumulative translation adjustment
+    exchange_rate: Decimal
+
+
+@dataclass(frozen=True)
+class RevaluationResult:
+    """Result of a period-end FX revaluation run."""
+    id: UUID
+    period: str
+    revaluation_date: date
+    currencies_processed: int = 0
+    total_gain: Decimal = Decimal("0")
+    total_loss: Decimal = Decimal("0")
+    entries_posted: int = 0

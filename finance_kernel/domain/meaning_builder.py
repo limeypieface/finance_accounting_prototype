@@ -1,19 +1,27 @@
 """
-MeaningBuilder for constructing EconomicEvents.
+MeaningBuilder -- Extracts economic meaning from business events.
 
-Takes a BusinessEvent and AccountingPolicy and produces the interpreted
-economic meaning. This is a pure domain component - no I/O, no ORM.
+Responsibility:
+    Takes a BusinessEvent and an AccountingPolicy and produces the interpreted
+    economic meaning: quantity, dimensions, guard evaluation, and policy
+    authority validation.
 
-The MeaningBuilder:
-1. Extracts quantity from payload using profile field mapping
-2. Extracts dimensions from payload
-3. Evaluates guard conditions (reject/block)
-4. Validates against PolicyAuthority (if provided)
-5. Produces an immutable EconomicEventData for persistence
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
 
-Integration with foundational modules:
-- ReferenceSnapshot: Uses comprehensive snapshot from reference_snapshot.py
-- PolicyAuthority: Validates economic authority before building meaning
+Invariants enforced:
+    P12 -- Guard evaluation: REJECT is terminal, BLOCK is resumable
+    L4  -- Guards and valuation read only from frozen reference snapshots
+
+Failure modes:
+    - MeaningBuilderResult.rejected  -- REJECT guard triggered (terminal)
+    - MeaningBuilderResult.blocked   -- BLOCK guard triggered (resumable)
+    - MeaningBuilderResult.validation_failed -- profile mismatch or policy violation
+
+Audit relevance:
+    MeaningBuilderResult records exactly which profile was applied, which guards
+    were evaluated, and what economic meaning was derived.  Auditors verify that
+    guard evaluations were honest (P12) and that snapshot versions match (L4).
 """
 
 from dataclasses import dataclass
@@ -78,7 +86,17 @@ class EconomicEventData:
     """
     Immutable data for creating an EconomicEvent.
 
-    This is a pure domain object (DTO) that can be passed to persistence.
+    Contract:
+        Produced by MeaningBuilder.build() on success.
+
+    Guarantees:
+        - Frozen dataclass -- immutable after construction.
+        - ``source_event_id``, ``economic_type``, ``profile_id`` are always
+          present.
+        - ``quantity`` is a ``Decimal`` if extracted, else ``None``.
+
+    Non-goals:
+        - Does NOT persist itself (passed to persistence layer by services).
     """
 
     source_event_id: UUID
@@ -103,14 +121,21 @@ class EconomicEventData:
 @dataclass(frozen=True)
 class GuardEvaluationResult:
     """
-    Result of evaluating guard conditions.
+    Result of evaluating guard conditions (P12).
+
+    Contract:
+        Exactly one of ``passed``, ``rejected``, or ``blocked`` is True.
+        ``reason_code`` is machine-readable (R18).
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
 
     Attributes:
         passed: True if all guards passed
-        rejected: True if a REJECT guard triggered (terminal)
-        blocked: True if a BLOCK guard triggered (resumable)
+        rejected: True if a REJECT guard triggered (terminal -- P12)
+        blocked: True if a BLOCK guard triggered (resumable -- P12)
         triggered_guard: The guard that triggered (if any)
-        reason_code: Machine-readable reason code
+        reason_code: Machine-readable reason code (R18)
         reason_detail: Additional details about the failure
     """
 
@@ -162,10 +187,18 @@ class MeaningBuilderResult:
     """
     Result of building economic meaning from an event.
 
+    Contract:
+        ``success=True`` implies ``economic_event`` is set.
+        ``success=False`` implies either ``guard_result`` or
+        ``validation_errors`` explains the failure.
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
+
     Attributes:
         success: True if meaning was built successfully
         economic_event: The built economic event data (if success)
-        guard_result: Result of guard evaluation
+        guard_result: Result of guard evaluation (P12)
         validation_errors: Validation errors (if any)
     """
 
@@ -225,36 +258,21 @@ class MeaningBuilder:
     """
     Builds economic meaning from business events.
 
-    Pure domain component - no I/O, no ORM.
+    Pure domain component -- no I/O, no ORM.
 
-    Integration with PolicyAuthority:
-        The MeaningBuilder can optionally validate against a PolicyAuthority
-        to enforce economic authority. If a policy_registry is provided,
-        build() will validate that the profile's economic type is authorized.
+    Contract:
+        ``build()`` accepts an event and a profile and returns a
+        ``MeaningBuilderResult``.  Optionally validates against a
+        ``PolicyAuthority`` for economic authority enforcement.
 
-    Usage:
-        builder = MeaningBuilder()
+    Guarantees:
+        - Guard evaluation is deterministic (P12).
+        - Quantity extraction uses ``Decimal`` (never float).
+        - Result always carries guard evaluation status.
 
-        # Without policy validation (backward compatible)
-        result = builder.build(
-            event_id=event.id,
-            event_type=event.event_type,
-            payload=event.payload,
-            effective_date=event.effective_date,
-            profile=profile,
-            snapshot=snapshot,
-        )
-
-        # With policy validation
-        builder = MeaningBuilder(policy_registry=registry)
-        result = builder.build(..., module_type=ModuleType.INVENTORY)
-
-        if result.success:
-            # Persist result.economic_event
-        elif result.guard_result.rejected:
-            # Handle rejection
-        elif result.guard_result.blocked:
-            # Handle block
+    Non-goals:
+        - Does NOT persist the EconomicEventData (services do that).
+        - Does NOT resolve account roles to COA codes (L1 -- JournalWriter).
     """
 
     def __init__(
@@ -356,7 +374,7 @@ class MeaningBuilder:
                 )
             )
 
-        # Evaluate guards (P12: reject vs block semantics)
+        # INVARIANT: P12 -- evaluate guards (reject is terminal, block is resumable)
         guard_result = self._evaluate_guards(payload, profile.guards)
         if guard_result.rejected:
             logger.warning(

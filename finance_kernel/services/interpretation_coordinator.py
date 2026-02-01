@@ -1,14 +1,35 @@
 """
 InterpretationCoordinator - L5 Strengthened Atomicity Service.
 
-Coordinates MeaningBuilder, JournalWriter, and OutcomeRecorder to ensure:
-- L5: No journal rows without a matching POSTED outcome
-- L5: No POSTED outcome without all journal rows
-- P11: Multi-ledger postings are atomic
+Responsibility:
+    Coordinates EconomicEvent creation, JournalWriter, and OutcomeRecorder
+    within a single database transaction to guarantee L5 atomicity: no
+    journal rows exist without a POSTED outcome and no POSTED outcome
+    exists without all corresponding journal rows.
 
-This is the integration point between the economic and finance layers.
-It enforces that the InterpretationOutcome=POSTED is committed in the
-same transaction as all JournalEntry writes.
+Architecture position:
+    Kernel > Services — imperative shell, owns transaction boundaries.
+    Called by ModulePostingService; delegates journal creation to
+    JournalWriter and outcome persistence to OutcomeRecorder.
+
+Invariants enforced:
+    L5  — No journal rows without POSTED outcome; no POSTED without all rows.
+    P11 — Multi-ledger postings from single AccountingIntent are atomic.
+    P15 — Exactly one InterpretationOutcome per accepted event.
+    R21 — Reference snapshot determinism (snapshot fields on EconomicEvent).
+
+Failure modes:
+    - INTERPRETATION_FAILED: MeaningBuilder did not produce economic event.
+    - ENGINE_DISPATCH_FAILED: One or more required engines failed.
+    - ROLE_RESOLUTION_BLOCKED: Account role could not resolve to COA code.
+    - WRITE_FAILED: JournalWriter could not create entries.
+    - Guard rejection/block: Policy guard denied the posting.
+
+Audit relevance:
+    Emits FINANCE_KERNEL_TRACE log entries with reproducibility proof
+    (input_hash, output_hash) for every POSTED, REJECTED, and BLOCKED
+    outcome.  Captures a full decision journal via LogCapture and
+    persists it on the InterpretationOutcome record.
 
 Usage:
     coordinator = InterpretationCoordinator(
@@ -150,11 +171,22 @@ class InterpretationCoordinator:
     """
     Coordinates interpretation and posting with L5 atomicity.
 
-    This service ensures that:
-    1. EconomicEvent is created
-    2. JournalEntry records are created for all ledgers
-    3. InterpretationOutcome=POSTED is recorded
-    4. All three happen in the same transaction (L5)
+    Contract:
+        Accepts a MeaningBuilderResult and AccountingIntent and drives
+        EconomicEvent creation, journal posting, and outcome recording
+        within the caller's transaction.
+
+    Guarantees:
+        - L5: EconomicEvent + JournalEntry rows + POSTED outcome are
+          all flushed in the same transaction.  No partial state.
+        - P11: All ledger intents produce entries atomically.
+        - P15: Exactly one InterpretationOutcome per source_event_id.
+        - Reproducibility proof (input_hash / output_hash) logged.
+
+    Non-goals:
+        - Does NOT call session.commit() — caller controls boundaries.
+        - Does NOT manage event ingestion (that is IngestorService).
+        - Does NOT handle subledger posting (delegated by caller).
 
     If any step fails, the entire operation fails and nothing is persisted.
     The caller is responsible for commit/rollback.
@@ -198,6 +230,22 @@ class InterpretationCoordinator:
     ) -> InterpretationResult:
         """
         Interpret an event and post to ledgers atomically.
+
+        Preconditions:
+            - ``meaning_result`` must be a valid MeaningBuilderResult.
+            - ``accounting_intent.source_event_id`` must correspond to
+              an already-ingested event (FK requirement).
+            - ``actor_id`` must be a valid UUID.
+
+        Postconditions:
+            - On success: EconomicEvent, JournalEntry rows, and
+              InterpretationOutcome (POSTED) are all flushed to the
+              session.  Caller must commit.
+            - On failure: An InterpretationOutcome (REJECTED or BLOCKED)
+              is flushed, or no outcome is created (engine dispatch failure).
+
+        Raises:
+            Exception: Any unexpected error is re-raised after logging.
 
         L5 Compliance: All operations happen in the current transaction.
         The caller must commit to finalize or rollback to abort.
@@ -382,7 +430,7 @@ class InterpretationCoordinator:
             meaning_result.economic_event, trace_id
         )
 
-        # 2. Write journal entries (P11: atomic multi-ledger)
+        # INVARIANT: P11 — Multi-ledger postings from single intent are atomic
         journal_result = self._journal_writer.write(
             intent=accounting_intent,
             actor_id=actor_id,
@@ -406,7 +454,8 @@ class InterpretationCoordinator:
                     trace_id=trace_id,
                 )
 
-        # 3. Record POSTED outcome (L5: same transaction as journal writes)
+        # INVARIANT: L5 — POSTED outcome in same transaction as journal writes
+        # INVARIANT: P15 — Exactly one InterpretationOutcome per event
         outcome = self._outcome_recorder.record_posted(
             source_event_id=accounting_intent.source_event_id,
             profile_id=accounting_intent.profile_id,
@@ -415,6 +464,10 @@ class InterpretationCoordinator:
             journal_entry_ids=list(journal_result.entry_ids),
             trace_id=trace_id,
         )
+
+        # INVARIANT: L5 — Both outcome and journal entries must exist together
+        assert outcome is not None, "L5 violation: POSTED requires an outcome record"
+        assert journal_result.is_success, "L5 violation: POSTED requires successful journal write"
 
         entry_ids = [str(eid) for eid in journal_result.entry_ids]
 

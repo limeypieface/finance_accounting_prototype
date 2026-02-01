@@ -1,10 +1,24 @@
 """
-Ledger Registry for profile validation.
+LedgerRegistry -- Required account roles per economic type per ledger.
 
-Defines required account roles by economic type and dimension requirements.
-Used by PolicyCompiler for P7 validation.
+Responsibility:
+    Defines what account roles are required for each economic type on each
+    ledger.  Used by PolicyCompiler for P7 validation (semantic completeness).
 
-This is a pure domain component - no I/O, no ORM.
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
+
+Invariants enforced:
+    P7 -- Compiler rejects profiles that don't map to all required account
+          roles for the target ledger.
+
+Failure modes:
+    (none -- returns empty tuples for unknown ledgers or economic types)
+
+Audit relevance:
+    Auditors verify that every profile provides mappings for all roles
+    required by the LedgerRegistry (P7).  Missing roles would mean the
+    posting pipeline cannot resolve accounts at L1.
 """
 
 from dataclasses import dataclass
@@ -20,6 +34,12 @@ class LedgerRequirements:
     """
     Requirements for a ledger by economic type.
 
+    Contract:
+        Maps each economic type to the account roles it must provide.
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
+
     Attributes:
         required_roles: Account roles required for each economic type
         dimension_requirements: Dimensions that must be provided
@@ -33,14 +53,22 @@ class LedgerRegistry:
     """
     Registry for ledger requirements.
 
-    Provides:
-    - Registration of ledger requirements
-    - Lookup of required roles by economic type
-    - P7 validation support
+    Contract:
+        Class-level singleton registry.  ``register()`` adds a ledger,
+        ``get_required_roles()`` queries it.
 
-    This is a pure domain component - no I/O, no ORM.
+    Guarantees:
+        - ``get_required_roles()`` returns an empty tuple (never None) for
+          unknown ledgers or economic types.
+        - ``list_ledgers()`` returns a sorted list of all registered ledger IDs.
 
-    Invariant P7: Compiler rejects profiles that don't map to required accounts.
+    Non-goals:
+        - Does NOT persist to database (in-memory registry, populated at
+          module load and by config assembly).
+        - Does NOT resolve roles to COA accounts (that is L1 / JournalWriter).
+
+    Invariants enforced:
+        P7 -- Compiler rejects profiles that don't map to required accounts.
     """
 
     # Class-level registry: ledger_id -> LedgerRequirements

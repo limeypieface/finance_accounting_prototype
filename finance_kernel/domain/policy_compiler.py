@@ -1,12 +1,24 @@
 """
-Profile Compiler for validation before registration.
+PolicyCompiler -- Validates profiles before registration.
 
-Validates profiles against:
-- P1: Overlap detection (single profile match)
-- P7: Ledger semantic completeness
-- P10: Field references validated against EventSchema
+Responsibility:
+    Compiles and validates AccountingPolicy objects against three invariants
+    before they are admitted to the PolicySelector.
 
-This is a pure domain component - no I/O, no ORM.
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
+
+Invariants enforced:
+    P1  -- Overlap detection (exactly one profile matches any event)
+    P7  -- Ledger semantic completeness (required roles present)
+    P10 -- Field references validated against EventSchema
+
+Failure modes:
+    CompilationResult.fail() with one or more ValidationError (R18 codes)
+
+Audit relevance:
+    Compilation results carry machine-readable error codes (R18) that
+    auditors use to verify that only valid profiles were registered.
 """
 
 from dataclasses import dataclass
@@ -51,20 +63,20 @@ class CompilationResult:
 
 class PolicyCompiler:
     """
-    Compiles and validates AccountingPolicys.
+    Compiles and validates AccountingPolicy objects.
 
-    Validates:
-    - P1: Overlap detection - ensures no ambiguous profile matching
-    - P7: Ledger semantic completeness - required roles are provided
-    - P10: Field references - all referenced fields exist in event schema
+    Contract:
+        ``compile()`` returns a ``CompilationResult`` describing whether
+        the profile may be safely registered.
 
-    Usage:
-        compiler = PolicyCompiler()
-        result = compiler.compile(profile)
-        if result.success:
-            PolicySelector.register(profile)
-        else:
-            handle_errors(result.errors)
+    Guarantees:
+        - P1: ``_validate_no_overlaps()`` rejects ambiguous profile matching.
+        - P7: ``_validate_ledger_requirements()`` ensures required roles.
+        - P10: ``_validate_field_references()`` checks event schema.
+
+    Non-goals:
+        - Does NOT register the profile (``compile_and_register()`` does both).
+        - Does NOT evaluate guards (MeaningBuilder does that at runtime).
     """
 
     def __init__(
@@ -88,6 +100,14 @@ class PolicyCompiler:
     def compile(self, profile: AccountingPolicy) -> CompilationResult:
         """
         Compile and validate a profile.
+
+        Preconditions:
+            - ``profile`` is a valid ``AccountingPolicy`` (passed __post_init__).
+
+        Postconditions:
+            - Returns ``CompilationResult.ok()`` only if P1, P7, and P10 hold.
+            - Returns ``CompilationResult.fail()`` with machine-readable error
+              codes (R18) otherwise.
 
         Args:
             profile: The profile to compile.
@@ -116,18 +136,18 @@ class PolicyCompiler:
         structure_errors = self._validate_structure(profile)
         errors.extend(structure_errors)
 
-        # P1: Overlap detection
+        # INVARIANT: P1 -- overlap detection (exactly one profile per event)
         if self.check_overlaps:
             overlap_errors = self._validate_no_overlaps(profile)
             errors.extend(overlap_errors)
 
-        # P10: Field reference validation
+        # INVARIANT: P10 -- field references validated against event schema
         if self.check_schema:
             schema_result = self._validate_field_references(profile)
             errors.extend(schema_result.errors)
             warnings.extend(schema_result.warnings)
 
-        # P7: Ledger semantic completeness
+        # INVARIANT: P7 -- ledger semantic completeness (required roles provided)
         if self.check_ledger:
             ledger_errors = self._validate_ledger_requirements(profile)
             errors.extend(ledger_errors)

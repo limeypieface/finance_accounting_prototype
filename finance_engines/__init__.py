@@ -1,12 +1,32 @@
 """
-Finance Engines - Pure Calculation Engines
+Module: finance_engines
+Responsibility:
+    Package entrypoint that re-exports all public symbols from the pure
+    calculation engine sub-modules.  This is the canonical import surface
+    for higher layers (finance_services, finance_modules).
 
-Pure function engines that operate on finance_kernel primitives.
-No I/O, no database access, fully deterministic.
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values (and sibling engine modules).
+    MUST NOT import finance_services or finance_modules.
 
-Purity rule: engines NEVER call ``datetime.now()`` or ``date.today()``.
-Timestamps and dates must be passed in as explicit parameters.
-Callers (services) are responsible for providing the current time.
+Invariants enforced:
+    - Purity: engines NEVER call ``datetime.now()`` or ``date.today()`` (R6).
+      Timestamps and dates must be passed in as explicit parameters.
+      Callers (services) are responsible for providing the current time.
+    - Decimal-only arithmetic: all monetary amounts use ``Decimal``; floats
+      are forbidden (R16, R17).
+    - Determinism: identical inputs always produce identical outputs.
+
+Failure modes:
+    - ImportError if a sub-module is missing or has unresolved dependencies.
+    - ValueError propagated from individual engines on invalid input.
+
+Audit relevance:
+    Every engine invocation is traced via the ``@traced_engine`` decorator
+    (see ``finance_engines.tracer``), emitting FINANCE_ENGINE_TRACE log
+    records that include engine name, version, input fingerprint, and
+    duration.
 
 Usage:
     from finance_engines.variance import VarianceCalculator

@@ -1,12 +1,31 @@
 """
-Ledger query selector.
+Module: finance_kernel.selectors.ledger_selector
+Responsibility: Read-only ledger queries including trial balance computation,
+    account balance aggregation, and canonical ledger hash calculation (R24).
+    The ledger is a derived view over posted JournalLines -- there are no
+    stored balances anywhere in the system (R6 replay safety).
+Architecture position: Kernel > Selectors.  May import from models/ and
+    selectors/base.py.  MUST NOT import from services/, domain/, or outer layers.
 
-Provides read-only access to the ledger with support for:
-- As-of-date queries
-- Trial balance computation
-- Account balance queries
-- Dimension filtering
-- R24: Canonical ledger hash computation
+Invariants enforced:
+    R4  -- Double-entry balance verification via total_debits_credits().
+    R6  -- No stored balances.  All balance computations derive from posted
+           JournalLine rows at query time.
+    R24 -- Canonical ledger hash.  canonical_hash() computes a deterministic
+           SHA-256 hash over sorted posted lines, enabling post-replay
+           verification, tamper detection, and distributed consistency checks.
+
+Failure modes:
+    - Returns empty results or zero balances when no posted entries exist.
+    - canonical_hash() is deterministic: same ledger state always produces
+      same hash, regardless of query order or Python dict ordering.
+
+Audit relevance:
+    LedgerSelector is the authoritative read path for financial reporting.
+    Trial balance, account balances, and the canonical ledger hash all derive
+    exclusively from posted JournalLine rows.  The R24 canonical hash enables
+    auditors to verify ledger integrity by comparing hashes across replays
+    or distributed systems.
 """
 
 import hashlib
@@ -80,14 +99,25 @@ class LedgerLine:
 
 class LedgerSelector(BaseSelector[JournalLine]):
     """
-    Selector for ledger queries.
+    Selector for ledger queries -- the authoritative balance computation engine.
 
-    The ledger is a derived view over posted JournalLines where:
-    - effective_date <= as_of_effective_date
-    - status = posted
-    - ordered by seq ASC
+    Contract:
+        The ledger is a derived view over posted JournalLines.  All queries
+        filter by status=POSTED and optionally by effective_date <= as_of_date.
+        Results are ordered by JournalEntry.seq ASC.
 
-    IMPORTANT: No stored balances. All balances are computed from JournalLines.
+    Guarantees:
+        - INVARIANT R6: No stored balances.  Every balance is computed at
+          query time from JournalLine rows.
+        - INVARIANT R24: canonical_hash() produces a deterministic SHA-256
+          hash over sorted posted lines for integrity verification.
+        - All balance methods return Decimal (never float).
+
+    Non-goals:
+        - This selector does NOT perform currency conversion; it returns
+          balances in their original transaction currency.
+        - Dimension filtering is performed in Python (not SQL JSONB) for
+          portability.
     """
 
     def __init__(self, session: Session):
@@ -195,8 +225,13 @@ class LedgerSelector(BaseSelector[JournalLine]):
         """
         Compute trial balance as of a specific date.
 
-        The trial balance shows the sum of debits and credits for each account.
-        Computed from JournalLines - never stored.
+        INVARIANT R6: The trial balance is computed from JournalLines at query
+        time -- never stored.  Sum of all debit_totals MUST equal sum of all
+        credit_totals per currency (R4).
+
+        Preconditions: None (returns empty list if no posted entries exist).
+        Postconditions: Returns one TrialBalanceRow per (account, currency) pair,
+            ordered by account_code then currency.
 
         Args:
             as_of_date: Cutoff date for trial balance.
@@ -270,6 +305,10 @@ class LedgerSelector(BaseSelector[JournalLine]):
         """
         Get the balance for a specific account.
 
+        Preconditions: account_id is a valid UUID referencing an existing Account.
+        Postconditions: Returns one AccountBalance per currency held in the account.
+            Empty list if no posted lines exist for the account.
+
         Args:
             account_id: Account to query.
             as_of_date: Cutoff date.
@@ -339,7 +378,13 @@ class LedgerSelector(BaseSelector[JournalLine]):
         """
         Get total debits and credits across all accounts.
 
-        Useful for verifying double-entry integrity.
+        INVARIANT R4: For a balanced ledger, total_debits == total_credits
+        per currency.  This method is the read-side verification of the
+        double-entry balance invariant.
+
+        Preconditions: None (returns (0, 0) if no posted entries exist).
+        Postconditions: Returns (total_debits, total_credits) as Decimals.
+            Both values are >= 0.
 
         Args:
             as_of_date: Cutoff date.
@@ -394,11 +439,18 @@ class LedgerSelector(BaseSelector[JournalLine]):
         """
         Compute a deterministic, canonical hash of the ledger (R24).
 
-        The hash is computed over sorted (account_id, currency, dimensions, seq)
-        and is stable across rebuilds. This enables:
-        - Verifying ledger consistency after replay
-        - Detecting tampering or corruption
-        - Validating distributed ledger agreement
+        INVARIANT R24: The canonical ledger hash is a SHA-256 digest over
+        all posted journal lines sorted by (account_id, currency, dimensions,
+        entry_seq, line_seq).  The same ledger state ALWAYS produces the same
+        hash, regardless of query order or Python dict key ordering.
+
+        Preconditions: None (returns hash of empty data if no posted entries).
+        Postconditions: Returns a 64-character hex-encoded SHA-256 hash string.
+
+        Use cases:
+            - Post-replay verification: replay event stream, compare hashes.
+            - Tamper detection: store hash at period close, verify later.
+            - Distributed consistency: compare hashes across replicas.
 
         Args:
             as_of_date: Optional cutoff date for the hash.
@@ -532,10 +584,11 @@ class LedgerSelector(BaseSelector[JournalLine]):
         """
         Verify ledger matches an expected canonical hash (R24).
 
-        Useful for:
-        - Post-replay verification
-        - Distributed consistency checks
-        - Audit verification
+        INVARIANT R24: Constant-time hash comparison for tamper detection.
+
+        Preconditions: expected_hash is a 64-character hex SHA-256 string.
+        Postconditions: Returns True iff the computed canonical hash exactly
+            matches expected_hash.  False indicates ledger state divergence.
 
         Args:
             expected_hash: The expected hash value.

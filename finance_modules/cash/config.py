@@ -1,8 +1,29 @@
 """
-Cash Management Configuration Schema.
+finance_modules.cash.config
+============================
 
-Defines the structure and sensible defaults for cash settings.
-Actual values are loaded from company configuration at runtime.
+Responsibility:
+    Configuration schema for the cash management module.  Defines the
+    structure, validation rules, and sensible defaults for cash settings.
+    Actual values are loaded from company configuration at runtime via
+    ``finance_config.get_active_config()``.
+
+Architecture:
+    Module layer (finance_modules).  Consumed by CashService and the
+    configuration assembler.  MUST NOT be imported by finance_kernel.
+
+Invariants enforced:
+    - ``reconciliation_tolerance`` is non-negative (validated in ``__post_init__``).
+    - ``transit_account_code`` required when ``use_transit_account_for_wires``
+      is True.
+    - All monetary thresholds are ``Decimal`` -- never ``float``.
+
+Failure modes:
+    - Invalid configuration values -> ``ValueError`` from ``__post_init__``.
+
+Audit relevance:
+    Reconciliation tolerance directly affects whether reconciliation
+    adjustments are posted.  Changes to this value should be audited.
 """
 
 from dataclasses import dataclass, field
@@ -21,12 +42,25 @@ class CashConfig:
     """
     Configuration schema for cash management module.
 
-    Field defaults represent common industry practices.
-    Override at instantiation with company-specific values:
+    Contract:
+        All fields have sensible defaults.  Override at instantiation
+        with company-specific values.  ``__post_init__`` validates all
+        constraints and raises ``ValueError`` on violation.
+
+    Guarantees:
+        - ``reconciliation_tolerance >= 0``.
+        - ``require_dual_approval_above >= 0`` when set.
+        - ``transit_account_code`` is present when wires use transit.
+
+    Non-goals:
+        - Does NOT enforce GL account existence (kernel responsibility).
+
+    Example::
 
         config = CashConfig(
             reconciliation_tolerance=Decimal("0.05"),
             use_transit_account_for_wires=True,
+            transit_account_code="1015",
             **load_from_database("cash_settings"),
         )
     """

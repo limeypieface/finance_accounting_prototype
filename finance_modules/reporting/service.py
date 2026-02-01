@@ -1,16 +1,42 @@
 """
-Reporting Service — orchestration layer for financial statement generation.
+Reporting Module Service (``finance_modules.reporting.service``).
 
-This service bridges the database selectors (LedgerSelector, JournalSelector)
-to the pure transformation functions in statements.py. It is READ-ONLY:
-no journal entries are posted, no events are ingested.
+Responsibility
+--------------
+Orchestrates financial statement generation -- trial balance, income
+statement, balance sheet, cash flow statement, equity changes, segment
+reports, and multi-currency trial balance -- by bridging database selectors
+(``LedgerSelector``, ``JournalSelector``) to the pure transformation
+functions in ``statements.py``.  This is a **read-only** service: no
+journal entries are posted, no events are ingested.
 
-Unlike other module services, this does NOT use:
-- RoleResolver (no account role resolution needed)
-- ModulePostingService (no posting)
-- profiles or workflows
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue.  ``ReportingService`` is the sole
+public entry point for financial statement generation.  Unlike other module
+services, it does NOT use ``RoleResolver``, ``ModulePostingService``, or
+profiles/workflows.  Constructor: ``session`` + ``clock`` + ``config``.
 
-Constructor: session + clock + config (that's it).
+Invariants enforced
+-------------------
+* Read-only -- no mutations to the journal or event store.
+* All monetary amounts use ``Decimal`` -- NEVER ``float``.
+* Report metadata carries generation timestamp and parameters for
+  reproducibility.
+
+Failure modes
+-------------
+* Selector query failure  -> exception propagates (no rollback needed --
+  read-only).
+* Invalid report parameters (e.g., end_date < start_date)  ->
+  ``ValueError`` raised before query execution.
+* Missing account data  -> empty sections in generated report.
+
+Audit relevance
+---------------
+Structured log events emitted for every report generation, carrying report
+type, period, and parameters.  Reports are derived from the immutable
+journal -- they do not modify it.
 """
 
 from __future__ import annotations
@@ -34,6 +60,7 @@ from finance_modules.reporting.models import (
     EquityChangesReport,
     IncomeStatementFormat,
     IncomeStatementReport,
+    MultiCurrencyTrialBalance,
     ReportMetadata,
     ReportType,
     SegmentReport,
@@ -57,10 +84,27 @@ class ReportingService:
     """
     Financial statement generation service.
 
+    Contract
+    --------
+    * Every public method returns a typed report DTO (e.g.,
+      ``TrialBalanceReport``, ``IncomeStatementReport``).
+    * All methods are **read-only** -- no mutations to the database.
+
+    Guarantees
+    ----------
+    * Report generation delegates to pure transformation functions in
+      ``statements.py``; no financial logic lives in this class.
+    * Clock is injectable for deterministic testing.
+    * All monetary amounts use ``Decimal`` -- NEVER ``float``.
+
+    Non-goals
+    ---------
+    * Does NOT post journal entries or ingest events.
+    * Does NOT use ``RoleResolver``, ``ModulePostingService``, or profiles.
+    * Does NOT enforce fiscal-period locks (read-only service).
+
     Orchestrates data loading from kernel selectors and delegates
     to pure transformation functions in statements.py.
-
-    All methods are read-only — no mutations to the database.
     """
 
     def __init__(
@@ -518,7 +562,7 @@ class ReportingService:
             ReportType.SEGMENT,
             as_of_date,
             curr,
-            dimensions_filter={dimension_name: "*"},
+            dimensions_filter=((dimension_name, "*"),),
         )
 
         report = build_segment_report(
@@ -536,6 +580,62 @@ class ReportingService:
             },
         )
         return report
+
+    def multi_currency_trial_balance(
+        self,
+        as_of_date: date,
+        currencies: list[str],
+    ) -> MultiCurrencyTrialBalance:
+        """
+        Generate a trial balance across multiple currencies.
+
+        Calls the existing trial_balance() for each currency and
+        aggregates results into a MultiCurrencyTrialBalance.
+
+        Args:
+            as_of_date: Cutoff date for the trial balance.
+            currencies: List of ISO 4217 currency codes to include.
+
+        Returns:
+            MultiCurrencyTrialBalance with per-currency reports.
+        """
+        currency_reports = []
+        debits_by_currency: list[tuple[str, Decimal]] = []
+        credits_by_currency: list[tuple[str, Decimal]] = []
+
+        for curr in currencies:
+            report = self.trial_balance(as_of_date=as_of_date, currency=curr)
+            currency_reports.append(report)
+            debits_by_currency.append((curr, report.total_debits))
+            credits_by_currency.append((curr, report.total_credits))
+
+        all_balanced = all(r.is_balanced for r in currency_reports)
+
+        metadata = self._build_metadata(
+            ReportType.TRIAL_BALANCE,
+            as_of_date,
+            currencies[0] if currencies else self._config.default_currency,
+        )
+
+        result = MultiCurrencyTrialBalance(
+            metadata=metadata,
+            currency_reports=tuple(currency_reports),
+            currencies=tuple(currencies),
+            total_debits_by_currency=tuple(debits_by_currency),
+            total_credits_by_currency=tuple(credits_by_currency),
+            all_balanced=all_balanced,
+        )
+
+        logger.info(
+            "multi_currency_trial_balance_generated",
+            extra={
+                "as_of_date": as_of_date.isoformat(),
+                "currencies": currencies,
+                "currency_count": len(currencies),
+                "all_balanced": all_balanced,
+            },
+        )
+        return result
 
     def to_dict(self, report: object) -> dict:
         """

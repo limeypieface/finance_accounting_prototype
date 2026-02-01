@@ -1,17 +1,50 @@
 """
-Configuration Compiler — ConfigurationSet → CompiledPolicyPack.
+finance_config.compiler -- ConfigurationSet to CompiledPolicyPack compiler.
 
-The compiler validates the configuration set and produces a frozen,
-machine-validated runtime artifact. The CompiledPolicyPack is the ONLY
-object that runtime posting entrypoints accept.
+Responsibility:
+    Validates an ``AccountingConfigurationSet`` and produces a frozen,
+    machine-validated ``CompiledPolicyPack`` -- the ONLY object that
+    runtime posting entrypoints accept.
+
+Architecture position:
+    Configuration -- YAML-driven policy pipeline, build-time validation.
+    Called by ``finance_config.get_active_config()`` after assembly and
+    schema validation.  The compiler sits between the assembler (which
+    produces the source artifact) and the runtime posting pipeline
+    (which consumes the compiled artifact).
 
 Compilation validates:
-  - Every policy's required_engines exists in engine contracts
-  - Every engine_parameters_ref satisfies the engine's parameter_schema
-  - Guard ASTs parse successfully (restricted AST)
-  - No ambiguous dispatch (two policies match same event with same precedence)
-  - All role bindings reference roles used by policies
-  - All capability_tags reference declared capabilities
+    - Every policy's ``required_engines`` exists in engine contracts.
+    - Every ``engine_parameters_ref`` satisfies the engine's
+      ``parameter_schema`` (type, range, enum).
+    - Guard ASTs parse successfully (restricted AST -- no arbitrary
+      code execution).
+    - No ambiguous dispatch (two policies matching the same event with
+      the same precedence and overlapping where-clauses).
+    - All role bindings reference roles used by policies (L1).
+    - All ``capability_tags`` reference declared capabilities.
+
+Invariants enforced:
+    - Deterministic canonical fingerprint: ``_compute_fingerprint``
+      produces a SHA-256 digest over a sorted canonical JSON
+      representation, ensuring the same config always yields the same
+      fingerprint (R24 analog for config).
+    - Frozen output: all compiled types are ``frozen=True`` dataclasses;
+      the pack cannot be mutated after creation.
+    - Error/warning separation: compilation fails only on errors, not
+      warnings, following R18 (deterministic, typed exceptions).
+
+Failure modes:
+    - ``CompilationFailedError`` -- one or more validation errors
+      prevent producing a valid pack.  Contains structured
+      ``CompilationError`` objects with category, message, and policy
+      name.
+
+Audit relevance:
+    The ``CompiledPolicyPack.canonical_fingerprint`` and
+    ``decision_trace`` provide a complete, reproducible record of which
+    policies were compiled and how dispatch ambiguity was resolved.
+    These artifacts support deterministic replay (R6, L4).
 """
 
 from __future__ import annotations
@@ -50,7 +83,20 @@ from finance_kernel.exceptions import FinanceKernelError
 
 @dataclass(frozen=True)
 class CompiledGuard:
-    """Validated guard with parsed expression."""
+    """Validated guard with parsed expression.
+
+    Contract:
+        The ``expression`` has passed restricted-AST validation at
+        compile time; it contains only allowed operators, comparisons,
+        context-root field access, and whitelisted function calls.
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
+
+    Non-goals:
+        Does not store the parsed AST; re-parsing is expected if
+        runtime evaluation is needed.
+    """
 
     guard_type: str
     expression: str
@@ -60,7 +106,19 @@ class CompiledGuard:
 
 @dataclass(frozen=True)
 class CompiledPolicy:
-    """Validated, indexed policy ready for runtime dispatch."""
+    """Validated, indexed policy ready for runtime dispatch.
+
+    Contract:
+        All guard expressions have been AST-validated.  Engine
+        references have been verified against the contract registry.
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
+
+    Non-goals:
+        Does not carry pre-evaluated guard closures; evaluation
+        happens at interpretation time using the expression strings.
+    """
 
     name: str
     version: int
@@ -84,7 +142,18 @@ class CompiledPolicy:
 
 @dataclass(frozen=True)
 class CompiledControl:
-    """Validated control rule."""
+    """Validated control rule.
+
+    Contract:
+        The ``expression`` has passed restricted-AST validation.
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
+
+    Non-goals:
+        Does not enforce the control at compile time; enforcement
+        happens at posting time in the interpretation pipeline.
+    """
 
     name: str
     applies_to: str
@@ -96,7 +165,14 @@ class CompiledControl:
 
 @dataclass(frozen=True)
 class PolicyMatchEntry:
-    """Pre-built dispatch index entry for fast runtime lookup."""
+    """Pre-built dispatch index entry for fast runtime lookup.
+
+    Contract:
+        Contains all candidate policies for a single ``event_type``.
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
+    """
 
     event_type: str
     policies: tuple[CompiledPolicy, ...]
@@ -104,12 +180,35 @@ class PolicyMatchEntry:
 
 @dataclass(frozen=True)
 class PolicyMatchIndex:
-    """Pre-built dispatch index mapping event_type → candidate policies."""
+    """Pre-built dispatch index mapping event_type to candidate policies.
+
+    Contract:
+        Every event_type that appears in any compiled policy's trigger
+        has an entry in this index.
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
+        ``get_candidates`` returns an empty tuple for unknown event
+        types (never raises).
+
+    Non-goals:
+        Does not perform admissibility filtering (capability gates);
+        callers must filter candidates by enabled capabilities at
+        runtime.
+    """
 
     entries: dict[str, tuple[CompiledPolicy, ...]]
 
     def get_candidates(self, event_type: str) -> tuple[CompiledPolicy, ...]:
-        """Get candidate policies for an event type."""
+        """Get candidate policies for an event type.
+
+        Preconditions:
+            - ``event_type`` is a non-empty string.
+
+        Postconditions:
+            - Returns a tuple of ``CompiledPolicy`` instances matching
+              the event type, or an empty tuple if none match.
+        """
         return self.entries.get(event_type, ())
 
 
@@ -125,7 +224,16 @@ class PolicyDecisionTrace:
 
 @dataclass(frozen=True)
 class ResolvedEngineContract:
-    """Engine contract resolved against configuration."""
+    """Engine contract resolved against configuration.
+
+    Contract:
+        Links an engine name and version from the global
+        ``ENGINE_CONTRACTS`` registry to the config-level parameter
+        key that supplies its runtime parameters.
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
+    """
 
     engine_name: str
     engine_version: str
@@ -134,7 +242,19 @@ class ResolvedEngineContract:
 
 @dataclass(frozen=True)
 class FrozenEngineParams:
-    """Pre-resolved, typed engine parameters. Immutable at runtime."""
+    """Pre-resolved, typed engine parameters. Immutable at runtime.
+
+    Contract:
+        Parameters have been validated against the engine contract's
+        ``parameter_schema`` at compile time (type, range, enum checks).
+
+    Guarantees:
+        Frozen dataclass -- immutable after construction.
+
+    Non-goals:
+        Does not deep-freeze the ``parameters`` dict values; engine
+        callers should treat them as read-only.
+    """
 
     engine_name: str
     parameters: dict[str, Any]

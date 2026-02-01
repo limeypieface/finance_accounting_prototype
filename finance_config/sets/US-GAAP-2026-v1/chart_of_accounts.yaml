@@ -239,6 +239,9 @@ role_bindings:
 - role: UNREALIZED_FX_LOSS
   account_code: '6940'
   ledger: GL
+- role: CUMULATIVE_TRANSLATION_ADJ
+  account_code: '3400'
+  ledger: GL
 - role: RETAINED_EARNINGS
   account_code: '3100'
   ledger: GL
@@ -479,6 +482,26 @@ role_bindings:
 - role: OBLIGATION_CONTROL
   account_code: '1620'
   ledger: GL
+# Lease module GL roles (ASC 842)
+- role: ROU_ASSET
+  account_code: '1700'
+  ledger: GL
+- role: LEASE_LIABILITY
+  account_code: '2800'
+  ledger: GL
+- role: ROU_AMORTIZATION
+  account_code: '6950'
+  ledger: GL
+- role: LEASE_INTEREST
+  account_code: '6955'
+  ledger: GL
+# Budget module GL roles
+- role: BUDGET_CONTROL
+  account_code: '1630'
+  ledger: GL
+- role: BUDGET_OFFSET
+  account_code: '2620'
+  ledger: GL
 # Subledger control account roles (resolved at config compilation time)
 - role: AP_CONTROL
   account_code: '2000'
@@ -508,3 +531,55 @@ role_bindings:
 - role: COST_BILLED
   account_code: SL-4004
   ledger: CONTRACT
+# AR module GL roles
+- role: TAX_LIABILITY
+  account_code: '2365'
+  ledger: GL
+- role: UNAPPLIED_CASH
+  account_code: '1170'
+  ledger: GL
+- role: SALES_RETURNS
+  account_code: '4210'
+  ledger: GL
+- role: SALES_ALLOWANCE
+  account_code: '4220'
+  ledger: GL
+- role: DISCOUNT_EXPENSE
+  account_code: '6240'
+  ledger: GL
+# AR subledger roles
+- role: CUSTOMER_BALANCE
+  account_code: SL-1101
+  ledger: AR
+- role: INVOICE
+  account_code: SL-1102
+  ledger: AR
+- role: PAYMENT
+  account_code: SL-1103
+  ledger: AR
+- role: CREDIT
+  account_code: SL-1104
+  ledger: AR
+- role: WRITE_OFF
+  account_code: SL-1105
+  ledger: AR
+- role: REFUND
+  account_code: SL-1106
+  ledger: AR
+- role: FINANCE_CHARGE
+  account_code: SL-1107
+  ledger: AR
+# Inventory subledger roles (missing)
+- role: ITEM_BALANCE
+  account_code: SL-1006
+  ledger: INVENTORY
+- role: ADJUSTMENT
+  account_code: SL-1007
+  ledger: INVENTORY
+- role: WRITEOFF
+  account_code: SL-1008
+  ledger: INVENTORY
+# Assets module alias for ACCOUNTS_PAYABLE
+- role: AP
+  account_code: '2000'
+  ledger: GL

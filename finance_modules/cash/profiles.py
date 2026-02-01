@@ -1,22 +1,49 @@
 """
-Cash Economic Profiles — Kernel format.
+finance_modules.cash.profiles
+==============================
 
-Merged authoritative profiles from kernel bank_profiles (guards, where-clauses,
-multi-ledger) and module cash profiles (line mappings, wire/recon scenarios).
-Each profile is a kernel AccountingPolicy with companion ModuleLineMapping tuples
-for intent construction.
+Responsibility:
+    Declarative accounting profiles (``AccountingPolicy`` + ``ModuleLineMapping``)
+    for all cash management event types.  Each profile defines the trigger,
+    economic meaning, ledger effects, guards, and role-to-side mappings for
+    one event type.  Profiles are registered into the kernel's
+    ``ProfileRegistry`` at application startup via ``register()``.
+
+Architecture:
+    Module layer (finance_modules).  Imports kernel domain types
+    (``AccountingPolicy``, ``PolicyTrigger``, etc.) and ``policy_bridge``
+    registration helpers.  MUST NOT be imported by finance_kernel.
+
+Invariants enforced:
+    - R14 (NO_CENTRAL_DISPATCH): each event type has its own profile;
+      no ``if/switch`` on event_type.
+    - R15 (OPEN_CLOSED): adding a new cash event type requires only a new
+      profile + registration entry here.
+    - P1  (PROFILE_UNIQUENESS): each ``PolicyTrigger.event_type`` + where-clause
+      combination must be unique across all registered profiles.
+
+Failure modes:
+    - Duplicate profile registration -> kernel raises ``DuplicateProfileError``.
+    - Guard expression evaluation failure -> posting rejected by kernel.
+
+Audit relevance:
+    Profiles are the authoritative mapping from business events to journal
+    entries.  Any change to a profile alters the accounting treatment of
+    future events and must be version-controlled.
 
 Profiles:
-    CashDeposit                 — Bank deposit: Dr Bank / Cr Undeposited Funds
-    CashWithdrawalExpense       — Expense withdrawal: Dr Expense / Cr Bank
-    CashWithdrawalSupplier      — Supplier payment: Cr Bank (AP side linked)
-    CashWithdrawalPayroll       — Payroll disbursement: Dr Payroll Clrg / Cr Bank
-    CashBankFee                 — Bank service charge: Dr Fee Expense / Cr Cash
-    CashInterestEarned          — Interest income: Dr Cash / Cr Interest Income
-    CashTransfer                — Inter-account transfer: Dr Dest Bank / Cr Src Bank
-    CashWireTransferOut         — Outbound wire: Dr Transit / Cr Cash
-    CashWireTransferCleared     — Wire confirmed: Dr Cash / Cr Transit
-    CashReconciliation          — Recon adjustment: Dr/Cr Cash vs Variance
+    CashDeposit                 -- Bank deposit: Dr Bank / Cr Undeposited Funds
+    CashWithdrawalExpense       -- Expense withdrawal: Dr Expense / Cr Bank
+    CashWithdrawalSupplier      -- Supplier payment: Cr Bank (AP side linked)
+    CashWithdrawalPayroll       -- Payroll disbursement: Dr Payroll Clrg / Cr Bank
+    CashBankFee                 -- Bank service charge: Dr Fee Expense / Cr Cash
+    CashInterestEarned          -- Interest income: Dr Cash / Cr Interest Income
+    CashTransfer                -- Inter-account transfer: Dr Dest Bank / Cr Src Bank
+    CashWireTransferOut         -- Outbound wire: Dr Transit / Cr Cash
+    CashWireTransferCleared     -- Wire confirmed: Dr Cash / Cr Transit
+    CashReconciliation          -- Recon adjustment: Dr/Cr Cash vs Variance
+    CashAutoReconciled          -- Auto-recon adjustment
+    CashNSFReturn               -- NSF returned deposit reversal
 """
 
 from datetime import date
@@ -47,7 +74,12 @@ MODULE_NAME = "cash"
 
 
 class AccountRole(Enum):
-    """Logical account roles for Cash Management."""
+    """
+    Logical account roles for Cash Management.
+
+    These roles are resolved to COA account codes at posting time (L1).
+    The mapping from role to COA code is defined in ``CashConfig.account_mappings``.
+    """
 
     CASH = "cash"
     BANK_FEE_EXPENSE = "bank_fee_expense"
@@ -450,6 +482,56 @@ CASH_RECONCILIATION_MAPPINGS = (
 )
 
 
+# --- Cash Auto Reconciliation ---
+CASH_AUTO_RECONCILED = AccountingPolicy(
+    name="CashAutoReconciled",
+    version=1,
+    trigger=PolicyTrigger(event_type="cash.auto_reconciled"),
+    meaning=PolicyMeaning(
+        economic_type="CASH_AUTO_RECONCILIATION",
+        dimensions=("bank_account",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="CASH", credit_role="RECON_VARIANCE"),
+        LedgerEffect(ledger="BANK", debit_role="RECONCILED", credit_role="PENDING"),
+    ),
+    effective_from=date(2024, 1, 1),
+    description="Auto-reconciliation adjustment entry",
+)
+
+CASH_AUTO_RECONCILED_MAPPINGS = (
+    ModuleLineMapping(role="CASH", side="debit", ledger="GL"),
+    ModuleLineMapping(role="RECON_VARIANCE", side="credit", ledger="GL"),
+    ModuleLineMapping(role="RECONCILED", side="debit", ledger="BANK"),
+    ModuleLineMapping(role="PENDING", side="credit", ledger="BANK"),
+)
+
+
+# --- Cash NSF Return ---
+CASH_NSF_RETURN = AccountingPolicy(
+    name="CashNSFReturn",
+    version=1,
+    trigger=PolicyTrigger(event_type="cash.nsf_return"),
+    meaning=PolicyMeaning(
+        economic_type="CASH_NSF_RETURN",
+        dimensions=("bank_account",),
+    ),
+    ledger_effects=(
+        LedgerEffect(ledger="GL", debit_role="ACCOUNTS_RECEIVABLE", credit_role="CASH"),
+        LedgerEffect(ledger="BANK", debit_role="PENDING", credit_role="DEPOSIT"),
+    ),
+    effective_from=date(2024, 1, 1),
+    description="NSF / returned deposit reversal",
+)
+
+CASH_NSF_RETURN_MAPPINGS = (
+    ModuleLineMapping(role="ACCOUNTS_RECEIVABLE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="CASH", side="credit", ledger="GL"),
+    ModuleLineMapping(role="PENDING", side="debit", ledger="BANK"),
+    ModuleLineMapping(role="DEPOSIT", side="credit", ledger="BANK"),
+)
+
+
 # =============================================================================
 # Profile + Mapping pairs for registration
 # =============================================================================
@@ -465,6 +547,8 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     (CASH_WIRE_TRANSFER_OUT, CASH_WIRE_TRANSFER_OUT_MAPPINGS),
     (CASH_WIRE_TRANSFER_CLEARED, CASH_WIRE_TRANSFER_CLEARED_MAPPINGS),
     (CASH_RECONCILIATION, CASH_RECONCILIATION_MAPPINGS),
+    (CASH_AUTO_RECONCILED, CASH_AUTO_RECONCILED_MAPPINGS),
+    (CASH_NSF_RETURN, CASH_NSF_RETURN_MAPPINGS),
 )
 
 
@@ -474,7 +558,17 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
 
 
 def register() -> None:
-    """Register all cash profiles in kernel registries."""
+    """
+    Register all cash profiles in kernel registries.
+
+    Preconditions:
+        - Kernel ``ProfileRegistry`` is initialized and accepts registrations.
+    Postconditions:
+        - All profiles in ``_ALL_PROFILES`` are registered with their
+          companion ``ModuleLineMapping`` tuples.
+    Raises:
+        ``DuplicateProfileError`` if any profile name/trigger collides.
+    """
     for profile, mappings in _ALL_PROFILES:
         register_rich_profile(MODULE_NAME, profile, mappings)
 

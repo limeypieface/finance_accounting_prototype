@@ -1,21 +1,49 @@
 """
-Configuration Assembler — composes YAML fragments into one ConfigurationSet.
+finance_config.assembler -- composes YAML fragments into one ConfigurationSet.
 
-Humans edit small, well-owned fragments. This assembler composes them into a
-single AccountingConfigurationSet at build time. Runtime only sees the final
-CompiledPolicyPack.
+Responsibility:
+    Humans edit small, well-owned YAML fragments.  This module composes
+    them into a single ``AccountingConfigurationSet`` at build time.
+    Runtime only ever sees the final ``CompiledPolicyPack``; this module
+    is strictly build/test tooling.
 
-Fragment structure:
-  sets/US-GAAP-2026-v1/
-  ├── root.yaml              # Scope, identity, predecessor, capabilities
-  ├── chart_of_accounts.yaml # Role bindings
-  ├── ledgers.yaml           # Ledger definitions
-  ├── policies/              # One YAML per domain
-  │   ├── inventory.yaml
-  │   └── ...
-  ├── engine_params.yaml     # Engine configurations
-  ├── controls.yaml          # Governance rules
-  └── dcaa_overlay.yaml      # Conditional overlay (optional)
+Architecture position:
+    Configuration -- YAML-driven policy pipeline, build-time validation.
+    Called by ``finance_config.get_active_config()`` during the load phase
+    and by tests that construct config fixtures.  The assembler reads the
+    filesystem (I/O boundary); the resulting ``AccountingConfigurationSet``
+    is a pure, frozen data structure.
+
+Fragment structure::
+
+    sets/US-GAAP-2026-v1/
+    +-- root.yaml              # Scope, identity, predecessor, capabilities
+    +-- chart_of_accounts.yaml # Role bindings
+    +-- ledgers.yaml           # Ledger definitions
+    +-- policies/              # One YAML per domain
+    |   +-- inventory.yaml
+    |   +-- ...
+    +-- engine_params.yaml     # Engine configurations
+    +-- controls.yaml          # Governance rules
+    +-- subledger_contracts.yaml  # Subledger integration contracts
+    +-- dcaa_overlay.yaml      # Conditional overlay (optional)
+
+Invariants enforced:
+    - ``root.yaml`` must exist in every fragment directory.
+    - A deterministic SHA-256 checksum is computed over all assembled data
+      to support fingerprint pinning and replay determinism (R21).
+    - All parsed structures are immutable frozen dataclasses.
+
+Failure modes:
+    - ``AssemblyError`` -- required fragments missing, malformed YAML, or
+      missing mandatory fields in ``root.yaml``.
+    - ``yaml.YAMLError`` (propagated from loader) -- invalid YAML syntax.
+
+Audit relevance:
+    The assembled ``AccountingConfigurationSet.checksum`` is carried
+    through to the ``CompiledPolicyPack`` and recorded in every
+    ``FINANCE_CONFIG_TRACE`` log entry, providing a tamper-evident chain
+    from YAML source to posted journal entries.
 """
 
 from __future__ import annotations
@@ -50,7 +78,20 @@ from finance_config.schema import (
 
 
 class AssemblyError(FinanceKernelError):
-    """Error during fragment assembly."""
+    """Error during fragment assembly.
+
+    Contract:
+        Raised when a fragment directory is missing, ``root.yaml`` is
+        absent, or any required field within fragments cannot be parsed.
+
+    Guarantees:
+        Carries a machine-readable ``code`` attribute (R18) for
+        programmatic error handling.
+
+    Non-goals:
+        Does not enumerate all individual field-level parse errors; the
+        first fatal issue aborts assembly.
+    """
 
     code: str = "ASSEMBLY_FAILED"
 
@@ -58,14 +99,27 @@ class AssemblyError(FinanceKernelError):
 def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:
     """Compose fragments from a directory into one ConfigurationSet.
 
-    Build/test tooling only. Runtime never calls this.
+    Build/test tooling only.  Runtime never calls this directly; it is
+    invoked by ``get_active_config()`` during the load phase.
+
+    Preconditions:
+        - ``fragment_dir`` is an existing directory.
+        - ``fragment_dir / "root.yaml"`` exists and contains at minimum
+          ``config_id`` and ``scope`` keys.
+
+    Postconditions:
+        - Returns a frozen ``AccountingConfigurationSet`` with a
+          deterministic SHA-256 ``checksum``.
+        - All policies, role bindings, ledger definitions, engine
+          configs, controls, and subledger contracts from the fragment
+          directory are included in the result.
 
     Args:
         fragment_dir: Path to the fragment directory (e.g.,
-            finance_config/sets/US-GAAP-2026-v1/)
+            ``finance_config/sets/US-GAAP-2026-v1/``).
 
     Returns:
-        Assembled AccountingConfigurationSet.
+        Assembled ``AccountingConfigurationSet``.
 
     Raises:
         AssemblyError: If required fragments are missing or malformed.
@@ -161,6 +215,11 @@ def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:
         "capabilities": capabilities,
     }
     checksum = compute_checksum(all_data)
+
+    # INVARIANT: checksum must be a non-empty SHA-256 hex digest.
+    assert checksum and len(checksum) == 64, (
+        f"Checksum must be a 64-char SHA-256 hex digest, got {checksum!r}"
+    )
 
     return AccountingConfigurationSet(
         config_id=root_data["config_id"],

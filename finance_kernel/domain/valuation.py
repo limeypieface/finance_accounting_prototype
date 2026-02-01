@@ -1,14 +1,26 @@
 """
-Valuation models and resolver.
+Valuation -- Versioned valuation models and resolver.
 
-Profiles reference valuation_model by ID only (P8). This module provides:
-- ValuationModel definitions (versioned)
-- ValuationModelRegistry for lookup
-- ValuationResolver for computing values
+Responsibility:
+    Provides versioned valuation models that compute monetary values from
+    event payloads.  Profiles reference models by ID only (P8 -- no inline
+    expressions).
 
-This is a pure domain component - no I/O, no ORM.
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
 
-Invariant P8: Profiles reference models by ID. No inline expressions.
+Invariants enforced:
+    P8 -- Profiles reference valuation models by ID only; no inline
+          expressions are permitted.
+
+Failure modes:
+    - ValuationModelNotFoundError (R18: VALUATION_MODEL_NOT_FOUND)
+    - ValuationResult.fail() when computation returns None or raises
+
+Audit relevance:
+    ValuationResult records model_id and model_version so auditors can
+    verify that the correct valuation logic was applied and replay it
+    deterministically.
 """
 
 from dataclasses import dataclass
@@ -112,10 +124,20 @@ class ValuationModelRegistry:
     """
     Registry for valuation models.
 
-    Provides registration and lookup of versioned valuation models.
-    Pure domain component - no I/O.
+    Contract:
+        Class-level singleton registry.  ``register()`` adds models;
+        ``get()`` returns the requested model or raises.
 
-    Invariant P8: Profiles reference models by ID only.
+    Guarantees:
+        - ``get()`` returns the latest version when ``version=None``.
+        - ``has_model()`` is a non-throwing membership test.
+
+    Non-goals:
+        - Does NOT persist to database (in-memory, populated at module load).
+        - Does NOT evaluate models (ValuationResolver does that).
+
+    Invariants enforced:
+        P8 -- Profiles reference models by ID only; no inline expressions.
     """
 
     # Class-level registry: model_id -> {version -> model}
@@ -196,17 +218,18 @@ class ValuationResolver:
     """
     Resolves valuation using registered models.
 
-    Pure domain component - no I/O.
+    Contract:
+        ``resolve()`` looks up a model by ID and applies its compute
+        function to the payload.  Returns ``ValuationResult`` (never raises
+        for business rule violations).
 
-    Usage:
-        resolver = ValuationResolver()
-        result = resolver.resolve(
-            model_id="standard_receipt_v1",
-            payload=event.payload,
-        )
-        if result.success:
-            value = result.value
-            currency = result.currency
+    Guarantees:
+        - ``resolve()`` always returns a ``ValuationResult`` -- success or
+          failure, never an unhandled exception for model logic errors.
+
+    Non-goals:
+        - Does NOT manage model registration (ValuationModelRegistry does).
+        - Does NOT perform I/O.
     """
 
     def resolve(

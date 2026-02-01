@@ -1,20 +1,51 @@
 """
-Incurred Cost Electronically (ICE) Reporting Engine.
+finance_engines.ice -- Incurred Cost Electronically (ICE) Reporting Engine.
 
-Pure functions with deterministic behavior. No I/O.
+Responsibility:
+    Compile incurred cost data into the DCAA ICE submission format required
+    for government contract cost reimbursement.  Produces structured schedule
+    data (A, B, C, G, H, I, J) that can be serialized for electronic
+    submission to the Defense Contract Audit Agency.
 
-This engine compiles incurred cost data into the DCAA ICE submission
-format required for government contract cost reimbursement. It produces
-structured schedule data that can be serialized for electronic submission.
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values.
+
+Invariants enforced:
+    - R6 (replay safety): identical inputs produce identical outputs;
+      no internal state or clock access.
+    - R16 (ISO 4217): currency codes are propagated through all Money
+      objects; no implicit currency defaults.
+    - R17 (precision-derived tolerance): all monetary computations use
+      ROUND_HALF_UP to 2 decimal places (_TWO_PLACES) or 6 decimal
+      places (_SIX_PLACES) for rate calculations.
+    - Purity: no clock access, no I/O.
+
+Failure modes:
+    - ValueError from ``ICEInput.__post_init__`` if fiscal_year_end <=
+      fiscal_year_start or contract_costs is empty.
+    - ValueError from ``LaborDetailInput.__post_init__`` if hours or rate
+      is negative.
+    - ValueError from ``OtherDirectCostInput.__post_init__`` if the cost
+      element is an indirect type (FRINGE, OVERHEAD, etc.).
+    - Cross-schedule validation failures produce ``ICEValidationFinding``
+      records (severity ERROR or WARNING); ERRORs set ``is_valid=False``.
+
+Audit relevance:
+    ICE submissions are the primary vehicle for DCAA incurred cost
+    reimbursement.  Every compilation is traced via ``@traced_engine``.
+    The 7 schedule outputs directly map to DCAA filing requirements.
+    Cross-schedule validation (B vs A labor, C vs A non-labor, H vs I
+    indirect) ensures internal consistency before submission.
 
 DCAA ICE Schedules produced:
-- Schedule A: Claimed Direct Costs by Contract
-- Schedule B: Direct Labor Details (hours and costs by labor category)
-- Schedule C: Direct Material/Subcontract/Travel/ODC Details
-- Schedule G: Indirect Cost Pool Summary (Fringe, Overhead, G&A)
-- Schedule H: Indirect Rate Calculation
-- Schedule I: Cumulative Allowable Cost Summary by Contract
-- Schedule J: Contract Ceiling/Funding Comparison
+    - Schedule A: Claimed Direct Costs by Contract
+    - Schedule B: Direct Labor Details (hours and costs by labor category)
+    - Schedule C: Direct Material/Subcontract/Travel/ODC Details
+    - Schedule G: Indirect Cost Pool Summary (Fringe, Overhead, G&A)
+    - Schedule H: Indirect Rate Calculation
+    - Schedule I: Cumulative Allowable Cost Summary by Contract
+    - Schedule J: Contract Ceiling/Funding Comparison
 
 Usage:
     from finance_engines.ice import (
@@ -570,7 +601,16 @@ def compile_ice_submission(ice_input: ICEInput) -> ICESubmission:
     """
     Compile a complete ICE submission from input data.
 
-    Pure function - no side effects, no I/O, deterministic output.
+    Pure function -- no side effects, no I/O, deterministic output.
+
+    Preconditions:
+        ice_input is a valid ICEInput with non-empty contract_costs and
+        fiscal_year_start < fiscal_year_end.
+
+    Postconditions:
+        Returns ICESubmission with 7 schedule lists and cross-schedule
+        validation findings.  is_valid is True only if no ERROR-severity
+        findings exist.
 
     Orchestrates compilation of all ICE schedules and performs
     cross-schedule validation.

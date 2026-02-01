@@ -1,8 +1,38 @@
 """
-Matching Engine - Match documents across business processes.
+finance_engines.matching -- Document matching engine for business process reconciliation.
 
-Supports 3-way match (PO/Receipt/Invoice), 2-way match, bank reconciliation.
-Pure functions with no I/O.
+Responsibility:
+    Match documents across business processes: 3-way match (PO/Receipt/Invoice),
+    2-way match (PO/Invoice for services), bank reconciliation (Statement/GL),
+    and custom matching.  Produces scored match suggestions and variance-aware
+    match results.
+
+Architecture position:
+    Engines -- pure calculation layer, zero I/O.
+    May only import finance_kernel/domain/values.
+    Delegates variance calculations to ``finance_engines.variance.VarianceCalculator``.
+
+Invariants enforced:
+    - R6 (replay safety): identical inputs produce identical outputs;
+      no internal state or clock access.
+    - R16 (ISO 4217): currency consistency enforced across matched documents
+      when ``require_same_currency=True`` (default).
+    - R17 (precision-derived tolerance): tolerance comparisons use Decimal
+      arithmetic; no float intermediates.
+    - Purity: no clock access, no I/O.
+
+Failure modes:
+    - ValueError from ``create_match`` if fewer than 2 documents are provided.
+    - ValueError from ``create_match`` if documents have mixed currencies.
+    - ValueError from ``create_match`` if no documents have amounts.
+    - Score of 0 from ``_evaluate_match`` when vendor, item, or currency
+      mismatches are detected (controlled by tolerance flags).
+
+Audit relevance:
+    Match results feed into AP 3-way match workflows and bank reconciliation
+    processes.  Price and quantity variances detected during matching are
+    posted to variance accounts.  All engine invocations are traced via
+    ``@traced_engine``.
 
 Usage:
     from finance_engines.matching import MatchingEngine, MatchCandidate, MatchTolerance
@@ -167,8 +197,20 @@ class MatchingEngine:
     """
     Generic document matching engine.
 
-    Pure functions - no I/O, no database access.
-    All reference data passed as parameters.
+    Contract:
+        Pure functions -- no I/O, no database access.
+        All reference data and dates passed as explicit parameters.
+    Guarantees:
+        - ``find_matches`` returns suggestions sorted by descending score.
+        - ``create_match`` validates currency consistency and minimum
+          document count before producing a ``MatchResult``.
+        - Price and quantity variances are computed only when sufficient
+          data exists (unit prices and quantities on at least 2 documents).
+    Non-goals:
+        - Does not persist match results; callers are responsible for
+          storage and link creation.
+        - Does not enforce business rules about which document types can
+          be matched; that is the caller's responsibility.
     """
 
     def __init__(self) -> None:

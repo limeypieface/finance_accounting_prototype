@@ -1,11 +1,31 @@
 """
-PostingOrchestrator — Central DI container for kernel services.
+finance_services.posting_orchestrator -- Central DI container for kernel services.
 
-Every kernel service is created once and injected. No service may create
-other services internally. This ensures:
-- Single-instance lifecycle (no duplicate SequenceService)
-- Testability (inject test doubles at one point)
-- Dependency transparency (all service wiring visible in one place)
+Responsibility:
+    Creates every kernel service exactly once and wires them together.
+    No service may create other services internally.  The orchestrator
+    is the single point of dependency injection for the posting pipeline.
+
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    This module sits at the top of the service layer and is the only
+    place where kernel services are constructed and composed.
+
+Invariants enforced:
+    - Single-instance lifecycle: no duplicate SequenceService, AuditorService,
+      or PeriodService within a single posting context.
+    - DI transparency: all service wiring is visible in ``__init__``.
+    - SL-G1 (Subledger atomicity): subledger posting runs inside the same
+      transaction as the journal write via ``post_subledger_entries``.
+
+Failure modes:
+    - Construction failure if compiled_pack or role_resolver are invalid.
+    - AttributeError if a required sub-service cannot be instantiated.
+
+Audit relevance:
+    - The orchestrator's construction order defines the authoritative
+      dependency graph.  Changes here affect the audit trail path and
+      must be reviewed for transactional integrity.
 
 Usage:
     from finance_services.posting_orchestrator import PostingOrchestrator
@@ -67,12 +87,21 @@ from finance_services.subledger_inventory import InventorySubledgerService
 class PostingOrchestrator:
     """Central factory for kernel services.
 
-    Every kernel service is created once and injected.
-    No service may create other services internally.
+    Contract:
+        Receives a SQLAlchemy Session, CompiledPolicyPack, RoleResolver,
+        and optional Clock/PolicyAuthority.  Constructs every kernel
+        service exactly once, in dependency order, and exposes them as
+        public attributes.
 
-    This is the single point of DI for the posting pipeline. Modules
-    receive this object and access services through it — they never
-    construct kernel services themselves.
+    Guarantees:
+        - Single-instance lifecycle for every kernel service within this
+          orchestrator's scope.
+        - All services share the same Session and Clock instances.
+        - Subledger services are keyed by SubledgerType for dispatch.
+
+    Non-goals:
+        - Does NOT manage transaction boundaries (caller's responsibility).
+        - Does NOT own the Session lifecycle (no commit/rollback).
     """
 
     def __init__(
@@ -87,6 +116,7 @@ class PostingOrchestrator:
         self._clock = clock or SystemClock()
 
         # --- Singletons: created once, order matters (dependency graph) ---
+        # INVARIANT: single-instance lifecycle -- no duplicate service instances.
 
         # Foundational services (no kernel dependencies)
         self.auditor = AuditorService(session, self._clock)
@@ -190,10 +220,22 @@ class PostingOrchestrator:
         """
         Post subledger entries for subledger ledger intents.
 
+        Preconditions:
+            journal_result contains successfully written entries (the
+            journal write has already flushed within the current txn).
+
+        Postconditions:
+            SubledgerEntry rows are created for each subledger ledger
+            intent, linked to the corresponding journal entry IDs.
+
+        Raises:
+            ValueError: If a subledger entry fails validation.
+
         Delegates to the subledger_posting bridge module which handles
         engine-layer imports that this orchestrator must not touch.
 
-        SL-G1: Atomicity — runs in the same transaction as the journal write.
+        INVARIANT [SL-G1]: Atomicity -- runs in the same transaction as
+        the journal write.  If this fails, the entire transaction rolls back.
         """
         _post_sl(
             subledger_services=self.subledger_services,

@@ -1,7 +1,30 @@
 """
-Database engine and session management.
+Module: finance_kernel.db.engine
+Responsibility: SQLAlchemy engine initialization, session factory management,
+    and transactional scope utilities.  This is the single point of database
+    connection configuration for the entire system.
+Architecture position: Kernel > DB.  May import from db/base.py and db/triggers.py.
+    MUST NOT import from models/, services/, selectors/, domain/, or outer layers
+    (except for create_tables/drop_tables which import models and triggers).
 
-PostgreSQL is the only supported backend.
+Invariants enforced:
+    - PostgreSQL is the ONLY supported backend (isolation_level, triggers,
+      JSONB, SELECT ... FOR UPDATE all require PostgreSQL 15+).
+    - Session isolation level is READ COMMITTED (default for PostgreSQL),
+      with explicit row-level locking (FOR UPDATE) used where stronger
+      isolation is needed (R8, R9, R12).
+    - Connection pooling via QueuePool with pre-ping to handle stale connections.
+
+Failure modes:
+    - RuntimeError if get_engine/get_session/get_session_factory called before
+      init_engine_from_url().
+    - OperationalError on deadlock during trigger installation (retried up to 3x).
+    - Connection pool exhaustion if pool_size + max_overflow is exceeded.
+
+Audit relevance:
+    All database transactions flow through sessions created by this module.
+    The session_scope() context manager ensures atomic commit-or-rollback
+    semantics, which is foundational for the L5 atomicity invariant.
 """
 
 import atexit
@@ -33,6 +56,12 @@ def init_engine_from_url(
 ) -> Engine:
     """
     Initialize the SQLAlchemy engine from a PostgreSQL database URL.
+
+    Preconditions: database_url is a valid PostgreSQL connection string.
+        Must not have been called before without a reset_engine() in between
+        (idempotent -- second call overwrites the first).
+    Postconditions: Module-level _engine and _SessionFactory are initialized.
+        All subsequent get_engine/get_session calls use this engine.
 
     Args:
         database_url: PostgreSQL connection URL (e.g., postgresql://user:pass@host/db)
@@ -119,6 +148,14 @@ def session_scope() -> Generator[Session, None, None]:
     """
     Provide a transactional scope around a series of operations.
 
+    Preconditions: Engine must be initialized via init_engine_from_url().
+    Postconditions: On normal exit, session is committed and closed.
+        On exception, session is rolled back and closed.  The exception
+        is re-raised to the caller.
+
+    Raises:
+        RuntimeError: If engine is not initialized.
+
     Usage:
         with session_scope() as session:
             session.add(entity)
@@ -140,13 +177,21 @@ def session_scope() -> Generator[Session, None, None]:
 
 def create_tables(install_triggers: bool = True) -> None:
     """
-    Create all tables defined in the models.
+    Create all tables defined in the models and optionally install triggers.
 
-    Must be called after all models are imported.
+    Preconditions: Engine must be initialized via init_engine_from_url().
+        All ORM models must be imported before calling (so Base.metadata
+        contains all table definitions).
+    Postconditions: All tables exist in the database.  If install_triggers=True,
+        all R10 immutability triggers are installed (with deadlock retry).
 
     Args:
         install_triggers: If True, install database-level immutability triggers
                          for R10 compliance.
+
+    Raises:
+        RuntimeError: If engine is not initialized.
+        OperationalError: If trigger installation fails after 3 retries.
     """
     import time
     from finance_kernel.db.base import Base
@@ -155,6 +200,10 @@ def create_tables(install_triggers: bool = True) -> None:
 
     # Dispose existing connections to avoid stale metadata
     engine.dispose()
+
+    # Import all module-level ORM models so Base.metadata discovers their tables.
+    from finance_modules._orm_registry import import_all_orm_models
+    import_all_orm_models()
 
     Base.metadata.create_all(engine)
 

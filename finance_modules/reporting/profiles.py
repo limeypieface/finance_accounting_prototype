@@ -1,9 +1,27 @@
 """
-Reporting Module Profiles — Stub.
+Reporting Module Profiles (``finance_modules.reporting.profiles``).
 
-The reporting module is read-only: it does not post journal entries.
-No accounting profiles are needed. This file exists to maintain the
-6-file module convention.
+Responsibility
+--------------
+Stub module -- the reporting module is **read-only** and does not post
+journal entries.  No accounting profiles are needed.  This file exists
+to maintain the standard module file convention.
+
+Architecture position
+---------------------
+**Modules layer** -- no profiles required for read-only modules.
+
+Invariants enforced
+-------------------
+* No profiles are registered (empty registry).
+
+Failure modes
+-------------
+* None -- this is a no-op module.
+
+Audit relevance
+---------------
+* Not applicable (read-only module).
 """
 
 from finance_kernel.logging_config import get_logger

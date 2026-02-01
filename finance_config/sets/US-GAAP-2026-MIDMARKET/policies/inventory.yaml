@@ -1,0 +1,508 @@
+policies:
+- name: InventoryReceipt
+  version: 1
+  module: inventory
+  description: Records inventory receipt increasing stock on hand
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.receipt
+  meaning:
+    economic_type: INVENTORY_INCREASE
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY
+    credit_role: GRNI
+  - ledger: INVENTORY
+    debit_role: STOCK_ON_HAND
+    credit_role: IN_TRANSIT
+  guards:
+  - guard_type: reject
+    expression: payload.quantity <= 0
+    reason_code: INVALID_QUANTITY
+    message: Receipt quantity must be positive
+  line_mappings:
+  - role: INVENTORY
+    side: debit
+  - role: GRNI
+    side: credit
+  - role: STOCK_ON_HAND
+    side: debit
+    ledger: INVENTORY
+  - role: IN_TRANSIT
+    side: credit
+    ledger: INVENTORY
+- name: InventoryReceiptWithVariance
+  version: 1
+  module: inventory
+  description: Receipt at actual cost differs from standard — records PPV
+  effective_from: '2024-01-01'
+  required_engines: ["variance"]
+  engine_parameters_ref: variance
+  variance_disposition: post
+  trigger:
+    event_type: inventory.receipt
+    where:
+    - field: payload.has_variance
+      value: true
+  meaning:
+    economic_type: INVENTORY_INCREASE
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY
+    credit_role: GRNI
+  guards:
+  - guard_type: reject
+    expression: payload.quantity <= 0
+    reason_code: INVALID_QUANTITY
+    message: Receipt quantity must be positive
+  line_mappings:
+  - role: INVENTORY
+    side: debit
+    from_context: standard_total
+  - role: PPV
+    side: debit
+    from_context: variance_amount
+  - role: GRNI
+    side: credit
+- name: InventoryIssueSale
+  version: 1
+  module: inventory
+  description: Records inventory issue for sales, recognizing COGS
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.issue
+    where:
+    - field: payload.issue_type
+      value: SALE
+  meaning:
+    economic_type: INVENTORY_DECREASE
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: COGS
+    credit_role: INVENTORY
+  - ledger: INVENTORY
+    debit_role: SOLD
+    credit_role: STOCK_ON_HAND
+  guards:
+  - guard_type: reject
+    expression: payload.quantity <= 0
+    reason_code: INVALID_QUANTITY
+    message: Issue quantity must be positive
+  line_mappings:
+  - role: COGS
+    side: debit
+  - role: INVENTORY
+    side: credit
+  - role: SOLD
+    side: debit
+    ledger: INVENTORY
+  - role: STOCK_ON_HAND
+    side: credit
+    ledger: INVENTORY
+- name: InventoryIssueProduction
+  version: 1
+  module: inventory
+  description: Records inventory issue to production WIP
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.issue
+    where:
+    - field: payload.issue_type
+      value: PRODUCTION
+  meaning:
+    economic_type: INVENTORY_TO_WIP
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP
+    credit_role: INVENTORY
+  - ledger: INVENTORY
+    debit_role: IN_PRODUCTION
+    credit_role: STOCK_ON_HAND
+  line_mappings:
+  - role: WIP
+    side: debit
+  - role: INVENTORY
+    side: credit
+  - role: IN_PRODUCTION
+    side: debit
+    ledger: INVENTORY
+  - role: STOCK_ON_HAND
+    side: credit
+    ledger: INVENTORY
+- name: InventoryIssueScrap
+  version: 1
+  module: inventory
+  description: Records inventory scrapped and expensed
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.issue
+    where:
+    - field: payload.issue_type
+      value: SCRAP
+  meaning:
+    economic_type: INVENTORY_DECREASE
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: SCRAP_EXPENSE
+    credit_role: INVENTORY
+  - ledger: INVENTORY
+    debit_role: SCRAPPED
+    credit_role: STOCK_ON_HAND
+  line_mappings:
+  - role: SCRAP_EXPENSE
+    side: debit
+  - role: INVENTORY
+    side: credit
+  - role: SCRAPPED
+    side: debit
+    ledger: INVENTORY
+  - role: STOCK_ON_HAND
+    side: credit
+    ledger: INVENTORY
+- name: InventoryIssueTransfer
+  version: 1
+  module: inventory
+  description: Records inventory transfer between locations (outbound)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.issue
+    where:
+    - field: payload.issue_type
+      value: TRANSFER
+  meaning:
+    economic_type: INVENTORY_TRANSFER
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: INVENTORY
+    debit_role: IN_TRANSIT
+    credit_role: STOCK_ON_HAND
+  line_mappings:
+  - role: IN_TRANSIT
+    side: debit
+    ledger: INVENTORY
+  - role: STOCK_ON_HAND
+    side: credit
+    ledger: INVENTORY
+- name: InventoryTransferIn
+  version: 1
+  module: inventory
+  description: Records inventory transfer received (inbound)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.transfer_in
+  meaning:
+    economic_type: INVENTORY_TRANSFER
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: INVENTORY
+    debit_role: STOCK_ON_HAND
+    credit_role: IN_TRANSIT
+  line_mappings:
+  - role: STOCK_ON_HAND
+    side: debit
+    ledger: INVENTORY
+  - role: IN_TRANSIT
+    side: credit
+    ledger: INVENTORY
+- name: InventoryReceiptFromProduction
+  version: 1
+  module: inventory
+  description: Finished goods received from production
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.receipt_from_production
+  meaning:
+    economic_type: INVENTORY_INCREASE
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY
+    credit_role: WIP
+  line_mappings:
+  - role: INVENTORY
+    side: debit
+  - role: WIP
+    side: credit
+- name: InventoryAdjustmentPositive
+  version: 1
+  module: inventory
+  description: Records positive inventory adjustment from count variance
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.adjustment
+    where:
+    - field: payload.quantity_change > 0
+      value: true
+  meaning:
+    economic_type: INVENTORY_ADJUSTMENT
+    quantity_field: payload.quantity_change
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY
+    credit_role: INVENTORY_VARIANCE
+  line_mappings:
+  - role: INVENTORY
+    side: debit
+  - role: INVENTORY_VARIANCE
+    side: credit
+- name: InventoryAdjustmentNegative
+  version: 1
+  module: inventory
+  description: Records negative inventory adjustment from count variance
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.adjustment
+    where:
+    - field: payload.quantity_change < 0
+      value: true
+  meaning:
+    economic_type: INVENTORY_ADJUSTMENT
+    quantity_field: payload.quantity_change
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY_VARIANCE
+    credit_role: INVENTORY
+  line_mappings:
+  - role: INVENTORY_VARIANCE
+    side: debit
+  - role: INVENTORY
+    side: credit
+- name: InventoryRevaluation
+  version: 1
+  module: inventory
+  description: Inventory revalued (e.g., lower of cost or market adjustment)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.revaluation
+  meaning:
+    economic_type: INVENTORY_REVALUATION
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY_REVALUATION
+    credit_role: INVENTORY
+  line_mappings:
+  - role: INVENTORY_REVALUATION
+    side: debit
+  - role: INVENTORY
+    side: credit
+- name: InventoryCycleCountPositive
+  version: 1
+  module: inventory
+  description: Positive cycle count adjustment (actual > expected)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.cycle_count
+    where:
+    - field: payload.variance_quantity > 0
+      value: true
+  meaning:
+    economic_type: INVENTORY_ADJUSTMENT
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY
+    credit_role: INVENTORY_VARIANCE
+  - ledger: INVENTORY
+    debit_role: ITEM_BALANCE
+    credit_role: ADJUSTMENT
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Count adjustment amount must be positive
+  line_mappings:
+  - role: INVENTORY
+    side: debit
+  - role: INVENTORY_VARIANCE
+    side: credit
+  - role: ITEM_BALANCE
+    side: debit
+    ledger: INVENTORY
+  - role: ADJUSTMENT
+    side: credit
+    ledger: INVENTORY
+- name: InventoryCycleCountNegative
+  version: 1
+  module: inventory
+  description: Negative cycle count adjustment (actual < expected)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.cycle_count
+    where:
+    - field: payload.variance_quantity < 0
+      value: true
+  meaning:
+    economic_type: INVENTORY_ADJUSTMENT
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY_VARIANCE
+    credit_role: INVENTORY
+  - ledger: INVENTORY
+    debit_role: ADJUSTMENT
+    credit_role: ITEM_BALANCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Count adjustment amount must be positive
+  line_mappings:
+  - role: INVENTORY_VARIANCE
+    side: debit
+  - role: INVENTORY
+    side: credit
+  - role: ADJUSTMENT
+    side: debit
+    ledger: INVENTORY
+  - role: ITEM_BALANCE
+    side: credit
+    ledger: INVENTORY
+- name: InventoryWarehouseTransferOut
+  version: 1
+  module: inventory
+  description: Warehouse transfer outbound with subledger
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.warehouse_transfer
+    where:
+    - field: payload.direction
+      value: out
+  meaning:
+    economic_type: INVENTORY_TRANSFER
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY_IN_TRANSIT
+    credit_role: INVENTORY
+  - ledger: INVENTORY
+    debit_role: IN_TRANSIT
+    credit_role: STOCK_ON_HAND
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Transfer amount must be positive
+  line_mappings:
+  - role: INVENTORY_IN_TRANSIT
+    side: debit
+  - role: INVENTORY
+    side: credit
+  - role: IN_TRANSIT
+    side: debit
+    ledger: INVENTORY
+  - role: STOCK_ON_HAND
+    side: credit
+    ledger: INVENTORY
+- name: InventoryWarehouseTransferIn
+  version: 1
+  module: inventory
+  description: Warehouse transfer inbound with subledger
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.warehouse_transfer
+    where:
+    - field: payload.direction
+      value: in
+  meaning:
+    economic_type: INVENTORY_TRANSFER
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY
+    credit_role: INVENTORY_IN_TRANSIT
+  - ledger: INVENTORY
+    debit_role: STOCK_ON_HAND
+    credit_role: IN_TRANSIT
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Transfer amount must be positive
+  line_mappings:
+  - role: INVENTORY
+    side: debit
+  - role: INVENTORY_IN_TRANSIT
+    side: credit
+  - role: STOCK_ON_HAND
+    side: debit
+    ledger: INVENTORY
+  - role: IN_TRANSIT
+    side: credit
+    ledger: INVENTORY
+- name: InventoryExpiredWriteOff
+  version: 1
+  module: inventory
+  description: Expired inventory written off with subledger
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: inventory.expired
+  meaning:
+    economic_type: INVENTORY_DECREASE
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: SCRAP_EXPENSE
+    credit_role: INVENTORY
+  - ledger: INVENTORY
+    debit_role: WRITEOFF
+    credit_role: ITEM_BALANCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Write-off amount must be positive
+  line_mappings:
+  - role: SCRAP_EXPENSE
+    side: debit
+  - role: INVENTORY
+    side: credit
+  - role: WRITEOFF
+    side: debit
+    ledger: INVENTORY
+  - role: ITEM_BALANCE
+    side: credit
+    ledger: INVENTORY

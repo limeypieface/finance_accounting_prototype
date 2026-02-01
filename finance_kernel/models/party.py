@@ -1,20 +1,31 @@
 """
-Party model for customers, suppliers, and employees.
+Module: finance_kernel.models.party
+Responsibility: ORM persistence for external entities (customers, suppliers,
+    employees, intercompany partners) that the organization transacts with.
+    Party rows serve as the identity anchor for guard enforcement in the
+    posting pipeline.
+Architecture position: Kernel > Models.  May import from db/base.py only.
+    MUST NOT import from services/, selectors/, domain/, or outer layers.
 
-Party represents external entities that the organization transacts with:
-- Customers (AR relationships)
-- Suppliers (AP relationships)
-- Employees (payroll relationships)
-- Intercompany entities
+Invariants enforced:
+    R10 -- party_code is immutable once referenced by posted events or journal
+           entries.  Changing the code would orphan subledger entries and break
+           audit trail linkage.
+    Guard enforcement points (not ORM-level, but this model is the data source):
+        - Credit limit guard: customer credit_limit vs outstanding AR balance.
+        - Frozen status guard: status == FROZEN blocks all new transactions.
+        - Payment terms guard: payment_terms_days drives due-date calculation.
 
-Used by guards for:
-- Credit limit checks (customer)
-- Frozen status blocking (all types)
-- Payment terms validation
+Failure modes:
+    - IntegrityError on duplicate party_code (uq_party_code constraint).
+    - Guard rejection (upstream) when is_frozen returns True or can_transact
+      returns False.
 
-Hard invariants:
-- Parties referenced by events cannot be deleted
-- party_code is immutable once referenced
+Audit relevance:
+    Party is the counterparty identity for all financial transactions.
+    Subledger entries, AR invoices, AP bills, and payroll runs all reference
+    Party.  The credit_limit and status fields are guard inputs that
+    determine whether a transaction is admissible.
 """
 
 from decimal import Decimal
@@ -31,7 +42,11 @@ if TYPE_CHECKING:
 
 
 class PartyType(str, Enum):
-    """Classification of party types."""
+    """Classification of party types.
+
+    Contract: Every Party has exactly one PartyType.  The type determines
+    which subledger (AR, AP, PAYROLL) and which guards apply.
+    """
 
     CUSTOMER = "customer"
     SUPPLIER = "supplier"
@@ -40,7 +55,11 @@ class PartyType(str, Enum):
 
 
 class PartyStatus(str, Enum):
-    """Party lifecycle status."""
+    """Party lifecycle status.
+
+    Contract: Transitions follow ACTIVE -> FROZEN -> CLOSED (one-way seal).
+    FROZEN parties cannot transact; CLOSED parties are historical only.
+    """
 
     ACTIVE = "active"  # Can transact normally
     FROZEN = "frozen"  # Cannot transact (blocked)
@@ -49,12 +68,25 @@ class PartyStatus(str, Enum):
 
 class Party(TrackedBase):
     """
-    Party represents external entities: customers, suppliers, employees.
+    External entity that the organization transacts with.
 
-    Used by guards for:
-    - Credit limit checks (customer)
-    - Frozen status blocking (all types)
-    - Payment terms validation
+    Contract:
+        Each Party has a unique party_code that is immutable once referenced
+        by posted financial records.  The party_type determines which
+        subledger and guards apply.  Status transitions control transaction
+        admissibility.
+
+    Guarantees:
+        - party_code is globally unique (uq_party_code constraint).
+        - party_type is set at creation and classifies the party permanently.
+        - status and is_active together determine transaction admissibility.
+        - credit_limit and credit_currency are guard inputs for AR postings.
+
+    Non-goals:
+        - This model does NOT enforce credit limits at the ORM level; that
+          is the responsibility of the AR module guard.
+        - This model does NOT validate payment_terms_days ranges; that is
+          enforced by the AP/AR service layer.
     """
 
     __tablename__ = "parties"
@@ -132,12 +164,23 @@ class Party(TrackedBase):
 
     @property
     def is_frozen(self) -> bool:
-        """Check if party is frozen for transactions."""
+        """Check if party is frozen for transactions.
+
+        Postconditions: Returns True iff status is FROZEN.
+            Used by guards to block all new transactions for this party.
+        """
         return self.status == PartyStatus.FROZEN
 
     @property
     def can_transact(self) -> bool:
-        """Check if party can accept new transactions."""
+        """Check if party can accept new transactions.
+
+        Postconditions: Returns True iff is_active is True AND status is ACTIVE.
+            Both conditions must hold -- a deactivated but ACTIVE-status party
+            cannot transact, nor can an active but FROZEN party.
+        """
+        # INVARIANT: Guard enforcement point -- callers MUST check this
+        # before admitting any transaction for this party.
         return self.is_active and self.status == PartyStatus.ACTIVE
 
     def __repr__(self) -> str:

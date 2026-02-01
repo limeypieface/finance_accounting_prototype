@@ -604,19 +604,21 @@ def _check_account_delete(mapper, connection, target):
 
 def _check_fiscal_period_immutability(mapper, connection, target):
     """
-    Prevent modifications to closed FiscalPeriod records.
+    Prevent modifications to closed/locked FiscalPeriod records.
 
-    R10 Compliance: Closed fiscal periods are immutable.
+    R10 Compliance: Closed fiscal periods are immutable (with controlled exceptions).
 
-    This check allows the closing workflow to complete (transition from OPEN to CLOSED),
-    but prevents any subsequent modifications once the period has been closed.
+    Allowed status transitions (period close lifecycle):
+        OPEN -> CLOSING      (begin_closing — R25 close lock)
+        CLOSING -> OPEN      (cancel_closing — release lock)
+        CLOSING -> CLOSED    (close_period — orchestrated close)
+        OPEN -> CLOSED       (close_period — direct close without orchestrator)
+        CLOSED -> LOCKED     (lock_period — year-end permanent seal)
 
-    The only allowed modification is the one-way transition: OPEN -> CLOSED
-
-    Logic explained:
-        1. OPEN -> CLOSED: ALLOW (this is the year-end close)
-        2. CLOSED -> anything: BLOCK (cannot reopen or modify closed periods)
-        3. Any field change when status=CLOSED: BLOCK
+    Blocked:
+        CLOSED -> anything other than LOCKED
+        LOCKED -> anything
+        Any field change when status is CLOSED or LOCKED (except allowed transitions)
     """
     from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
     from sqlalchemy.orm.attributes import get_history
@@ -626,8 +628,7 @@ def _check_fiscal_period_immutability(mapper, connection, target):
 
     status_history = get_history(target, "status")
 
-    # First, check for the ONE allowed transition: OPEN -> CLOSED
-    # This is the year-end closing workflow and must be permitted.
+    # Check for allowed status transitions
     if status_history.deleted and status_history.added:
         old_status = status_history.deleted[0]
         new_status = status_history.added[0]
@@ -638,28 +639,35 @@ def _check_fiscal_period_immutability(mapper, connection, target):
         if isinstance(new_status, str):
             new_status = PeriodStatus(new_status)
 
-        # Allow OPEN -> CLOSED transition (this is the closing workflow)
-        if old_status == PeriodStatus.OPEN and new_status == PeriodStatus.CLOSED:
-            return  # This is allowed
+        allowed_transitions = {
+            (PeriodStatus.OPEN, PeriodStatus.CLOSING),
+            (PeriodStatus.OPEN, PeriodStatus.CLOSED),
+            (PeriodStatus.CLOSING, PeriodStatus.OPEN),
+            (PeriodStatus.CLOSING, PeriodStatus.CLOSED),
+            (PeriodStatus.CLOSED, PeriodStatus.LOCKED),
+        }
 
-    # Check if the period WAS closed before this update
-    was_closed_before = False
+        if (old_status, new_status) in allowed_transitions:
+            return  # This transition is allowed
+
+    # Check if the period WAS closed or locked before this update
+    was_sealed_before = False
     if status_history.deleted:
         old_status = status_history.deleted[0]
         if isinstance(old_status, str):
-            was_closed_before = old_status == "closed"
+            was_sealed_before = old_status in ("closed", "locked")
         else:
-            was_closed_before = old_status == PeriodStatus.CLOSED
+            was_sealed_before = old_status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED)
     elif not status_history.added:
         # Status is not changing - check current value
         current_status = target.status
         if isinstance(current_status, str):
-            was_closed_before = current_status == "closed"
+            was_sealed_before = current_status in ("closed", "locked")
         else:
-            was_closed_before = current_status == PeriodStatus.CLOSED
+            was_sealed_before = current_status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED)
 
-    # If period was already closed, prevent any modifications
-    if was_closed_before:
+    # If period was already closed/locked, prevent any modifications
+    if was_sealed_before:
         from sqlalchemy import inspect
 
         insp = inspect(target)
@@ -726,8 +734,8 @@ def _check_fiscal_period_delete(mapper, connection, target):
     if not isinstance(target, FiscalPeriod):
         return
 
-    # Rule 1: Closed periods cannot be deleted
-    if target.status == PeriodStatus.CLOSED:
+    # Rule 1: Closed or locked periods cannot be deleted
+    if target.status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):
         logger.error(
             "immutability_violation_blocked",
             extra={

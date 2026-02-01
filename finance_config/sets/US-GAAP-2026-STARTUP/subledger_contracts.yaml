@@ -1,0 +1,34 @@
+# Subledger control contracts — declarative reconciliation rules.
+#
+# SL-G3: All contracts default to per-currency reconciliation.
+
+contracts:
+- subledger_id: INVENTORY
+  owner_module: inventory
+  control_account_role: INVENTORY_CONTROL
+  entry_types:
+  - RECEIPT
+  - ISSUE
+  - ADJUSTMENT
+  - REVALUATION
+  - TRANSFER
+  is_debit_normal: true
+  timing: period_end
+  tolerance_type: absolute
+  tolerance_amount: '0.05'
+  enforce_on_post: false
+  enforce_on_close: true
+- subledger_id: BANK
+  owner_module: gl
+  control_account_role: CASH_CONTROL
+  entry_types:
+  - DEPOSIT
+  - WITHDRAWAL
+  - TRANSFER
+  - BANK_FEE
+  - INTEREST
+  is_debit_normal: true
+  timing: daily
+  tolerance_type: none
+  enforce_on_post: true
+  enforce_on_close: true

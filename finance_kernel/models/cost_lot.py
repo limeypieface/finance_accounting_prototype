@@ -1,14 +1,32 @@
 """
-CostLot ORM Model.
+Module: finance_kernel.models.cost_lot
+Responsibility: ORM persistence for inventory cost lots.  Each lot represents a
+    discrete batch of inventory received at a specific cost, forming the basis
+    for FIFO, LIFO, weighted-average, and standard costing methods.
+Architecture position: Kernel > Models.  May import from db/base.py only.
+    MUST NOT import from services/, selectors/, domain/, or outer layers.
 
-Persistence layer for inventory cost lots. Each lot represents a batch of
-inventory received at a specific cost, used for FIFO/LIFO/standard costing.
+Invariants enforced:
+    C1 -- Lot quantity must be positive.  original_quantity > 0 is required at
+          creation; remaining quantity is derived from CONSUMED_BY economic links.
+    C2 -- Lot cost must be non-negative.  original_cost >= 0 (zero for donated/
+          sample inventory).
+    C3 -- Provenance traceability.  source_event_id is NOT NULL -- every lot must
+          be traceable to the event that created it.
+    C4 -- FIFO/LIFO ordering support.  (item_id, lot_date) composite index enables
+          deterministic cost-layer selection ordered by receipt date.
+    R10 -- Immutability.  original_quantity and original_cost MUST NOT change after
+           creation; remaining quantity is derived via EconomicLink graph.
 
-Hard invariants:
-- C1: Lot quantity must be positive
-- C2: Lot cost must be non-negative
-- C3: source_event_id is required (NOT NULL) — every lot is traceable
-- C4: item_id + lot_date together support FIFO/LIFO ordering
+Failure modes:
+    - IntegrityError on missing source_event_id (C3, NOT NULL constraint).
+    - Application-level validation rejects quantity <= 0 (C1) or cost < 0 (C2).
+
+Audit relevance:
+    Cost lots are the foundation of inventory valuation.  Each lot's original
+    quantity and cost are frozen at creation, with consumption tracked via
+    CONSUMED_BY links in the EconomicLink table.  This append-only pattern
+    ensures full auditability of cost-of-goods-sold calculations.
 """
 
 from __future__ import annotations
@@ -32,14 +50,25 @@ from finance_kernel.db.base import Base, UUIDString
 
 class CostLotModel(Base):
     """
-    Persistent storage for cost lots.
+    Persistent storage for inventory cost lots.
 
-    Maps CostLot domain objects to the database. Each row represents one
-    cost lot created by an inventory receipt, production completion, or
-    similar event.
+    Contract:
+        Each CostLotModel row records one cost lot created by a receipt,
+        production completion, or similar event.  The original_quantity and
+        original_cost are frozen at creation and MUST NOT change (R10).
+        Remaining quantity is derived from CONSUMED_BY economic links.
 
-    Remaining quantity is NOT stored — it is derived from CONSUMED_BY
-    links in the EconomicLink table via LinkGraphService.
+    Guarantees:
+        - source_event_id is always set (C3 provenance traceability).
+        - (item_id, lot_date) index supports FIFO/LIFO ordering (C4).
+        - currency is a 3-character ISO 4217 code (R16).
+        - cost_method records which costing strategy was in effect.
+
+    Non-goals:
+        - This model does NOT store remaining quantity; that is derived
+          from the EconomicLink graph via LinkGraphService.
+        - This model does NOT enforce C1/C2 at the ORM level; that is
+          the responsibility of the inventory service at creation time.
     """
 
     __tablename__ = "cost_lots"
@@ -74,7 +103,8 @@ class CostLotModel(Base):
         nullable=False,
     )
 
-    # Original quantity (never changes — remaining is derived from links)
+    # INVARIANT C1: original_quantity > 0 (enforced at service layer)
+    # INVARIANT R10: Immutable after creation -- remaining derived from links
     original_quantity: Mapped[Decimal] = mapped_column(
         Numeric(38, 9),
         nullable=False,
@@ -86,7 +116,8 @@ class CostLotModel(Base):
         default="EA",
     )
 
-    # Original cost (never changes)
+    # INVARIANT C2: original_cost >= 0 (enforced at service layer)
+    # INVARIANT R10: Immutable after creation
     original_cost: Mapped[Decimal] = mapped_column(
         Numeric(38, 9),
         nullable=False,
@@ -103,7 +134,7 @@ class CostLotModel(Base):
         nullable=False,
     )
 
-    # Provenance
+    # INVARIANT C3: source_event_id is NOT NULL -- every lot is traceable
     source_event_id: Mapped[UUID] = mapped_column(
         UUIDString(),
         nullable=False,

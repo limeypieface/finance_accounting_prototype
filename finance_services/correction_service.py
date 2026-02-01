@@ -1,14 +1,36 @@
 """
-Correction Engine - Recursive cascade unwind for document corrections.
+finance_services.correction_service -- Recursive cascade unwind for document corrections.
 
-This service manages document corrections by:
-1. Building unwind plans via graph traversal
-2. Generating compensating journal entries
-3. Executing corrections with full link tracking
+Responsibility:
+    Manages document corrections by building unwind plans via link-graph
+    traversal, generating compensating journal entries that reverse the
+    original GL impact, and executing corrections with full CORRECTED_BY /
+    REVERSED_BY link tracking.
 
-It composes:
-- LinkGraphService for graph traversal and correction link creation
-- Session for journal entry access (via ledger queries)
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    Composes LinkGraphService (kernel), PeriodService (kernel), and
+    the pure unwind engine (finance_engines.correction.unwind).
+
+Invariants enforced:
+    - R10 (Posted record immutability): corrections are via reversal entries,
+      never mutation of posted records.
+    - R12 (Closed period enforcement): when PeriodService is injected,
+      artifacts in closed periods are blocked from correction (G12).
+    - LINK_LEGALITY (R4-links): all correction links use the immutable
+      EconomicLink model with CORRECTED_BY / REVERSED_BY types.
+
+Failure modes:
+    - AlreadyCorrectedError: root document already has a CORRECTED_BY link.
+    - UnwindDepthExceededError: graph depth exceeds safety limit.
+    - CorrectionCascadeBlockedError: a downstream artifact cannot be unwound.
+    - ClosedPeriodError: artifact falls in a closed fiscal period.
+
+Audit relevance:
+    - Every correction creates CORRECTED_BY links with metadata capturing
+      the actor, depth, plan size, and correction_type.
+    - Compensating journal entries are generated for auditor review before
+      execution via the dry-run strategy.
 
 Usage:
     from finance_services.correction_service import CorrectionEngine
@@ -84,11 +106,26 @@ class CorrectionEngine:
     """
     Manages document corrections with cascade unwind.
 
-    This service handles:
-    - Building unwind plans via link graph traversal
-    - Generating compensating journal entries
-    - Executing corrections atomically
-    - Tracking corrections via CORRECTED_BY/REVERSED_BY links
+    Contract:
+        Given a root artifact reference, build an UnwindPlan that captures
+        all downstream artifacts reachable via FULFILLED_BY / SOURCED_FROM /
+        DERIVED_FROM / CONSUMED_BY / PAID_BY links, generate compensating
+        journal entries, and execute the correction atomically.
+
+    Guarantees:
+        - Every corrected artifact receives a CORRECTED_BY link whose
+          metadata includes correction_type, depth, actor_id, and
+          plan_artifacts_count.
+        - Compensating entries exactly reverse the original GL impact per
+          artifact (sign-flip of every original line).
+        - A dry-run plan never writes to the database.
+        - Race-condition guard: root correction status is re-checked inside
+          execute_correction before any writes.
+
+    Non-goals:
+        - Does NOT handle partial quantity corrections (use adjust_document
+          with caller-supplied adjustment entries instead).
+        - Does NOT re-open closed fiscal periods; it blocks instead (G12).
 
     Cascade Behavior:
     When voiding a document (e.g., PO), the engine:
@@ -186,7 +223,9 @@ class CorrectionEngine:
             "posting_date": posting_date.isoformat(),
         })
 
-        # Check if already corrected
+        # INVARIANT [R10]: Posted records are never mutated; corrections
+        # are via compensating entries only.  Pre-check ensures no duplicate
+        # correction links.
         correction = self.link_graph.find_correction(root_ref)
         if correction:
             logger.warning("unwind_plan_already_corrected", extra={
@@ -357,7 +396,8 @@ class CorrectionEngine:
         if reversal:
             return False, f"Already reversed by {reversal.child_ref}"
 
-        # G12: Period lock check
+        # INVARIANT [R12 / G12]: Period lock check -- corrections to
+        # artifacts in closed periods are blocked.
         if self._period_service is not None:
             effective_date = self._get_effective_date(artifact_ref)
             if effective_date is not None:
@@ -536,6 +576,7 @@ class CorrectionEngine:
             "actor_id": actor_id,
         })
 
+        # INVARIANT: Dry-run plans must never be executed.
         if plan.is_dry_run:
             logger.error("correction_execution_dry_run_rejected", extra={
                 "root_ref": str(plan.root_ref),
@@ -553,7 +594,9 @@ class CorrectionEngine:
                     first_blocked.depth,
                 )
 
-        # Re-check root not corrected (race condition guard)
+        # INVARIANT [R10]: Re-check root not corrected (race condition guard).
+        # Between plan build and execution another thread may have corrected
+        # the same artifact.
         correction = self.link_graph.find_correction(plan.root_ref)
         if correction:
             raise AlreadyCorrectedError(

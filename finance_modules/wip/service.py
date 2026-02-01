@@ -1,17 +1,51 @@
 """
-WIP (Work in Process) Module Service - Orchestrates WIP operations via engines + kernel.
+WIP (Work in Process) Module Service (``finance_modules.wip.service``).
 
-Thin glue layer that:
-1. Calls ValuationLayer for WIP cost valuation
-2. Calls AllocationEngine for overhead allocation across jobs
-3. Calls VarianceCalculator for labor/material/overhead variances
-4. Calls LinkGraphService for tracking production links
-5. Calls ModulePostingService for journal entry creation
+Responsibility
+--------------
+Orchestrates WIP (Work in Process) manufacturing operations -- material
+issues, labor charges, overhead application, scrap recording, byproduct
+recognition, job completion, production cost summaries, unit cost
+breakdowns, and production variance analysis -- by delegating pure
+computation to ``finance_engines`` and journal persistence to
+``finance_kernel.services.module_posting_service``.
 
-All computation lives in engines. All posting lives in kernel.
-This service owns the transaction boundary (R7 compliance).
+Architecture position
+---------------------
+**Modules layer** -- thin ERP glue.  ``WipService`` is the sole public
+entry point for WIP operations.  It composes stateless engines
+(``AllocationEngine``, ``VarianceCalculator``), stateful engines
+(``ValuationLayer``, ``LinkGraphService``), and the kernel
+``ModulePostingService``.
 
-Usage:
+Invariants enforced
+-------------------
+* R7  -- Each public method owns the transaction boundary
+          (``commit`` on success, ``rollback`` on failure or exception).
+* R14 -- Event type selection is data-driven; no ``if/switch`` on
+          event_type inside the posting path.
+* L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
+* L5  -- Atomicity: link creation and journal posting share a single
+          transaction (``auto_commit=False``).
+
+Failure modes
+-------------
+* Guard rejection or kernel validation  -> ``ModulePostingResult`` with
+  ``is_success == False``; session rolled back.
+* Unexpected exception  -> session rolled back, exception re-raised.
+* ValuationLayer errors (e.g., insufficient lot quantity)  -> propagate
+  before posting attempt.
+
+Audit relevance
+---------------
+Structured log events emitted at operation start and commit/rollback for
+every public method, carrying job IDs, item IDs, quantities, and costs.
+All journal entries feed the kernel audit chain (R11).  Cost-lot links
+(``EconomicLink``) tie material issues to jobs and jobs to finished goods
+for full cost-flow traceability.
+
+Usage::
+
     service = WipService(session, role_resolver, clock)
     result = service.record_material_issue(
         issue_id=uuid4(), job_id="JOB-100",
@@ -40,6 +74,11 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingService,
     ModulePostingStatus,
 )
+from finance_modules.wip.models import (
+    ByproductRecord,
+    ProductionCostSummary,
+    UnitCostBreakdown,
+)
 from finance_services.valuation_service import ValuationLayer
 from finance_engines.allocation import AllocationEngine, AllocationMethod, AllocationTarget
 from finance_engines.variance import VarianceCalculator, VarianceResult
@@ -50,6 +89,27 @@ logger = get_logger("modules.wip.service")
 class WipService:
     """
     Orchestrates Work-in-Process operations through engines and kernel.
+
+    Contract
+    --------
+    * Every posting method returns ``ModulePostingResult``; callers inspect
+      ``result.is_success`` to determine outcome.
+    * Non-posting helpers (``get_production_cost_summary``,
+      ``get_unit_cost_breakdown``, etc.) return pure domain objects with no
+      side-effects on the journal.
+
+    Guarantees
+    ----------
+    * Session is committed only on ``result.is_success``; otherwise rolled back.
+    * Engine link writes and journal writes share a single transaction
+      (``ModulePostingService`` runs with ``auto_commit=False``).
+    * Clock is injectable for deterministic testing.
+
+    Non-goals
+    ---------
+    * Does NOT own account-code resolution (delegated to kernel via ROLES).
+    * Does NOT enforce fiscal-period locks directly (kernel ``PeriodService``
+      handles R12/R13).
 
     Engine composition:
     - ValuationLayer: WIP cost layer valuation
@@ -112,8 +172,6 @@ class WipService:
         try:
             # Engine: establish production link (material -> job)
             from finance_kernel.domain.economic_link import EconomicLink, LinkType
-            from datetime import datetime
-
             material_ref = ArtifactRef(ArtifactType.COST_LOT, issue_id)
             job_ref = ArtifactRef(ArtifactType.EVENT, uuid4())
 
@@ -123,7 +181,7 @@ class WipService:
                 parent_ref=material_ref,
                 child_ref=job_ref,
                 creating_event_id=issue_id,
-                created_at=datetime.utcnow(),
+                created_at=self._clock.now(),
                 metadata={
                     "job_id": job_id,
                     "item_id": item_id,
@@ -311,7 +369,6 @@ class WipService:
         try:
             # Engine: establish completion link (job -> finished goods)
             from finance_kernel.domain.economic_link import EconomicLink, LinkType
-            from datetime import datetime
 
             completion_id = uuid4()
             job_ref = ArtifactRef(ArtifactType.EVENT, completion_id)
@@ -323,7 +380,7 @@ class WipService:
                 parent_ref=job_ref,
                 child_ref=fg_ref,
                 creating_event_id=completion_id,
-                created_at=datetime.utcnow(),
+                created_at=self._clock.now(),
                 metadata={
                     "job_id": job_id,
                     "quantity": str(quantity),
@@ -637,3 +694,153 @@ class WipService:
         except Exception:
             self._session.rollback()
             raise
+
+    # =========================================================================
+    # Production Cost Summary
+    # =========================================================================
+
+    def calculate_production_cost(
+        self,
+        job_id: UUID,
+        material_cost: Decimal,
+        labor_cost: Decimal,
+        overhead_cost: Decimal,
+        units_produced: Decimal,
+    ) -> ProductionCostSummary:
+        """
+        Calculate aggregated production costs for a job.
+
+        Pure calculation -- no journal posting. Useful for reporting and
+        feeding into unit-cost or variance analyses.
+        """
+        total_cost = material_cost + labor_cost + overhead_cost
+
+        logger.info("wip_production_cost_calculated", extra={
+            "job_id": str(job_id),
+            "material_cost": str(material_cost),
+            "labor_cost": str(labor_cost),
+            "overhead_cost": str(overhead_cost),
+            "total_cost": str(total_cost),
+            "units_produced": str(units_produced),
+        })
+
+        return ProductionCostSummary(
+            job_id=job_id,
+            material_cost=material_cost,
+            labor_cost=labor_cost,
+            overhead_cost=overhead_cost,
+            total_cost=total_cost,
+            units_produced=units_produced,
+        )
+
+    # =========================================================================
+    # Byproduct Recording
+    # =========================================================================
+
+    def record_byproduct(
+        self,
+        job_id: UUID,
+        item_id: UUID,
+        description: str,
+        value: Decimal,
+        quantity: Decimal,
+        effective_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> tuple[ByproductRecord, ModulePostingResult]:
+        """
+        Record a byproduct from a production job.
+
+        Profile: wip.byproduct -> WIPByproductRecorded
+        Dr INVENTORY / Cr WIP -- recognizes recoverable value of byproduct.
+        """
+        byproduct_id = uuid4()
+        try:
+            logger.info("wip_byproduct_recorded", extra={
+                "byproduct_id": str(byproduct_id),
+                "job_id": str(job_id),
+                "item_id": str(item_id),
+                "description": description,
+                "value": str(value),
+                "quantity": str(quantity),
+            })
+
+            result = self._poster.post_event(
+                event_type="wip.byproduct",
+                payload={
+                    "job_id": str(job_id),
+                    "item_id": str(item_id),
+                    "description": description,
+                    "value": str(value),
+                    "quantity": str(quantity),
+                },
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=Decimal(str(value)),
+                currency=currency,
+            )
+
+            record = ByproductRecord(
+                id=byproduct_id,
+                job_id=job_id,
+                item_id=item_id,
+                description=description,
+                value=value,
+                quantity=quantity,
+            )
+
+            if result.is_success:
+                self._session.commit()
+            else:
+                self._session.rollback()
+            return record, result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Unit Cost Breakdown
+    # =========================================================================
+
+    def calculate_unit_cost(
+        self,
+        job_id: UUID,
+        material_cost: Decimal,
+        labor_cost: Decimal,
+        overhead_cost: Decimal,
+        units_produced: Decimal,
+    ) -> UnitCostBreakdown:
+        """
+        Calculate per-unit cost breakdown by component.
+
+        Pure calculation -- no journal posting. Divides each cost component
+        by units_produced to derive per-unit rates.
+
+        Raises ValueError if units_produced is zero.
+        """
+        if units_produced == 0:
+            raise ValueError("units_produced must be non-zero for unit cost calculation")
+
+        material_per_unit = material_cost / units_produced
+        labor_per_unit = labor_cost / units_produced
+        overhead_per_unit = overhead_cost / units_produced
+        total_per_unit = material_per_unit + labor_per_unit + overhead_per_unit
+
+        logger.info("wip_unit_cost_calculated", extra={
+            "job_id": str(job_id),
+            "units_produced": str(units_produced),
+            "material_per_unit": str(material_per_unit),
+            "labor_per_unit": str(labor_per_unit),
+            "overhead_per_unit": str(overhead_per_unit),
+            "total_per_unit": str(total_per_unit),
+        })
+
+        return UnitCostBreakdown(
+            job_id=job_id,
+            units_produced=units_produced,
+            material_per_unit=material_per_unit,
+            labor_per_unit=labor_per_unit,
+            overhead_per_unit=overhead_per_unit,
+            total_per_unit=total_per_unit,
+        )

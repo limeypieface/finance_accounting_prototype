@@ -1,18 +1,40 @@
 """
-Pure domain data transfer objects.
+DTOs -- Pure domain data transfer objects.
 
-These DTOs are:
-- Immutable (frozen dataclasses)
-- Free of ORM dependencies
-- Free of database dependencies
-- Free of I/O dependencies
-- Deterministic and testable in isolation
+Responsibility:
+    Defines the immutable data structures that flow through the posting
+    pipeline: EventEnvelope (input), LineSpec (strategy output), ProposedLine,
+    ProposedJournalEntry (domain output), JournalEntryDraft, JournalEntryRecord
+    (persistence boundary), and all supporting DTOs (validation, periods,
+    accounts, exchange rates, reference data).
 
-R3 Compliance: Domain logic may not accept or return ORM entities.
-R4 Compliance: Uses Money, Currency value objects - no primitive types for financial fields.
+Architecture position:
+    Kernel > Domain -- pure functional core, zero I/O.
+    Free of ORM dependencies, database access, and external services.
+    from_model() class methods exist as boundary converters but are only
+    invoked from the service layer (never from domain logic).
+
+Invariants enforced:
+    R2.5 -- Payload deep-freeze prevents mutation by strategies
+    R3   -- Domain logic accepts/returns DTOs, never ORM entities
+    R4   -- Money value objects for all monetary fields (never raw Decimal)
+    R5   -- At most one is_rounding=True line per entry (enforced downstream)
+    R21  -- Reference snapshot version IDs recorded on ProposedJournalEntry
+
+Failure modes:
+    - ValueError on ProposedJournalEntry with no lines
+    - ValueError on LineSpec with negative amount
+    - ValueError on LedgerIntent with no lines
+
+Audit relevance:
+    ProposedJournalEntry is the auditable artifact produced by the pure domain.
+    Auditors verify that reference snapshot versions (R21) are present, that
+    rounding lines are isolated (R5/R22), and that the entry is balanced per
+    currency (R4). ReferenceData deep-freeze (R2.5) guarantees that strategy
+    inputs cannot be tampered with after snapshot.
 
 Data flow:
-    EventEnvelope → ProposedJournalEntry → JournalEntryDraft → JournalEntryRecord
+    EventEnvelope -> ProposedJournalEntry -> JournalEntryDraft -> JournalEntryRecord
 """
 
 from __future__ import annotations
@@ -67,14 +89,32 @@ def _deep_freeze_value(v: Any) -> Any:
 
 
 class LineSide(str, Enum):
-    """Which side of the entry this line is on."""
+    """
+    Which side of the entry this line is on.
+
+    Contract:
+        Exactly two values: DEBIT and CREDIT. Every journal line must have one.
+
+    Guarantees:
+        - Exhaustive enumeration -- no other sides exist in double-entry.
+    """
 
     DEBIT = "debit"
     CREDIT = "credit"
 
 
 class EntryStatus(str, Enum):
-    """Status of a journal entry."""
+    """
+    Status of a journal entry.
+
+    Contract:
+        Lifecycle: DRAFT -> POSTED -> REVERSED.
+        Once POSTED, the entry is immutable (R10).
+        REVERSED entries are also immutable; correction is via new reversal entries.
+
+    Guarantees:
+        - Only these three states exist in the system.
+    """
 
     DRAFT = "draft"
     POSTED = "posted"
@@ -86,8 +126,18 @@ class LineSpec:
     """
     Specification for a journal line.
 
-    Used as input to the posting strategy.
-    Immutable and contains no IDs (pure domain object).
+    Contract:
+        Strategy output describing one journal line. Contains an account code
+        (not ID), a side, and a Money value. Immutable, pure domain object.
+
+    Guarantees:
+        - amount is always non-negative (validated in __post_init__)
+        - money is always a Money value object (R4)
+        - is_rounding defaults to False; only Bookkeeper may set True (R22)
+
+    Non-goals:
+        - Does NOT contain account IDs (resolved later by _resolve_accounts)
+        - Does NOT validate account existence (that is the strategy pipeline's job)
 
     R4 Compliance: Uses Money value object instead of separate amount/currency.
     """
@@ -100,8 +150,10 @@ class LineSpec:
     is_rounding: bool = False
 
     def __post_init__(self) -> None:
+        # INVARIANT: R4 -- line amounts must be non-negative (side indicates direction)
         if self.money.amount < Decimal("0"):
             raise ValueError("Line amount must be non-negative")
+        assert self.money.amount >= Decimal("0"), f"R4 violation: negative line amount {self.money.amount}"
 
     # Backward compatibility properties
     @property
@@ -147,8 +199,18 @@ class ProposedLine:
     """
     A proposed journal line within a proposed entry.
 
-    Contains account_id (resolved from account_code) and all
-    attributes needed for persistence.
+    Contract:
+        Contains account_id (resolved from account_code) and all attributes
+        needed for persistence. This is the resolved form of LineSpec.
+
+    Guarantees:
+        - Immutable (frozen dataclass)
+        - account_id is a valid UUID (resolved from reference data)
+        - money is a Money value object (R4)
+
+    Non-goals:
+        - Does NOT validate that account_id exists in the database
+        - Does NOT enforce balance constraints (that is the entry's job)
 
     R4 Compliance: Uses Money value object instead of separate amount/currency.
     """
@@ -213,8 +275,18 @@ class EventEnvelope:
     """
     Pure domain representation of an event.
 
-    Contains all data needed for posting without ORM references.
-    This is the input to the posting strategy.
+    Contract:
+        Contains all data needed for posting without ORM references.
+        This is the canonical input to the posting strategy pipeline.
+
+    Guarantees:
+        - Immutable (frozen dataclass)
+        - payload is deep-frozen (MappingProxyType) to prevent mutation (R2.5)
+        - event_id and payload_hash are present for idempotency (R1, R3)
+
+    Non-goals:
+        - Does NOT validate payload_hash correctness (IngestorService does that)
+        - Does NOT store ORM references
 
     R2.5 Compliance: Payload is deep-frozen to prevent mutation by strategies.
     """
@@ -231,6 +303,7 @@ class EventEnvelope:
 
     def __post_init__(self) -> None:
         """R2.5: Deep-freeze the payload to prevent mutation by strategies."""
+        # INVARIANT: R2.5 -- payload must be immutable to prevent strategy tampering
         if isinstance(self.payload, dict) and not isinstance(self.payload, MappingProxyType):
             object.__setattr__(self, "payload", _deep_freeze_dict(self.payload))
 
@@ -268,7 +341,20 @@ class EventEnvelope:
 
 @dataclass(frozen=True)
 class ValidationError:
-    """A single validation error."""
+    """
+    A single validation error.
+
+    Contract:
+        Carries a machine-readable code, human-readable message, optional field
+        path, and optional details dict. Used throughout the posting pipeline.
+
+    Guarantees:
+        - Immutable (frozen dataclass)
+        - code is always present (R18 -- machine-readable error codes)
+
+    Non-goals:
+        - Does NOT raise exceptions -- it IS the error representation.
+    """
 
     code: str
     message: str
@@ -278,7 +364,21 @@ class ValidationError:
 
 @dataclass(frozen=True)
 class ValidationResult:
-    """Result of validation."""
+    """
+    Result of validation.
+
+    Contract:
+        Aggregates zero or more ValidationErrors. is_valid is True only when
+        there are no errors.
+
+    Guarantees:
+        - Immutable (frozen dataclass)
+        - errors is always a tuple (never None)
+        - bool(result) == result.is_valid for convenience
+
+    Non-goals:
+        - Does NOT contain warnings -- only hard errors.
+    """
 
     is_valid: bool
     errors: tuple[ValidationError, ...] = field(default_factory=tuple)
@@ -302,11 +402,22 @@ class ProposedJournalEntry:
     """
     Pure domain output from the posting strategy.
 
-    Contains all information needed to create a journal entry
-    but with NO ORM objects, NO database IDs except for resolved
-    account_ids, and NO side effects.
+    Contract:
+        Contains all information needed to create a journal entry:
+        lines, event envelope, description, metadata, and reference snapshot
+        version IDs. No ORM objects, no side effects.
 
-    This is deterministic: same input always produces same output.
+    Guarantees:
+        - Immutable (frozen dataclass)
+        - At least one line (validated in __post_init__)
+        - Deterministic: same input always produces same output
+        - Reference snapshot versions present for replay (R21)
+        - is_balanced() checks R4 compliance per currency
+
+    Non-goals:
+        - Does NOT enforce balance -- that is the strategy's responsibility
+        - Does NOT persist -- JournalWriter handles persistence
+        - Does NOT allocate sequence numbers
 
     R21 Compliance: Includes reference snapshot versions for deterministic replay.
     """
@@ -325,10 +436,10 @@ class ProposedJournalEntry:
     currency_registry_version: int = 1
 
     def __post_init__(self) -> None:
-        # Validation is performed by the strategy, but we enforce
-        # basic invariants here
+        # INVARIANT: Every journal entry must have at least one line
         if not self.lines:
             raise ValueError("ProposedJournalEntry must have at least one line")
+        assert len(self.lines) >= 1, "ProposedJournalEntry must have at least one line"
 
     @property
     def idempotency_key(self) -> str:
@@ -365,7 +476,13 @@ class ProposedJournalEntry:
         )
 
     def is_balanced(self, currency: str | None = None) -> bool:
-        """Check if debits equal credits for given currency (or all)."""
+        """
+        Check if debits equal credits for given currency (or all).
+
+        Postconditions:
+            - Returns True only if R4 (debits == credits per currency) holds.
+        """
+        # INVARIANT: R4 -- debits must equal credits per currency per entry
         if currency:
             return self.total_debits(currency) == self.total_credits(currency)
         # Check all currencies
@@ -384,8 +501,16 @@ class JournalEntryDraft:
     """
     A draft journal entry ready for persistence.
 
-    Created by the Ledger service from a ProposedJournalEntry.
-    Contains the assigned UUID but no sequence number yet.
+    Contract:
+        Created by the Ledger service from a ProposedJournalEntry.
+        Contains the assigned UUID but no sequence number yet.
+
+    Guarantees:
+        - Immutable (frozen dataclass)
+        - Carries the full ProposedJournalEntry for audit trail
+
+    Non-goals:
+        - Does NOT have a sequence number (assigned at post time by SequenceService)
     """
 
     id: UUID
@@ -402,10 +527,20 @@ class JournalEntryRecord:
     """
     A finalized journal entry record.
 
-    Contains all information after posting including:
-    - Assigned sequence number
-    - Posted timestamp
-    - Final status
+    Contract:
+        The read-side DTO for a posted journal entry. Contains all information
+        after posting including assigned sequence number, posted timestamp,
+        and final status.
+
+    Guarantees:
+        - Immutable (frozen dataclass)
+        - seq is the monotonic sequence number (R9)
+        - idempotency_key is unique (R3/R8)
+        - Reference snapshot versions present for replay (R21)
+
+    Non-goals:
+        - Does NOT enforce immutability at the persistence level (ORM + triggers do that)
+        - Does NOT validate balance (already validated at proposal time)
 
     R21 Compliance: Includes reference snapshot versions for deterministic replay.
     """
@@ -491,9 +626,20 @@ class ReferenceData:
     """
     Reference data needed by posting strategies.
 
-    Contains lookups for accounts, currencies, exchange rates, etc.
-    This is passed to the pure strategy layer instead of giving
-    strategies access to the database.
+    Contract:
+        Provides all lookup data (accounts, currencies, exchange rates,
+        dimensions) required by pure strategies. Passed into the strategy
+        layer instead of giving strategies database access.
+
+    Guarantees:
+        - Immutable (frozen dataclass)
+        - All mutable dict fields deep-frozen to MappingProxyType (R2.5)
+        - Version IDs present for deterministic replay (R21)
+        - Currency and ExchangeRate are value objects (R4)
+
+    Non-goals:
+        - Does NOT query the database (snapshot is taken before strategy invocation)
+        - Does NOT enforce period locks (service-layer concern)
 
     R4 Compliance: Uses Currency and ExchangeRate value objects.
     R2.5 Compliance: All mutable fields are deep-frozen to prevent mutation.
@@ -522,6 +668,7 @@ class ReferenceData:
 
     def __post_init__(self) -> None:
         """R2.5: Deep-freeze mutable fields to prevent mutation by strategies."""
+        # INVARIANT: R2.5 -- all mutable containers must be frozen before strategy access
         # Freeze account_ids_by_code
         if isinstance(self.account_ids_by_code, dict) and not isinstance(self.account_ids_by_code, MappingProxyType):
             object.__setattr__(self, "account_ids_by_code", MappingProxyType(dict(self.account_ids_by_code)))
@@ -617,10 +764,19 @@ class ReferenceData:
 
 
 class PeriodStatus(str, Enum):
-    """Status of a fiscal period."""
+    """
+    Status of a fiscal period.
+
+    Contract:
+        Lifecycle: OPEN -> CLOSING -> CLOSED -> LOCKED.
+        R12: No posting to CLOSED or LOCKED periods.
+        R13: Adjustment postings require allows_adjustments=True even on OPEN periods.
+    """
 
     OPEN = "open"
+    CLOSING = "closing"
     CLOSED = "closed"
+    LOCKED = "locked"
 
 
 @dataclass(frozen=True)
@@ -628,7 +784,16 @@ class FiscalPeriodInfo:
     """
     Pure domain representation of a fiscal period.
 
-    R3 Compliance: Domain logic returns this DTO instead of ORM FiscalPeriod.
+    Contract:
+        Immutable snapshot of fiscal period state. Used by domain logic
+        to check period status without ORM access.
+
+    Guarantees:
+        - Immutable (frozen dataclass)
+        - R3 compliant: domain logic uses this DTO, not ORM FiscalPeriod
+
+    Non-goals:
+        - Does NOT enforce period locks (PeriodService does that)
     """
 
     id: UUID
@@ -687,7 +852,16 @@ class AccountInfo:
     """
     Pure domain representation of an account.
 
-    R3 Compliance: Domain logic returns this DTO instead of ORM Account.
+    Contract:
+        Immutable snapshot of account state. Used by domain logic
+        to check account type and status without ORM access.
+
+    Guarantees:
+        - Immutable (frozen dataclass)
+        - R3 compliant: domain logic uses this DTO, not ORM Account
+
+    Non-goals:
+        - Does NOT enforce account activation/deactivation lifecycle
     """
 
     id: UUID

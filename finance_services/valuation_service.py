@@ -1,14 +1,42 @@
 """
-Valuation Layer Service - Cost lot management with FIFO/LIFO/Standard costing.
+finance_services.valuation_service -- Cost lot management with FIFO/LIFO/Standard costing.
 
-This service manages inventory cost layers by:
-1. Creating cost lots when inventory is received
-2. Consuming lots via FIFO/LIFO/Specific selection
-3. Tracking remaining values via EconomicLink relationships
+Responsibility:
+    Manage inventory cost layers: create cost lots on receipt, consume
+    lots via FIFO/LIFO/Specific/Standard selection, track remaining
+    values via EconomicLink (CONSUMED_BY) relationships, and compute
+    standard cost variances.
 
-It composes:
-- AllocationEngine for FIFO/LIFO ordering and sequential allocation
-- LinkGraphService for establishing CONSUMED_BY links and calculating remaining values
+Architecture position:
+    Services -- stateful orchestration over engines + kernel.
+    Composes AllocationEngine (for sequential allocation), LinkGraphService
+    (for CONSUMED_BY links), and CostLotModel (for persistence).
+    Pure domain types (CostLot, CostLayer, ConsumptionResult) live in
+    finance_engines.valuation.cost_lot.
+
+Invariants enforced:
+    - R6 (replay safety): lot creation is idempotent via lot_id uniqueness.
+    - EconomicLink trail: every consumption creates a CONSUMED_BY link
+      from consuming_ref to the lot's source_ref.
+    - Positive quantity: CostLot.__post_init__ rejects quantity <= 0.
+    - Sufficient inventory: consume methods raise InsufficientInventoryError
+      when requested quantity exceeds available.
+
+Failure modes:
+    - InsufficientInventoryError from consume_fifo/consume_lifo if
+      requested quantity exceeds available inventory for the item.
+    - LotNotFoundError from consume_specific if the specified lot_id
+      does not exist.
+    - LotDepletedError from consume_specific if the lot has no remaining
+      quantity.
+    - StandardCostNotFoundError from consume_standard if no standard cost
+      is registered for the item.
+
+Audit relevance:
+    Every lot creation and consumption is logged with lot_id, item_id,
+    quantity, cost, and creating_event_id.  CONSUMED_BY links provide a
+    complete audit trail from issuance back to receipt.  Standard cost
+    variances (actual vs standard) are tracked in StandardCostResult.
 
 Usage:
     from finance_services.valuation_service import ValuationLayer
@@ -86,6 +114,22 @@ logger = get_logger("services.valuation")
 class ValuationLayer:
     """
     Manages inventory cost layers for valuation.
+
+    Contract:
+        Receives Session and LinkGraphService via constructor injection.
+        Uses AllocationEngine for sequential (FIFO/LIFO) lot ordering.
+    Guarantees:
+        - ``create_lot`` persists a CostLotModel and returns a frozen
+          CostLot value object.
+        - ``consume_fifo`` consumes from oldest lots first.
+        - ``consume_lifo`` consumes from newest lots first.
+        - ``consume_specific`` consumes from a named lot only.
+        - ``consume_standard`` uses standard cost and tracks variance.
+        - Every consumption creates CONSUMED_BY economic links.
+    Non-goals:
+        - Does not manage subledger entries; that is the Inventory
+          SubledgerService's responsibility.
+        - Does not manage physical count reconciliation.
 
     This service handles:
     - Cost lot creation (when inventory is received)
