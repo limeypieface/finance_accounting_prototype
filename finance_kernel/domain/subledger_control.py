@@ -1,38 +1,12 @@
-"""
-SubledgerControl -- Subledger/GL reconciliation invariant enforcement.
-
-Responsibility:
-    Defines and enforces the fundamental accounting invariant that subledgers
-    must always reconcile with their corresponding GL control accounts at
-    post time, daily, or period-end depending on contract configuration.
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    (subledger control invariant -- subledger total == GL control account)
-    R4  -- Balance per currency (indirectly, via reconciliation)
-    R12 -- Period close blocked when subledger is out of balance
-
-Failure modes:
-    - ReconciliationViolation with ``blocking=True`` prevents close/post
-    - ReconciliationViolation with ``blocking=False`` is a warning
-    - ValueError if currencies mismatch during reconciliation
-
-Audit relevance:
-    SubledgerControlContract is the authoritative reconciliation law.
-    ReconciliationResult records subledger vs control balances, variance,
-    and tolerance status.  Auditors verify that period closes satisfied
-    all active contracts.
-"""
+"""SubledgerControl -- Subledger/GL reconciliation invariant enforcement."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Sequence
 from uuid import UUID
 
 from finance_kernel.domain.values import Money
@@ -42,15 +16,7 @@ logger = get_logger("domain.subledger_control")
 
 
 class SubledgerType(str, Enum):
-    """Canonical subledger type identifiers.
-
-    This is the single source of truth for subledger type enums (SL-Phase 1).
-    finance_engines/subledger.py re-exports this enum (SL-G9: engines may
-    import from kernel domain, never the reverse).
-
-    Values are uppercase to match config ledger IDs. Persisted as .value
-    in ORM models; round-trip mapped on read (F13).
-    """
+    """Canonical subledger type identifiers (SL-Phase 1)."""
 
     AP = "AP"  # Accounts Payable
     AR = "AR"  # Accounts Receivable
@@ -80,19 +46,7 @@ class ToleranceType(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ControlAccountBinding:
-    """
-    Binds a subledger type to its GL control account.
-
-    This is the core of the control contract -- it declares that
-    a subledger's aggregate balance must equal the GL control account.
-
-    Contract:
-        ``control_account_role`` is a semantic role resolved to a COA
-        account by the posting pipeline (L1).
-
-    Guarantees:
-        Frozen dataclass -- immutable after construction.
-    """
+    """Binds a subledger type to its GL control account."""
 
     subledger_type: SubledgerType
     control_account_role: str  # Role code in COA (e.g., "AP_CONTROL")
@@ -107,12 +61,7 @@ class ControlAccountBinding:
 
 @dataclass(frozen=True, slots=True)
 class ReconciliationTolerance:
-    """
-    Tolerance rules for reconciliation variance.
-
-    Allows small variances due to rounding, timing, or
-    known acceptable differences.
-    """
+    """Tolerance rules for reconciliation variance."""
 
     tolerance_type: ToleranceType
     absolute_amount: Decimal = Decimal("0")  # For ABSOLUTE
@@ -167,21 +116,7 @@ class ReconciliationTolerance:
 
 @dataclass(frozen=True, slots=True)
 class SubledgerControlContract:
-    """
-    Complete control contract for a subledger.
-
-    Contract:
-        Defines binding, timing, tolerance, and enforcement flags for a
-        single subledger type.
-
-    Guarantees:
-        - Frozen dataclass -- immutable after construction.
-        - ``enforce_on_post`` and ``enforce_on_close`` control when the
-          invariant is checked.
-
-    Non-goals:
-        - Does NOT read balances (SubledgerReconciler receives them as args).
-    """
+    """Complete control contract for a subledger."""
 
     binding: ControlAccountBinding
     timing: ReconciliationTiming
@@ -238,11 +173,7 @@ class ReconciliationViolation:
 
 
 class SubledgerControlRegistry:
-    """
-    Registry of all subledger control contracts.
-
-    Provides lookup and validation for subledger reconciliation.
-    """
+    """Registry of all subledger control contracts."""
 
     def __init__(self) -> None:
         self._contracts: dict[SubledgerType, SubledgerControlContract] = {}
@@ -280,22 +211,7 @@ class SubledgerControlRegistry:
 
 
 class SubledgerReconciler:
-    """
-    Pure function reconciler for subledger/GL balances.
-
-    Contract:
-        Receives balance data as arguments -- zero I/O, zero database.
-
-    Guarantees:
-        - ``reconcile()`` returns a ``ReconciliationResult`` for every call.
-        - ``validate_post()`` returns a list of ``ReconciliationViolation``
-          (empty if the contract is satisfied).
-        - ``validate_period_close()`` returns blocking violations when the
-          subledger cannot close.
-
-    Non-goals:
-        - Does NOT read balances from the database (callers provide them).
-    """
+    """Pure function reconciler for subledger/GL balances."""
 
     def reconcile(
         self,
@@ -306,19 +222,7 @@ class SubledgerReconciler:
         checked_at: datetime,
         entries_checked: int = 0,
     ) -> ReconciliationResult:
-        """
-        Reconcile subledger balance with GL control account.
-
-        Args:
-            contract: The control contract defining reconciliation rules.
-            subledger_balance: Total balance from subledger entries.
-            control_account_balance: Balance from GL control account.
-            as_of_date: Date for the reconciliation.
-            entries_checked: Number of entries included in reconciliation.
-
-        Returns:
-            ReconciliationResult with variance and status.
-        """
+        """Reconcile subledger balance with GL control account."""
         # Ensure same currency
         if subledger_balance.currency != control_account_balance.currency:
             raise ValueError(
@@ -396,13 +300,7 @@ class SubledgerReconciler:
         as_of_date: date,
         checked_at: datetime | None = None,
     ) -> list[ReconciliationViolation]:
-        """
-        Validate that a posting maintains the control contract.
-
-        Used for real-time validation when enforce_on_post=True.
-
-        Returns list of violations (empty if valid).
-        """
+        """Validate that a posting maintains the control contract."""
         violations: list[ReconciliationViolation] = []
 
         if not contract.enforce_on_post:
@@ -454,11 +352,7 @@ class SubledgerReconciler:
         period_end_date: date,
         checked_at: datetime | None = None,
     ) -> list[ReconciliationViolation]:
-        """
-        Validate that subledger can close period.
-
-        Returns list of violations that would prevent close.
-        """
+        """Validate that subledger can close period."""
         violations: list[ReconciliationViolation] = []
 
         if not contract.enforce_on_close:

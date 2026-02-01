@@ -53,13 +53,22 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from finance_engines.matching import (
+    MatchCandidate,
+    MatchingEngine,
+    MatchResult,
+    MatchTolerance,
+    MatchType,
+)
+from finance_engines.variance import VarianceCalculator, VarianceResult
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.economic_link import (
     ArtifactRef,
@@ -75,14 +84,6 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
-)
-from finance_engines.variance import VarianceCalculator, VarianceResult
-from finance_engines.matching import (
-    MatchCandidate,
-    MatchingEngine,
-    MatchResult,
-    MatchTolerance,
-    MatchType,
 )
 from finance_modules.procurement.models import (
     PurchaseOrderVersion,

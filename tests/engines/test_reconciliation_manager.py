@@ -10,32 +10,31 @@ Tests cover:
 - Payment allocation across invoices
 """
 
-import pytest
 from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.orm import Session
 
-from finance_kernel.domain.values import Money
-from finance_kernel.domain.economic_link import ArtifactRef, LinkType
-from finance_kernel.services.link_graph_service import LinkGraphService
-from finance_kernel.exceptions import (
-    OverapplicationError,
-    DocumentAlreadyMatchedError,
-    MatchVarianceExceededError,
-)
-
-from finance_services.reconciliation_service import ReconciliationManager
+from finance_engines.allocation import AllocationMethod
+from finance_engines.matching import MatchTolerance
 from finance_engines.reconciliation import (
-    ReconciliationState,
-    ReconciliationStatus,
-    MatchType,
     BankReconciliationLine,
     BankReconciliationStatus,
+    MatchType,
+    ReconciliationState,
+    ReconciliationStatus,
 )
-from finance_engines.matching import MatchTolerance
-from finance_engines.allocation import AllocationMethod
+from finance_kernel.domain.economic_link import ArtifactRef, LinkType
+from finance_kernel.domain.values import Money
+from finance_kernel.exceptions import (
+    DocumentAlreadyMatchedError,
+    MatchVarianceExceededError,
+    OverapplicationError,
+)
+from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_services.reconciliation_service import ReconciliationManager
 
 
 class TestReconciliationState:

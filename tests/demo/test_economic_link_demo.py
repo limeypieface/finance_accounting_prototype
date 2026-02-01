@@ -11,22 +11,22 @@ Requirements:
     - Database 'finance_kernel_test' must exist
 """
 
-import pytest
 from datetime import datetime
 from decimal import Decimal
 from uuid import uuid4
+
+import pytest
+from sqlalchemy.orm import Session
 
 from finance_kernel.domain.economic_link import (
     ArtifactRef,
     ArtifactType,
     EconomicLink,
-    LinkType,
     LinkQuery,
+    LinkType,
 )
 from finance_kernel.domain.values import Money
 from finance_kernel.services.link_graph_service import LinkGraphService
-from sqlalchemy.orm import Session
-
 
 # =============================================================================
 # PRETTY PRINTING HELPERS
@@ -186,7 +186,7 @@ class TestEconomicLinkDemo:
         )
 
         result = link_service.establish_link(link_po_receipt1)
-        print(f"Establishing link: PO --[FULFILLED_BY]--> Receipt-1")
+        print("Establishing link: PO --[FULFILLED_BY]--> Receipt-1")
         log_link(link_po_receipt1)
         print(f"  Result: {'SUCCESS'} (new_link={not result.was_duplicate})")
 
@@ -202,7 +202,7 @@ class TestEconomicLinkDemo:
         )
 
         result = link_service.establish_link(link_po_receipt2)
-        print(f"\nEstablishing link: PO --[FULFILLED_BY]--> Receipt-2")
+        print("\nEstablishing link: PO --[FULFILLED_BY]--> Receipt-2")
         log_link(link_po_receipt2)
         print(f"  Result: {'SUCCESS'} (new_link={not result.was_duplicate})")
 
@@ -247,7 +247,7 @@ class TestEconomicLinkDemo:
         )
 
         result = link_service.establish_link(link_receipt1_invoice1)
-        print(f"Establishing link: Receipt-1 --[FULFILLED_BY]--> Invoice-1")
+        print("Establishing link: Receipt-1 --[FULFILLED_BY]--> Invoice-1")
         log_link(link_receipt1_invoice1)
         print(f"  Result: {'SUCCESS'}")
 
@@ -263,7 +263,7 @@ class TestEconomicLinkDemo:
         )
 
         result = link_service.establish_link(link_receipt2_invoice2)
-        print(f"\nEstablishing link: Receipt-2 --[FULFILLED_BY]--> Invoice-2")
+        print("\nEstablishing link: Receipt-2 --[FULFILLED_BY]--> Invoice-2")
         log_link(link_receipt2_invoice2)
         print(f"  Result: {'SUCCESS'}")
 
@@ -286,7 +286,7 @@ class TestEconomicLinkDemo:
         )
 
         result = link_service.establish_link(link_invoice1_payment)
-        print(f"Establishing link: Invoice-1 --[PAID_BY]--> Payment-1")
+        print("Establishing link: Invoice-1 --[PAID_BY]--> Payment-1")
         log_link(link_invoice1_payment)
         print(f"  Result: {'SUCCESS'}")
 
@@ -311,7 +311,7 @@ class TestEconomicLinkDemo:
         )
 
         result = link_service.establish_link(link_invoice2_credit)
-        print(f"Establishing link: Invoice-2 --[CORRECTED_BY]--> Credit-Memo")
+        print("Establishing link: Invoice-2 --[CORRECTED_BY]--> Credit-Memo")
         log_link(link_invoice2_credit)
         print(f"  Result: {'SUCCESS'}")
 
@@ -330,9 +330,9 @@ class TestEconomicLinkDemo:
             direction="children",
         )
 
-        print(f"Query: Starting from PO, walk all children up to depth 10")
-        print(f"       Link types: ALL")
-        print(f"       Direction: children")
+        print("Query: Starting from PO, walk all children up to depth 10")
+        print("       Link types: ALL")
+        print("       Direction: children")
         print()
 
         paths = link_service.walk_path(query)
@@ -357,8 +357,8 @@ class TestEconomicLinkDemo:
             direction="parents",
         )
 
-        print(f"Query: Starting from Payment, walk all parents up to depth 10")
-        print(f"       This traces back the money flow!")
+        print("Query: Starting from Payment, walk all parents up to depth 10")
+        print("       This traces back the money flow!")
         print()
 
         paths = link_service.walk_path(query)
@@ -385,9 +385,9 @@ class TestEconomicLinkDemo:
 
         print(f"Invoice-1 corrected? {len(inv1_corrections) > 0}")
         if inv1_corrections:
-            print(f"  Correction found!")
+            print("  Correction found!")
         else:
-            print(f"  No correction found (Invoice-1 was PAID, not corrected)")
+            print("  No correction found (Invoice-1 was PAID, not corrected)")
 
         print()
 
@@ -396,7 +396,7 @@ class TestEconomicLinkDemo:
 
         print(f"Invoice-2 corrected? {len(inv2_corrections) > 0}")
         if inv2_corrections:
-            print(f"  Correction found!")
+            print("  Correction found!")
             log_link(inv2_corrections[0])
 
         # Also demonstrate the is_reversed() API (for journal entry reversals)
@@ -419,7 +419,7 @@ class TestEconomicLinkDemo:
             amount_metadata_key="amount",
         )
 
-        print(f"Invoice-1:")
+        print("Invoice-1:")
         print(f"  Original Amount: {inv1_amount}")
         print(f"  Paid Amount:     {unconsumed_inv1.consumed_amount}")
         print(f"  Open Balance:    {unconsumed_inv1.remaining_amount}")
@@ -436,12 +436,12 @@ class TestEconomicLinkDemo:
             amount_metadata_key="amount",
         )
 
-        print(f"Invoice-2:")
+        print("Invoice-2:")
         print(f"  Original Amount: {inv2_amount}")
         print(f"  Paid Amount:     {unconsumed_inv2.consumed_amount}")
         print(f"  Open Balance:    {unconsumed_inv2.remaining_amount}")
         print(f"  Fully Paid?      {unconsumed_inv2.is_fully_consumed}")
-        print(f"  (Note: This invoice was REVERSED, not paid)")
+        print("  (Note: This invoice was REVERSED, not paid)")
 
         # =====================================================================
         # STEP 11: GET DIRECT CHILDREN/PARENTS
@@ -476,7 +476,7 @@ class TestEconomicLinkDemo:
             direction="children",
         )
 
-        print(f"Query: From PO, follow only FULFILLED_BY links")
+        print("Query: From PO, follow only FULFILLED_BY links")
         print()
 
         paths = link_service.walk_path(query)
@@ -606,10 +606,10 @@ class TestCycleDetectionDemo:
 
         try:
             result = link_service.establish_link(link_ca)
-            print(f"Result: UNEXPECTED SUCCESS (this should have failed!)")
+            print("Result: UNEXPECTED SUCCESS (this should have failed!)")
             assert False, "Cycle should have been detected"
         except LinkCycleError as e:
-            print(f"Result: REJECTED (as expected)")
+            print("Result: REJECTED (as expected)")
             print(f"  Error: {e}")
             print(f"  Error code: {e.code}")
 
@@ -683,10 +683,10 @@ class TestMaxChildrenDemo:
 
         try:
             result = link_service.establish_link(link_2)
-            print(f"Result: UNEXPECTED SUCCESS")
+            print("Result: UNEXPECTED SUCCESS")
             assert False, "Second reversal should have been rejected"
         except MaxChildrenExceededError as e:
-            print(f"Result: REJECTED (as expected)")
+            print("Result: REJECTED (as expected)")
             print(f"  Error: {e}")
             print(f"  Error code: {e.code}")
 

@@ -63,6 +63,12 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from finance_engines.allocation import (
+    AllocationEngine,
+    AllocationMethod,
+    AllocationTarget,
+)
+from finance_engines.variance import VarianceCalculator, VarianceResult
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType
 from finance_kernel.domain.values import Money
@@ -80,14 +86,12 @@ from finance_modules.wip.models import (
     UnitCostBreakdown,
 )
 from finance_modules.wip.orm import (
+    ByproductRecordModel,
     LaborEntryModel,
     OverheadApplicationModel,
     WorkOrderModel,
-    ByproductRecordModel,
 )
 from finance_services.valuation_service import ValuationLayer
-from finance_engines.allocation import AllocationEngine, AllocationMethod, AllocationTarget
-from finance_engines.variance import VarianceCalculator, VarianceResult
 
 logger = get_logger("modules.wip.service")
 

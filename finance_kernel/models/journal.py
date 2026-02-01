@@ -35,8 +35,10 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -45,8 +47,8 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
+    text,
 )
-from sqlalchemy import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from finance_kernel.db.base import TrackedBase, UUIDString
@@ -59,13 +61,18 @@ if TYPE_CHECKING:
 class JournalEntryStatus(str, Enum):
     """Lifecycle status of a journal entry.
 
-    Contract: Transitions are one-way: DRAFT -> POSTED -> REVERSED.
+    Contract: Transitions are one-way: DRAFT -> POSTED.
     Guarantees: No backward transitions are permitted (R10).
+        Posted rows are never mutated, including status.
+
+    Note: REVERSED is retained for backward compatibility but is NOT used
+        as a mutable status. Reversal state is derived from the canonical
+        reversal_of_id linkage (see JournalEntry.is_reversed property).
     """
 
     DRAFT = "draft"
     POSTED = "posted"
-    REVERSED = "reversed"
+    REVERSED = "reversed"  # Deprecated: reversal state is derived, not stored
 
 
 class LineSide(str, Enum):
@@ -109,6 +116,20 @@ class JournalEntry(TrackedBase):
         Index("idx_journal_effective_date", "effective_date"),
         Index("idx_journal_status", "status"),
         Index("idx_journal_seq", "seq"),
+        # Canonical reversal constraint: at most one reversal per original entry.
+        # This is the database-level guarantee for Principle 2 (single source of truth).
+        Index(
+            "uq_journal_reversal_of",
+            "reversal_of_id",
+            unique=True,
+            postgresql_where=text("reversal_of_id IS NOT NULL"),
+        ),
+        # Reversal entries must have idempotency keys starting with 'reversal:'.
+        # Prevents accidental or malicious use of reversal_of_id on normal entries.
+        CheckConstraint(
+            "reversal_of_id IS NULL OR idempotency_key LIKE 'reversal:%'",
+            name="chk_reversal_entry_valid",
+        ),
     )
 
     # Source event that created this entry
@@ -237,9 +258,22 @@ class JournalEntry(TrackedBase):
         primaryjoin="JournalEntry.source_event_id == Event.event_id",
     )
 
+    # This entry is a reversal of the referenced original entry (follows FK).
     reversal_of: Mapped["JournalEntry | None"] = relationship(
+        "JournalEntry",
         remote_side="JournalEntry.id",
         foreign_keys=[reversal_of_id],
+        back_populates="reversed_by",
+    )
+
+    # The reversal entry that reversed this entry, if any (reverse FK lookup).
+    # Canonical linkage: is_reversed is derived from this relationship.
+    reversed_by: Mapped["JournalEntry | None"] = relationship(
+        "JournalEntry",
+        foreign_keys="[JournalEntry.reversal_of_id]",
+        back_populates="reversal_of",
+        uselist=False,
+        lazy="selectin",
     )
 
     def __repr__(self) -> str:
@@ -263,11 +297,23 @@ class JournalEntry(TrackedBase):
 
     @property
     def is_reversed(self) -> bool:
-        """Check if entry has been reversed.
+        """Check if this entry has been reversed by another entry.
 
-        Postconditions: Returns True iff status is REVERSED.
+        Derived from canonical linkage (reversed_by relationship), not
+        mutable status. A posted entry is considered reversed iff a
+        reversal entry exists with reversal_of_id pointing to this entry.
+
+        Postconditions: Returns True iff a reversal entry exists for this entry.
         """
-        return self.status == JournalEntryStatus.REVERSED
+        return self.reversed_by is not None
+
+    @property
+    def is_reversal(self) -> bool:
+        """Check if this entry is itself a reversal of another entry.
+
+        Postconditions: Returns True iff reversal_of_id is set.
+        """
+        return self.reversal_of_id is not None
 
     @property
     def total_debits(self) -> Decimal:

@@ -17,10 +17,10 @@ Regression thresholds (postings/sec):
 from __future__ import annotations
 
 import logging
-import time
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -29,10 +29,10 @@ from sqlalchemy import text
 
 from finance_kernel.db.base import Base
 from tests.benchmarks.conftest import (
-    EFFECTIVE,
-    FY_START,
-    FY_END,
     COA_UUID_NS,
+    EFFECTIVE,
+    FY_END,
+    FY_START,
     create_accounts_from_config,
     make_simple_event,
 )
@@ -67,7 +67,7 @@ def _worker(
     from finance_services.posting_orchestrator import PostingOrchestrator
 
     session = session_factory()
-    clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+    clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC))
 
     role_resolver = build_role_resolver(config)
     orchestrator = PostingOrchestrator(
@@ -117,7 +117,7 @@ class TestConcurrentThroughput:
         from finance_kernel.db.engine import get_session
         from finance_kernel.domain.clock import DeterministicClock
         from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-        from finance_kernel.models.party import Party, PartyType, PartyStatus
+        from finance_kernel.models.party import Party, PartyStatus, PartyType
         from finance_modules import register_all_modules
 
         logging.disable(logging.CRITICAL)
@@ -139,7 +139,7 @@ class TestConcurrentThroughput:
 
             # Seed shared data
             session = get_session()
-            clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+            clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC))
             actor_id = uuid4()
             create_accounts_from_config(session, config, actor_id)
 

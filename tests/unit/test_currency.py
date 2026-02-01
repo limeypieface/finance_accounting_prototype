@@ -10,10 +10,11 @@ R17: Precision-derived tolerance
 - Fixed decimal tolerances are forbidden.
 """
 
-import pytest
 from decimal import Decimal
 
-from finance_kernel.domain.currency import CurrencyRegistry, CurrencyInfo
+import pytest
+
+from finance_kernel.domain.currency import CurrencyInfo, CurrencyRegistry
 from finance_kernel.domain.values import Currency, Money
 
 

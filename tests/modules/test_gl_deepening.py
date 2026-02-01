@@ -17,13 +17,12 @@ import pytest
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.gl.models import (
     AccountReconciliation,
+    CloseTaskStatus,
     PeriodCloseTask,
     ReconciliationStatus,
-    CloseTaskStatus,
     RecurringEntry,
 )
 from finance_modules.gl.service import GeneralLedgerService
-
 
 # =============================================================================
 # Fixtures

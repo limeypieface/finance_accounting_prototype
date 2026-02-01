@@ -35,16 +35,16 @@ Total: ~180 lines of module-specific code.
 Tax calculation engines (jurisdiction lookup, rate determination) come from shared engines.
 """
 
+from finance_modules.tax.config import TaxConfig
 from finance_modules.tax.models import (
+    TaxExemption,
     TaxJurisdiction,
     TaxRate,
-    TaxExemption,
-    TaxTransaction,
     TaxReturn,
+    TaxTransaction,
 )
 from finance_modules.tax.profiles import TAX_PROFILES
 from finance_modules.tax.workflows import TAX_RETURN_WORKFLOW
-from finance_modules.tax.config import TaxConfig
 
 __all__ = [
     "TaxJurisdiction",

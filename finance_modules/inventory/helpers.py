@@ -34,8 +34,9 @@ themselves create journal entries.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from finance_modules.inventory.models import ItemValue

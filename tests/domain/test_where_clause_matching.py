@@ -5,13 +5,14 @@ Verifies that find_for_event() correctly dispatches to variant profiles
 based on payload field matching via where-clauses on PolicyTrigger.
 """
 
-import pytest
 from datetime import date
+
+import pytest
 
 from finance_kernel.domain.accounting_policy import (
     AccountingPolicy,
-    GuardType,
     GuardCondition,
+    GuardType,
     LedgerEffect,
     PolicyMeaning,
     PolicyTrigger,

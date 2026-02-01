@@ -15,14 +15,14 @@ from uuid import uuid4
 
 import pytest
 
-from finance_kernel.domain.schemas.registry import EventSchemaRegistry
-from finance_kernel.domain.policy_selector import PolicySelector
-
 # Import DCAA schemas to trigger registration
 import finance_kernel.domain.schemas.definitions.dcaa  # noqa: F401
+from finance_kernel.domain.policy_selector import PolicySelector
+from finance_kernel.domain.schemas.registry import EventSchemaRegistry
 
 # DCAA profiles now live in finance_modules.contracts
 from finance_modules.contracts.profiles import register as register_contracts
+
 register_contracts()
 
 

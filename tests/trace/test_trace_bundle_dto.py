@@ -6,7 +6,7 @@ missing facts, all artifact types, and empty states.
 """
 
 from dataclasses import FrozenInstanceError
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -27,14 +27,13 @@ from finance_kernel.selectors.trace_selector import (
     TraceBundle,
 )
 
-
 # ============================================================================
 # Helpers
 # ============================================================================
 
 
 def _now() -> datetime:
-    return datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    return datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def _make_origin() -> OriginEvent:

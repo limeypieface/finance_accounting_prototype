@@ -13,7 +13,7 @@ fields like ``started_by``, ``closed_by``, and ``certificate_id`` are
 bare UUID columns.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -21,10 +21,9 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from finance_services.orm import (
-    PeriodCloseRunModel,
     CloseCertificateModel,
+    PeriodCloseRunModel,
 )
-
 
 # ---------------------------------------------------------------------------
 # PeriodCloseRunModel
@@ -37,8 +36,8 @@ class TestPeriodCloseRunModelORM:
     def test_create_and_query(self, session, test_actor_id):
         started_by_id = uuid4()
         cert_id = uuid4()
-        started_at = datetime(2024, 6, 30, 23, 0, 0, tzinfo=timezone.utc)
-        completed_at = datetime(2024, 6, 30, 23, 45, 0, tzinfo=timezone.utc)
+        started_at = datetime(2024, 6, 30, 23, 0, 0, tzinfo=UTC)
+        completed_at = datetime(2024, 6, 30, 23, 45, 0, tzinfo=UTC)
 
         run = PeriodCloseRunModel(
             period_code="2024-06",
@@ -82,7 +81,7 @@ class TestPeriodCloseRunModelORM:
             period_code="2024-07",
             fiscal_year=2024,
             correlation_id="corr-2024-07-001",
-            started_at=datetime(2024, 7, 31, 22, 0, 0, tzinfo=timezone.utc),
+            started_at=datetime(2024, 7, 31, 22, 0, 0, tzinfo=UTC),
             started_by=uuid4(),
             created_by_id=test_actor_id,
         )
@@ -105,7 +104,7 @@ class TestPeriodCloseRunModelORM:
             period_code="2024-08",
             fiscal_year=2024,
             correlation_id="corr-2024-08-fail",
-            started_at=datetime(2024, 8, 31, 23, 0, 0, tzinfo=timezone.utc),
+            started_at=datetime(2024, 8, 31, 23, 0, 0, tzinfo=UTC),
             started_by=uuid4(),
             status="failed",
             current_phase=3,
@@ -129,7 +128,7 @@ class TestPeriodCloseRunModelORM:
             period_code="2024-09",
             fiscal_year=2024,
             correlation_id="corr-dup-test",
-            started_at=datetime(2024, 9, 30, 23, 0, 0, tzinfo=timezone.utc),
+            started_at=datetime(2024, 9, 30, 23, 0, 0, tzinfo=UTC),
             started_by=uuid4(),
             created_by_id=test_actor_id,
         )
@@ -140,7 +139,7 @@ class TestPeriodCloseRunModelORM:
             period_code="2024-10",
             fiscal_year=2024,
             correlation_id="corr-dup-test",
-            started_at=datetime(2024, 10, 31, 23, 0, 0, tzinfo=timezone.utc),
+            started_at=datetime(2024, 10, 31, 23, 0, 0, tzinfo=UTC),
             started_by=uuid4(),
             created_by_id=test_actor_id,
         )
@@ -155,7 +154,7 @@ class TestPeriodCloseRunModelORM:
             fiscal_year=2024,
             is_year_end=True,
             correlation_id="corr-2024-12-ye",
-            started_at=datetime(2024, 12, 31, 23, 0, 0, tzinfo=timezone.utc),
+            started_at=datetime(2024, 12, 31, 23, 0, 0, tzinfo=UTC),
             started_by=uuid4(),
             status="completed",
             current_phase=8,
@@ -184,7 +183,7 @@ class TestCloseCertificateModelORM:
         closed_by_id = uuid4()
         approved_by_id = uuid4()
         audit_event_id = uuid4()
-        closed_at = datetime(2024, 6, 30, 23, 59, 0, tzinfo=timezone.utc)
+        closed_at = datetime(2024, 6, 30, 23, 59, 0, tzinfo=UTC)
 
         cert = CloseCertificateModel(
             period_code="2024-06",
@@ -226,7 +225,7 @@ class TestCloseCertificateModelORM:
     def test_create_with_defaults(self, session, test_actor_id):
         cert = CloseCertificateModel(
             period_code="2024-07",
-            closed_at=datetime(2024, 7, 31, 23, 59, 0, tzinfo=timezone.utc),
+            closed_at=datetime(2024, 7, 31, 23, 59, 0, tzinfo=UTC),
             closed_by=uuid4(),
             correlation_id="corr-cert-2024-07",
             ledger_hash="defaulthash" * 10,
@@ -250,7 +249,7 @@ class TestCloseCertificateModelORM:
         """(period_code, correlation_id) must be unique."""
         cert1 = CloseCertificateModel(
             period_code="2024-09",
-            closed_at=datetime(2024, 9, 30, 23, 59, 0, tzinfo=timezone.utc),
+            closed_at=datetime(2024, 9, 30, 23, 59, 0, tzinfo=UTC),
             closed_by=uuid4(),
             correlation_id="corr-cert-dup",
             ledger_hash="hash1" * 20,
@@ -261,7 +260,7 @@ class TestCloseCertificateModelORM:
 
         cert2 = CloseCertificateModel(
             period_code="2024-09",
-            closed_at=datetime(2024, 9, 30, 23, 59, 59, tzinfo=timezone.utc),
+            closed_at=datetime(2024, 9, 30, 23, 59, 59, tzinfo=UTC),
             closed_by=uuid4(),
             correlation_id="corr-cert-dup",
             ledger_hash="hash2" * 20,
@@ -276,7 +275,7 @@ class TestCloseCertificateModelORM:
         """Same period_code with different correlation_id is allowed."""
         cert1 = CloseCertificateModel(
             period_code="2024-10",
-            closed_at=datetime(2024, 10, 31, 23, 59, 0, tzinfo=timezone.utc),
+            closed_at=datetime(2024, 10, 31, 23, 59, 0, tzinfo=UTC),
             closed_by=uuid4(),
             correlation_id="corr-cert-10-A",
             ledger_hash="hashA" * 20,
@@ -284,7 +283,7 @@ class TestCloseCertificateModelORM:
         )
         cert2 = CloseCertificateModel(
             period_code="2024-10",
-            closed_at=datetime(2024, 10, 31, 23, 59, 30, tzinfo=timezone.utc),
+            closed_at=datetime(2024, 10, 31, 23, 59, 30, tzinfo=UTC),
             closed_by=uuid4(),
             correlation_id="corr-cert-10-B",
             ledger_hash="hashB" * 20,
@@ -303,7 +302,7 @@ class TestCloseCertificateModelORM:
         """Certificate can record balanced trial balance totals."""
         cert = CloseCertificateModel(
             period_code="2024-11",
-            closed_at=datetime(2024, 11, 30, 23, 59, 0, tzinfo=timezone.utc),
+            closed_at=datetime(2024, 11, 30, 23, 59, 0, tzinfo=UTC),
             closed_by=uuid4(),
             correlation_id="corr-cert-2024-11-bal",
             ledger_hash="balancedhash" * 8,

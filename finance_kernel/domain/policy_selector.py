@@ -1,29 +1,4 @@
-"""
-PolicySelector -- Runtime profile lookup and precedence resolution.
-
-Responsibility:
-    Registers AccountingPolicy instances and finds the single matching
-    policy for a given event at runtime.  Handles where-clause dispatch,
-    effective date filtering, scope matching, and precedence resolution.
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    P1 -- Exactly one profile matches any event, or the event is rejected
-    L2 -- No runtime ambiguity is allowed
-
-Failure modes:
-    - PolicyNotFoundError if no profile matches
-    - MultiplePoliciesMatchError if ambiguity cannot be resolved
-    - PolicyAlreadyRegisteredError if duplicate name+version
-    - UncompiledPolicyError if receipt doesn't match
-
-Audit relevance:
-    PolicySelector emits FINANCE_POLICY_TRACE structured logs documenting
-    which policies were admissible and which was selected, enabling auditors
-    to reconstruct the dispatch decision.
-"""
+"""PolicySelector -- Runtime profile lookup and precedence resolution."""
 
 from __future__ import annotations
 
@@ -49,15 +24,7 @@ logger = get_logger("domain.policy_selector")
 
 @dataclass(frozen=True)
 class CompilationReceipt:
-    """Proof that a policy was validated by PolicyCompiler.
-
-    Contains a hash of the compiled policy. PolicySelector.register()
-    verifies this receipt before accepting a policy into the dispatch
-    registry. This prevents unvalidated policies from entering runtime.
-
-    The receipt is created by ``PolicyCompiler.compile()`` and should
-    not be constructed directly in application code.
-    """
+    """Proof that a policy was validated by PolicyCompiler."""
 
     policy_name: str
     policy_version: int
@@ -102,11 +69,7 @@ class PolicyNotFoundError(Exception):
 
 
 class MultiplePoliciesMatchError(Exception):
-    """
-    Multiple profiles match and cannot be resolved.
-
-    P1 Violation: Exactly one profile must match or event is rejected.
-    """
+    """Multiple profiles match and cannot be resolved (P1 violation)."""
 
     code: str = "MULTIPLE_PROFILES_MATCH"
 
@@ -131,27 +94,7 @@ class PolicyAlreadyRegisteredError(Exception):
 
 
 class PolicySelector:
-    """
-    Registry for AccountingPolicy objects with runtime lookup.
-
-    Contract:
-        ``find_for_event()`` returns exactly one ``AccountingPolicy`` or
-        raises (P1).
-
-    Guarantees:
-        - ``register()`` rejects duplicate name+version.
-        - ``find_for_event()`` applies: event_type filter, effective date
-          filter, scope filter, where-clause filter, precedence resolution.
-        - Emits FINANCE_POLICY_TRACE structured log for every dispatch.
-
-    Non-goals:
-        - Does NOT compile or validate profiles (PolicyCompiler does that).
-        - Does NOT persist to database (in-memory registry).
-
-    Invariants enforced:
-        P1 -- Exactly one profile matches or event is rejected.
-        L2 -- No runtime ambiguity is allowed.
-    """
+    """Registry for AccountingPolicy objects with runtime lookup (P1, L2)."""
 
     # Class-level registry: name -> {version -> profile}
     _profiles: ClassVar[dict[str, dict[int, AccountingPolicy]]] = {}
@@ -165,19 +108,7 @@ class PolicySelector:
         profile: AccountingPolicy,
         compilation_receipt: CompilationReceipt | None = None,
     ) -> None:
-        """
-        Register a profile.
-
-        Args:
-            profile: The profile to register.
-            compilation_receipt: Proof that the policy was compiled.
-                When provided, the receipt is validated against the
-                policy. A future version will make this strictly required.
-
-        Raises:
-            PolicyAlreadyRegisteredError: If profile name+version already exists.
-            UncompiledPolicyError: If receipt is provided but doesn't match.
-        """
+        """Register a profile."""
         # Validate compilation receipt if provided
         if compilation_receipt is not None:
             if not compilation_receipt.matches(profile):
@@ -218,19 +149,7 @@ class PolicySelector:
 
     @classmethod
     def get(cls, name: str, version: int | None = None) -> AccountingPolicy:
-        """
-        Get a profile by name and optional version.
-
-        Args:
-            name: Profile name.
-            version: Specific version, or None for latest.
-
-        Returns:
-            The AccountingPolicy.
-
-        Raises:
-            PolicyNotFoundError: If not found.
-        """
+        """Get a profile by name and optional version."""
         if name not in cls._profiles:
             logger.debug(
                 "profile_lookup_miss",
@@ -276,30 +195,7 @@ class PolicySelector:
         scope_value: str = "*",
         payload: dict[str, Any] | None = None,
     ) -> AccountingPolicy:
-        """
-        Find the matching profile for an event.
-
-        Applies precedence resolution:
-        1. Filter by event_type
-        2. Filter by effective date
-        3. Filter by scope
-        4. Filter by where-clause match against payload
-        5. Apply override > scope specificity > priority > stable key
-
-        Args:
-            event_type: The event type to match.
-            effective_date: Date to check effectiveness.
-            scope_value: Scope value to match against.
-            payload: Event payload for where-clause evaluation.
-                     If None, only profiles without where-clauses are considered.
-
-        Returns:
-            The single matching AccountingPolicy.
-
-        Raises:
-            PolicyNotFoundError: If no profile matches.
-            MultiplePoliciesMatchError: If multiple profiles match and cannot be resolved.
-        """
+        """Find the matching profile for an event (P1)."""
         logger.debug(
             "profile_find_started",
             extra={
@@ -436,20 +332,7 @@ class PolicySelector:
     def _resolve_precedence(
         cls, profiles: list[AccountingPolicy]
     ) -> AccountingPolicy:
-        """
-        Resolve precedence among multiple matching profiles.
-
-        Order: override > scope specificity > priority > stable key
-
-        Args:
-            profiles: List of matching profiles.
-
-        Returns:
-            The winning profile.
-
-        Raises:
-            MultiplePoliciesMatchError: If cannot resolve.
-        """
+        """Resolve precedence among multiple matching profiles."""
         # Separate overrides from normal
         overrides = [p for p in profiles if p.precedence.mode == PrecedenceMode.OVERRIDE]
         normal = [p for p in profiles if p.precedence.mode == PrecedenceMode.NORMAL]
@@ -520,15 +403,7 @@ class PolicySelector:
     def _apply_explicit_overrides(
         cls, profiles: list[AccountingPolicy]
     ) -> list[AccountingPolicy]:
-        """
-        Remove profiles that are explicitly overridden by others.
-
-        Args:
-            profiles: List of profiles to filter.
-
-        Returns:
-            Profiles that are not explicitly overridden.
-        """
+        """Remove profiles that are explicitly overridden by others."""
         # Collect all overridden profile names
         overridden_names: set[str] = set()
         for p in profiles:
@@ -539,13 +414,7 @@ class PolicySelector:
 
     @classmethod
     def _scope_specificity(cls, scope: str) -> int:
-        """
-        Calculate scope specificity (higher = more specific).
-
-        "*" = 0 (least specific)
-        "prefix:*" = len(prefix) + 1
-        "exact" = len(exact) + 100 (exact match is most specific)
-        """
+        """Calculate scope specificity (higher = more specific)."""
         if scope == "*":
             return 0
         if scope.endswith(":*"):
@@ -585,18 +454,7 @@ class PolicySelector:
     def _matches_where(
         cls, profile: AccountingPolicy, payload: dict[str, Any]
     ) -> bool:
-        """
-        Check if all where-clause conditions in the profile's trigger
-        match the given payload.
-
-        A profile with no where-clauses always matches.
-        Each where-clause is a (field_path, expected_value) pair.
-
-        Supports:
-        - Equality: ("payload.issue_type", "SALE") -- field must equal value
-        - Absence: ("payload.po_number", None) -- field must be absent or None
-        - Expressions: ("payload.quantity_change > 0", True) -- comparison evaluated
-        """
+        """Check if all where-clause conditions match the given payload."""
         if not profile.trigger.where:
             return True
 
@@ -624,12 +482,7 @@ class PolicySelector:
 
     @classmethod
     def _get_payload_value(cls, payload: dict[str, Any], field_path: str) -> Any:
-        """
-        Extract a value from the payload by dot-path.
-
-        Strips the ``payload.`` prefix if present so that both
-        ``"payload.issue_type"`` and ``"issue_type"`` resolve correctly.
-        """
+        """Extract a value from the payload by dot-path."""
         path = field_path
         if path.startswith("payload."):
             path = path[len("payload."):]
@@ -650,12 +503,7 @@ class PolicySelector:
         expression: str,
         expected: bool,
     ) -> bool:
-        """
-        Evaluate a comparison expression against the payload.
-
-        Handles expressions like ``"payload.quantity_change > 0"`` where
-        *expected* indicates whether the comparison should be true or false.
-        """
+        """Evaluate a comparison expression against the payload."""
         operators = [" >= ", " <= ", " > ", " < "]
         for op in operators:
             if op not in expression:

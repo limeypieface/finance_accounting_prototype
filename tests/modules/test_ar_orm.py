@@ -24,7 +24,6 @@ from finance_modules.ar.orm import (
 )
 from tests.modules.conftest import TEST_CUSTOMER_ID
 
-
 # ---------------------------------------------------------------------------
 # 1. CustomerProfileModel
 # ---------------------------------------------------------------------------

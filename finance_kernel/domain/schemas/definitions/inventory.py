@@ -13,7 +13,6 @@ from finance_kernel.domain.schemas.base import (
 )
 from finance_kernel.domain.schemas.registry import EventSchemaRegistry
 
-
 # ============================================================================
 # inventory.receipt - Goods received (from PO or transfer)
 # ============================================================================

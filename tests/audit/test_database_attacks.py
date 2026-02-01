@@ -12,17 +12,17 @@ immutable financial records, regardless of how the attack is performed:
 The tests should FAIL if any attack succeeds. We never disable protections.
 """
 
-import pytest
-from uuid import uuid4
 from decimal import Decimal
+from uuid import uuid4
 
-from sqlalchemy import text, update, delete
-from sqlalchemy.exc import IntegrityError, ProgrammingError, InternalError
+import pytest
+from sqlalchemy import delete, text, update
+from sqlalchemy.exc import IntegrityError, InternalError, ProgrammingError
 
-from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus
-from finance_kernel.models.audit_event import AuditEvent
-from finance_kernel.db.triggers import triggers_installed
 from finance_kernel.db.engine import get_engine
+from finance_kernel.db.triggers import triggers_installed
+from finance_kernel.models.audit_event import AuditEvent
+from finance_kernel.models.journal import JournalEntry, JournalEntryStatus, JournalLine
 
 
 def require_triggers(func):

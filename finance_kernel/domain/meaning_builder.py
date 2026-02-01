@@ -1,61 +1,31 @@
-"""
-MeaningBuilder -- Extracts economic meaning from business events.
-
-Responsibility:
-    Takes a BusinessEvent and an AccountingPolicy and produces the interpreted
-    economic meaning: quantity, dimensions, guard evaluation, and policy
-    authority validation.
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    P12 -- Guard evaluation: REJECT is terminal, BLOCK is resumable
-    L4  -- Guards and valuation read only from frozen reference snapshots
-
-Failure modes:
-    - MeaningBuilderResult.rejected  -- REJECT guard triggered (terminal)
-    - MeaningBuilderResult.blocked   -- BLOCK guard triggered (resumable)
-    - MeaningBuilderResult.validation_failed -- profile mismatch or policy violation
-
-Audit relevance:
-    MeaningBuilderResult records exactly which profile was applied, which guards
-    were evaluated, and what economic meaning was derived.  Auditors verify that
-    guard evaluations were honest (P12) and that snapshot versions match (L4).
-"""
+"""MeaningBuilder -- Extracts economic meaning from business events."""
 
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from finance_kernel.domain.dtos import ValidationError, ValidationResult
 from finance_kernel.domain.accounting_policy import (
     AccountingPolicy,
     GuardCondition,
     GuardType,
 )
+from finance_kernel.domain.dtos import ValidationError, ValidationResult
 from finance_kernel.logging_config import get_logger
 
 logger = get_logger("domain.meaning_builder")
 
 if TYPE_CHECKING:
-    from finance_kernel.domain.reference_snapshot import ReferenceSnapshot as FullSnapshot
-    from finance_kernel.domain.policy_authority import PolicyAuthority, ModuleType
+    from finance_kernel.domain.policy_authority import ModuleType, PolicyAuthority
+    from finance_kernel.domain.reference_snapshot import (
+        ReferenceSnapshot as FullSnapshot,
+    )
 
 
 @dataclass(frozen=True)
 class ReferenceSnapshot:
-    """
-    Snapshot of reference data versions for deterministic replay.
-
-    Invariant L4: Guards and valuation may only read from frozen snapshots.
-
-    Note: This is a lightweight snapshot for backward compatibility.
-    For full snapshot functionality, use ReferenceSnapshot from
-    finance_kernel.domain.reference_snapshot.
-    """
+    """Lightweight snapshot of reference data versions for deterministic replay (L4)."""
 
     coa_version: int | None = None
     dimension_schema_version: int | None = None
@@ -67,11 +37,7 @@ class ReferenceSnapshot:
 
     @classmethod
     def from_full_snapshot(cls, full_snapshot: "FullSnapshot") -> "ReferenceSnapshot":
-        """
-        Create lightweight snapshot from comprehensive ReferenceSnapshot.
-
-        This bridges the new foundational module with existing code.
-        """
+        """Create from full ReferenceSnapshot."""
         return cls(
             coa_version=full_snapshot.coa_version,
             dimension_schema_version=full_snapshot.dimension_schema_version,
@@ -83,21 +49,7 @@ class ReferenceSnapshot:
 
 @dataclass(frozen=True)
 class EconomicEventData:
-    """
-    Immutable data for creating an EconomicEvent.
-
-    Contract:
-        Produced by MeaningBuilder.build() on success.
-
-    Guarantees:
-        - Frozen dataclass -- immutable after construction.
-        - ``source_event_id``, ``economic_type``, ``profile_id`` are always
-          present.
-        - ``quantity`` is a ``Decimal`` if extracted, else ``None``.
-
-    Non-goals:
-        - Does NOT persist itself (passed to persistence layer by services).
-    """
+    """Immutable data for creating an EconomicEvent."""
 
     source_event_id: UUID
     economic_type: str
@@ -120,24 +72,7 @@ class EconomicEventData:
 
 @dataclass(frozen=True)
 class GuardEvaluationResult:
-    """
-    Result of evaluating guard conditions (P12).
-
-    Contract:
-        Exactly one of ``passed``, ``rejected``, or ``blocked`` is True.
-        ``reason_code`` is machine-readable (R18).
-
-    Guarantees:
-        Frozen dataclass -- immutable after construction.
-
-    Attributes:
-        passed: True if all guards passed
-        rejected: True if a REJECT guard triggered (terminal -- P12)
-        blocked: True if a BLOCK guard triggered (resumable -- P12)
-        triggered_guard: The guard that triggered (if any)
-        reason_code: Machine-readable reason code (R18)
-        reason_detail: Additional details about the failure
-    """
+    """Result of evaluating guard conditions (P12)."""
 
     passed: bool
     rejected: bool = False
@@ -184,23 +119,7 @@ class GuardEvaluationResult:
 
 @dataclass(frozen=True)
 class MeaningBuilderResult:
-    """
-    Result of building economic meaning from an event.
-
-    Contract:
-        ``success=True`` implies ``economic_event`` is set.
-        ``success=False`` implies either ``guard_result`` or
-        ``validation_errors`` explains the failure.
-
-    Guarantees:
-        Frozen dataclass -- immutable after construction.
-
-    Attributes:
-        success: True if meaning was built successfully
-        economic_event: The built economic event data (if success)
-        guard_result: Result of guard evaluation (P12)
-        validation_errors: Validation errors (if any)
-    """
+    """Result of building economic meaning from an event."""
 
     success: bool
     economic_event: EconomicEventData | None = None
@@ -255,40 +174,12 @@ class MeaningBuilderResult:
 
 
 class MeaningBuilder:
-    """
-    Builds economic meaning from business events.
-
-    Pure domain component -- no I/O, no ORM.
-
-    Contract:
-        ``build()`` accepts an event and a profile and returns a
-        ``MeaningBuilderResult``.  Optionally validates against a
-        ``PolicyAuthority`` for economic authority enforcement.
-
-    Guarantees:
-        - Guard evaluation is deterministic (P12).
-        - Quantity extraction uses ``Decimal`` (never float).
-        - Result always carries guard evaluation status.
-
-    Non-goals:
-        - Does NOT persist the EconomicEventData (services do that).
-        - Does NOT resolve account roles to COA codes (L1 -- JournalWriter).
-    """
+    """Builds economic meaning from business events (P12, L4)."""
 
     def __init__(
         self,
         policy_authority: "PolicyAuthority | None" = None,
     ) -> None:
-        """
-        Initialize the MeaningBuilder.
-
-        Args:
-            policy_authority: PolicyAuthority for economic authority validation.
-                Strongly recommended. When provided and build() receives
-                module_type + target_ledgers, the builder validates that the
-                module is authorized for the economic action. A future version
-                will make this parameter strictly required.
-        """
         self._policy_registry = policy_authority
 
     def build(
@@ -304,25 +195,7 @@ class MeaningBuilder:
         module_type: "ModuleType | None" = None,
         target_ledgers: frozenset[str] | None = None,
     ) -> MeaningBuilderResult:
-        """
-        Build economic meaning from an event using a profile.
-
-        Args:
-            event_id: The source event ID.
-            event_type: The event type.
-            payload: The event payload.
-            effective_date: Accounting effective date.
-            profile: The profile to apply.
-            snapshot: Reference data snapshot for determinism.
-            trace_id: Optional trace ID for audit.
-            created_at: Creation timestamp.
-            module_type: Optional module type for policy validation.
-                        Requires policy_registry in constructor.
-            target_ledgers: Optional target ledgers for policy validation.
-
-        Returns:
-            MeaningBuilderResult with success/failure and data.
-        """
+        """Build economic meaning from an event using a profile."""
         logger.debug(
             "meaning_build_started",
             extra={
@@ -440,14 +313,7 @@ class MeaningBuilder:
         payload: dict[str, Any],
         guards: tuple[GuardCondition, ...],
     ) -> GuardEvaluationResult:
-        """
-        Evaluate guard conditions against payload.
-
-        P12: Rejects are terminal. Blocks are resumable.
-
-        Currently supports simple expressions:
-        - field_path operator value (e.g., "payload.quantity <= 0")
-        """
+        """Evaluate guard conditions against payload (P12)."""
         for guard in guards:
             triggered = self._evaluate_expression(payload, guard.expression)
             logger.debug(
@@ -478,18 +344,7 @@ class MeaningBuilder:
         payload: dict[str, Any],
         expression: str,
     ) -> bool:
-        """
-        Evaluate a simple guard expression.
-
-        Supports:
-        - field <= value
-        - field >= value
-        - field == value
-        - field != value
-        - field = true/false (boolean check)
-
-        Returns True if the guard condition triggers (i.e., should reject/block).
-        """
+        """Evaluate a simple guard expression."""
         expression = expression.strip()
 
         # Parse simple comparison expressions
@@ -517,11 +372,7 @@ class MeaningBuilder:
         payload: dict[str, Any],
         field_path: str,
     ) -> Any:
-        """
-        Get a value from payload by dot-notation path.
-
-        Handles paths like "payload.quantity" or just "quantity".
-        """
+        """Get a value from payload by dot-notation path."""
         # Remove "payload." prefix if present
         if field_path.startswith("payload."):
             field_path = field_path[8:]
@@ -630,15 +481,7 @@ class MeaningBuilder:
         module_type: "ModuleType",
         target_ledgers: frozenset[str],
     ) -> tuple[ValidationError, ...]:
-        """
-        Validate against PolicyAuthority.
-
-        Checks:
-        1. Economic type is allowed to post to target ledgers
-        2. Module has authority to process this economic type
-
-        Returns tuple of validation errors (empty if valid).
-        """
+        """Validate against PolicyAuthority."""
         if not self._policy_registry:
             return ()
 

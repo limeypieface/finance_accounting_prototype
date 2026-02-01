@@ -16,9 +16,8 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
-from tests.modules.conftest import TEST_PAY_PERIOD_ID
 from finance_modules.payroll.service import PayrollService
-
+from tests.modules.conftest import TEST_PAY_PERIOD_ID
 
 # =============================================================================
 # Fixtures

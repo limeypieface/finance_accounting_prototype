@@ -43,7 +43,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from finance_kernel.db.base import TrackedBase
 
-
 # ---------------------------------------------------------------------------
 # PeriodCloseRunModel
 # ---------------------------------------------------------------------------

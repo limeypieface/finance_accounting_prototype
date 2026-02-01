@@ -14,16 +14,16 @@ Test classes:
 
 from __future__ import annotations
 
-import pytest
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
+
+from finance_engines.valuation.cost_lot import CostLot, CostMethod
 from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType
 from finance_kernel.domain.values import Money, Quantity
 from finance_kernel.models.cost_lot import CostLotModel
-from finance_engines.valuation.cost_lot import CostLot, CostMethod
-
 
 # ---------------------------------------------------------------------------
 # 1. TestCostLotModelPersistence — ORM round-trip
@@ -52,7 +52,7 @@ class TestCostLotModelPersistence:
             source_event_id=event_id,
             source_artifact_type="receipt",
             source_artifact_id=source_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             lot_metadata={"vendor": "ACME", "po_number": "PO-123"},
         )
         session.add(model)
@@ -91,7 +91,7 @@ class TestCostLotModelPersistence:
                 source_event_id=event_id,
                 source_artifact_type="receipt",
                 source_artifact_id=uuid4(),
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
             session.add(model)
         session.flush()
@@ -117,7 +117,7 @@ class TestCostLotModelPersistence:
             source_event_id=uuid4(),
             source_artifact_type="production_order",
             source_artifact_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         session.add(model)
         session.flush()
@@ -141,7 +141,7 @@ class TestCostLotModelPersistence:
             source_event_id=uuid4(),
             source_artifact_type="receipt",
             source_artifact_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             lot_metadata=None,
         )
         session.add(model)

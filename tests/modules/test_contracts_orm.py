@@ -30,7 +30,6 @@ from finance_modules.contracts.orm import (
 )
 from tests.modules.conftest import TEST_CONTRACT_ID
 
-
 # ---------------------------------------------------------------------------
 # ContractDeliverableModel
 # ---------------------------------------------------------------------------

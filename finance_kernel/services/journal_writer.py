@@ -1,60 +1,11 @@
-"""
-JournalWriter — atomic multi-ledger journal posting service.
-
-Responsibility:
-    Transforms an AccountingIntent (expressed in account ROLES) into
-    persisted JournalEntry and JournalLine rows (expressed in COA codes).
-    Handles role resolution, balance validation, rounding invariants,
-    sequence assignment, idempotency, and subledger control enforcement.
-
-Architecture position:
-    Kernel > Services — imperative shell, owns transaction boundaries.
-    Called by InterpretationCoordinator; delegates sequence allocation
-    to SequenceService and role resolution to RoleResolver.
-
-Invariants enforced:
-    R3  — Idempotency key uniqueness (via UNIQUE constraint + FOR UPDATE).
-    R4  — Debits = Credits per currency per entry (balance validation).
-    R5  — At most one is_rounding=True line per entry; threshold enforced.
-    R9  — Sequence monotonicity via SequenceService (never raw SQL max+1).
-    R10 — Posted record immutability (status transitions DRAFT -> POSTED).
-    R21 — Reference snapshot versions recorded on every JournalEntry.
-    R22 — Only Bookkeeper may create is_rounding lines (enforced at intent).
-    L1  — Every account role resolves to exactly one COA account.
-    P11 — Multi-ledger postings are atomic (single transaction).
-    L5  — Coordinated with OutcomeRecorder (same transaction boundary).
-    SL-G3 — Per-currency subledger reconciliation (when registry present).
-    SL-G5 — Blocking violations abort the transaction.
-    G10 — Reference snapshot freshness validation (when snapshot service present).
-
-Failure modes:
-    - ROLE_RESOLUTION_FAILED: Account role has no COA binding.
-    - UNBALANCED_INTENT: Debits != Credits for a currency in a ledger.
-    - CONCURRENT_INSERT: Race condition on idempotency key.
-    - FAILED: General write failure.
-    - MultipleRoundingLinesError: More than one rounding line per entry.
-    - RoundingAmountExceededError: Rounding line exceeds threshold.
-    - MissingReferenceSnapshotError: Required snapshot version is NULL.
-    - StaleReferenceSnapshotError: Snapshot has changed since capture.
-    - SubledgerReconciliationError: SL/GL balance out of tolerance.
-
-Audit relevance:
-    Every role resolution, balance validation, line write, and entry
-    finalization is logged with structured fields for the decision journal.
-    The invariant_checked log entry records R21 compliance per entry.
-
-Non-goals:
-    - Does NOT manage the transaction boundary (caller's responsibility).
-    - Does NOT create the InterpretationOutcome (that is OutcomeRecorder).
-    - Does NOT transform events (that is MeaningBuilder).
-"""
+"""Atomic multi-ledger journal posting service."""
 
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import NamedTuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -76,13 +27,13 @@ from finance_kernel.exceptions import (
     StaleReferenceSnapshotError,
     SubledgerReconciliationError,
 )
+from finance_kernel.logging_config import get_logger
 from finance_kernel.models.journal import (
     JournalEntry,
     JournalEntryStatus,
     JournalLine,
     LineSide,
 )
-from finance_kernel.logging_config import get_logger
 from finance_kernel.services.sequence_service import SequenceService
 
 if TYPE_CHECKING:
@@ -91,7 +42,9 @@ if TYPE_CHECKING:
         SubledgerReconciler,
     )
     from finance_kernel.services.auditor_service import AuditorService
-    from finance_kernel.services.reference_snapshot_service import ReferenceSnapshotService
+    from finance_kernel.services.reference_snapshot_service import (
+        ReferenceSnapshotService,
+    )
 
 logger = get_logger("services.journal_writer")
 
@@ -148,11 +101,7 @@ class WrittenEntry:
 
 @dataclass(frozen=True)
 class JournalWriteResult:
-    """
-    Result of a JournalWriter.write() operation.
-
-    Contains the status and either written entries or error info.
-    """
+    """Result of a JournalWriter.write() operation."""
 
     status: WriteStatus
     entries: tuple[WrittenEntry, ...] = ()
@@ -216,11 +165,7 @@ class JournalWriteResult:
 
 
 class BindingRecord(NamedTuple):
-    """Full provenance record for a role-to-account binding.
-
-    Stored on RoleResolver so that journal_writer can log the complete
-    binding context into the decision journal at role-resolution time.
-    """
+    """Full provenance record for a role-to-account binding."""
 
     account_id: UUID
     account_code: str
@@ -234,12 +179,7 @@ class BindingRecord(NamedTuple):
 
 
 class RoleResolver:
-    """
-    Resolves account roles to COA accounts.
-
-    This is a simple in-memory resolver. In production, this would
-    query the COA binding table based on coa_version and effective date.
-    """
+    """Resolves account roles to COA accounts."""
 
     def __init__(self):
         self._bindings: dict[str, BindingRecord] = {}
@@ -277,20 +217,7 @@ class RoleResolver:
         ledger_id: str,
         coa_version: int,
     ) -> tuple[UUID, str]:
-        """
-        Resolve a role to account.
-
-        Args:
-            role: The account role (e.g., "InventoryAsset")
-            ledger_id: The target ledger
-            coa_version: The COA version to use
-
-        Returns:
-            Tuple of (account_id, account_code)
-
-        Raises:
-            RoleResolutionError: If role cannot be resolved
-        """
+        """Resolve a role to (account_id, account_code)."""
         if role not in self._bindings:
             raise RoleResolutionError(role, ledger_id, coa_version)
         binding = self._bindings[role]
@@ -313,39 +240,7 @@ class RoleResolver:
 
 
 class JournalWriter:
-    """
-    Service for atomic multi-ledger journal posting.
-
-    Contract:
-        Accepts an AccountingIntent (which uses abstract account ROLES)
-        and produces persisted JournalEntry + JournalLine rows (which
-        use concrete COA codes).  Returns a JournalWriteResult indicating
-        success, idempotent duplicate, or a typed failure.
-
-    Guarantees:
-        - L1: Every role resolves to exactly one COA account at post time.
-        - R4: Debits = Credits per currency per entry (validated pre-write).
-        - R5: At most one rounding line; rounding amount within threshold.
-        - R9: Sequence assigned via SequenceService (never raw SQL max+1).
-        - R21: Snapshot version columns populated on every JournalEntry.
-        - P11: All ledger entries created in the same transaction.
-        - Idempotent: duplicate idempotency_key yields ALREADY_EXISTS.
-
-    Non-goals:
-        - Does NOT call session.commit() — caller controls boundaries.
-        - Does NOT create the InterpretationOutcome (OutcomeRecorder).
-        - Does NOT enforce period locks (PeriodService / caller).
-
-    Usage:
-        writer = JournalWriter(session, role_resolver, clock)
-        result = writer.write(accounting_intent, actor_id)
-
-        if result.is_success:
-            for entry in result.entries:
-                print(f"Wrote {entry.entry_id} to {entry.ledger_id}")
-        else:
-            print(f"Failed: {result.error_message}")
-    """
+    """Atomic multi-ledger journal posting service (L1, R4, R5, R9, R21, P11)."""
 
     def __init__(
         self,
@@ -356,21 +251,6 @@ class JournalWriter:
         subledger_control_registry: "SubledgerControlRegistry | None" = None,
         snapshot_service: "ReferenceSnapshotService | None" = None,
     ):
-        """
-        Initialize the JournalWriter.
-
-        Args:
-            session: SQLAlchemy session.
-            role_resolver: Resolver for account roles.
-            clock: Clock for timestamps. Defaults to SystemClock.
-            auditor: Optional auditor service.
-            subledger_control_registry: Optional subledger control registry
-                for post-time reconciliation (G9). When provided, each posted
-                entry is validated against subledger control contracts.
-            snapshot_service: Optional reference snapshot service for
-                freshness validation (G10). When provided, validates that
-                the intent's snapshot is still current at posting time.
-        """
         self._session = session
         self._role_resolver = role_resolver
         self._clock = clock or SystemClock()
@@ -385,36 +265,9 @@ class JournalWriter:
         actor_id: UUID,
         event_type: str = "economic.posting",
     ) -> JournalWriteResult:
-        """
-        Write journal entries for all ledgers in the intent.
-
-        Preconditions:
-            - ``intent`` contains at least one LedgerIntent.
-            - Each LedgerIntent is balanced per currency (R4).
-            - All account roles in the intent have valid bindings.
-
-        Postconditions:
-            - On success: All JournalEntry rows are POSTED with
-              monotonic sequence numbers and snapshot versions.
-            - On idempotent duplicate: ALREADY_EXISTS with existing IDs.
-            - On failure: No partial entries are left in DRAFT state.
-
-        Raises:
-            MultipleRoundingLinesError: More than one rounding line (R5).
-            RoundingAmountExceededError: Rounding exceeds threshold (R5).
-            MissingReferenceSnapshotError: Snapshot field is NULL (R21).
-            SubledgerReconciliationError: SL/GL imbalance (SL-G5).
-            StaleReferenceSnapshotError: Snapshot data changed (G10).
+        """Write journal entries for all ledgers in the intent.
 
         P11: All ledger entries are written atomically.
-
-        Args:
-            intent: The accounting intent to write.
-            actor_id: Who is performing the write.
-            event_type: Event type for the journal entries.
-
-        Returns:
-            JournalWriteResult with written entries or error.
         """
         t0 = time.monotonic()
         logger.info(
@@ -425,7 +278,7 @@ class JournalWriter:
             },
         )
 
-        # INVARIANT: R4 — Debits = Credits per currency per entry
+        # INVARIANT: R4 -- Debits = Credits per currency per entry
         for ledger_intent in intent.ledger_intents:
             for currency in ledger_intent.currencies:
                 sum_debit = ledger_intent.total_debits(currency)
@@ -460,7 +313,7 @@ class JournalWriter:
                         f"{currency}: imbalance = {imbalance}",
                     )
 
-        # INVARIANT: L1 — Every account role resolves to exactly one COA account
+        # INVARIANT: L1 -- Every account role resolves to exactly one COA account
         try:
             resolved_intents = self._resolve_all_roles(intent)
         except RoleResolutionError as e:
@@ -472,7 +325,7 @@ class JournalWriter:
                 (e.role,), str(e)
             )
 
-        # INVARIANT: R3 — Idempotency key uniqueness check
+        # INVARIANT: R3 -- Idempotency key uniqueness check
         existing_entries: list[WrittenEntry] = []
         new_intents: list[tuple[LedgerIntent, list[ResolvedIntentLine]]] = []
 
@@ -565,6 +418,174 @@ class JournalWriter:
         )
         return JournalWriteResult.success(tuple(written_entries))
 
+    def write_reversal(
+        self,
+        original_entry: JournalEntry,
+        source_event_id: UUID,
+        actor_id: UUID,
+        effective_date: date,
+        reason: str,
+        event_type: str = "system.reversal",
+    ) -> JournalEntry:
+        """Create a reversal entry that mechanically inverts an original entry.
+
+        This is a first-class posting mode that reuses the full posting pipeline
+        (_finalize_posting for R9 sequence allocation, R21 snapshot validation)
+        but skips role resolution (L1) since we copy exact account IDs.
+
+        Accounting policy: Reversal is evaluated under the same reference data
+        snapshot as the original entry, even if posted in a different period.
+        This is the correct choice for mechanical backout.
+
+        Preconditions:
+            - original_entry must be POSTED.
+            - original_entry must have at least one line.
+            - source_event_id must reference a valid Event.
+            - effective_date must fall in an open fiscal period (enforced by caller).
+
+        Postconditions:
+            - Returns a new POSTED JournalEntry with reversal_of_id set.
+            - Reversal lines are exact mirrors: same accounts, amounts, currencies,
+              dimensions, exchange_rate_id -- only side is flipped (DEBIT↔CREDIT).
+            - Reversal lines have is_rounding=False (R22: reversals are mechanical
+              inversions that should balance exactly without rounding).
+            - Idempotency key format: reversal:{original_entry.id}:{ledger_id}
+            - R4: Debits == Credits per currency (guaranteed by construction).
+            - R9: Monotonic sequence assigned.
+            - R21: Snapshot versions copied from original entry.
+        """
+        t0 = time.monotonic()
+
+        # Load original lines ordered by line_seq
+        original_lines = sorted(original_entry.lines, key=lambda l: l.line_seq)
+        if not original_lines:
+            raise ValueError(
+                f"Cannot reverse entry {original_entry.id}: no lines found"
+            )
+
+        # Extract ledger_id from original entry metadata
+        ledger_id = (
+            original_entry.entry_metadata.get("ledger_id", "GL")
+            if original_entry.entry_metadata
+            else "GL"
+        )
+
+        # Deterministic idempotency key
+        idempotency_key = f"reversal:{original_entry.id}:{ledger_id}"
+
+        # Check idempotency: if reversal already exists, return it
+        existing = self._get_existing_entry(idempotency_key)
+        if existing is not None and existing.status in (
+            JournalEntryStatus.POSTED,
+            JournalEntryStatus.REVERSED,
+        ):
+            logger.info(
+                "reversal_idempotent",
+                extra={
+                    "original_entry_id": str(original_entry.id),
+                    "existing_reversal_id": str(existing.id),
+                },
+            )
+            return existing
+
+        now = self._clock.now()
+
+        # Create the reversal entry (DRAFT initially)
+        reversal_entry = JournalEntry(
+            id=uuid4(),
+            source_event_id=source_event_id,
+            source_event_type=event_type,
+            occurred_at=now,
+            effective_date=effective_date,
+            actor_id=actor_id,
+            status=JournalEntryStatus.DRAFT,
+            reversal_of_id=original_entry.id,
+            idempotency_key=idempotency_key,
+            posting_rule_version=original_entry.posting_rule_version,
+            description=f"Reversal of entry seq {original_entry.seq}: {reason}",
+            entry_metadata={
+                "ledger_id": ledger_id,
+                "reversal_reason": reason,
+                "original_entry_id": str(original_entry.id),
+            },
+            created_by_id=actor_id,
+            # R21: Copy snapshot versions from original (same reference data)
+            coa_version=original_entry.coa_version,
+            dimension_schema_version=original_entry.dimension_schema_version,
+            rounding_policy_version=original_entry.rounding_policy_version,
+            currency_registry_version=original_entry.currency_registry_version,
+        )
+
+        self._session.add(reversal_entry)
+        self._session.flush()
+
+        # Create reversal lines: flip side (DEBIT↔CREDIT), preserve everything else
+        for original_line in original_lines:
+            flipped_side = (
+                LineSide.CREDIT
+                if original_line.side == LineSide.DEBIT
+                else LineSide.DEBIT
+            )
+
+            reversal_line = JournalLine(
+                journal_entry_id=reversal_entry.id,
+                account_id=original_line.account_id,
+                side=flipped_side,
+                amount=original_line.amount,
+                currency=original_line.currency,
+                dimensions=original_line.dimensions,
+                is_rounding=False,  # R22: reversals don't create rounding lines
+                line_memo=f"Reversal of line {original_line.line_seq}",
+                exchange_rate_id=original_line.exchange_rate_id,
+                line_seq=original_line.line_seq,
+                created_by_id=actor_id,
+            )
+            self._session.add(reversal_line)
+
+        self._session.flush()
+
+        # R4: Verify balance by construction (debits == credits per currency)
+        # Since we flipped every line, the reversal is balanced iff original was.
+        # Explicit check as defense-in-depth.
+        debit_by_ccy: dict[str, Decimal] = {}
+        credit_by_ccy: dict[str, Decimal] = {}
+        for original_line in original_lines:
+            ccy = original_line.currency
+            if original_line.side == LineSide.DEBIT:
+                # Original debit → reversal credit
+                credit_by_ccy[ccy] = credit_by_ccy.get(ccy, Decimal("0")) + original_line.amount
+            else:
+                # Original credit → reversal debit
+                debit_by_ccy[ccy] = debit_by_ccy.get(ccy, Decimal("0")) + original_line.amount
+
+        for ccy in set(debit_by_ccy) | set(credit_by_ccy):
+            d = debit_by_ccy.get(ccy, Decimal("0"))
+            c = credit_by_ccy.get(ccy, Decimal("0"))
+            if d != c:
+                raise ValueError(
+                    f"R4 violation: reversal of entry {original_entry.id} "
+                    f"is unbalanced for {ccy}: debits={d}, credits={c}"
+                )
+
+        # Finalize posting: R9 sequence + DRAFT→POSTED + R21 validation
+        self._finalize_posting(reversal_entry)
+
+        duration_ms = round((time.monotonic() - t0) * 1000, 2)
+        logger.info(
+            "reversal_entry_created",
+            extra={
+                "reversal_entry_id": str(reversal_entry.id),
+                "original_entry_id": str(original_entry.id),
+                "seq": reversal_entry.seq,
+                "effective_date": str(effective_date),
+                "reason": reason,
+                "line_count": len(original_lines),
+                "duration_ms": duration_ms,
+            },
+        )
+
+        return reversal_entry
+
     def _resolve_all_roles(
         self, intent: AccountingIntent
     ) -> list[tuple[LedgerIntent, list[ResolvedIntentLine]]]:
@@ -623,6 +644,23 @@ class JournalWriter:
             resolved.append((ledger_intent, resolved_lines))
 
         return resolved
+
+    def get_entry(self, entry_id: UUID) -> JournalEntry | None:
+        """Load a JournalEntry by its primary key.
+
+        Exposed as a public method so that callers in the services layer
+        (e.g. PostingOrchestrator) can load entries without importing
+        the JournalEntry model directly (architecture boundary compliance).
+
+        Args:
+            entry_id: The UUID primary key of the entry.
+
+        Returns:
+            The JournalEntry, or None if not found.
+        """
+        return self._session.execute(
+            select(JournalEntry).where(JournalEntry.id == entry_id)
+        ).scalar_one_or_none()
 
     def _get_existing_entry(self, idempotency_key: str) -> JournalEntry | None:
         """Get existing entry by idempotency key."""
@@ -727,20 +765,8 @@ class JournalWriter:
         entry_id: UUID,
         lines: list[ResolvedIntentLine],
     ) -> None:
-        """Validate rounding invariants (R5, R22).
-
-        Preconditions:
-            - ``lines`` is a non-empty list of resolved intent lines.
-
-        Postconditions:
-            - At most one line has ``is_rounding=True``.
-            - Rounding amount does not exceed the threshold.
-
-        Raises:
-            MultipleRoundingLinesError: If more than one rounding line.
-            RoundingAmountExceededError: If rounding exceeds threshold.
-        """
-        # INVARIANT: R5 — At most ONE is_rounding=True line per entry
+        """Validate rounding invariants (R5, R22)."""
+        # INVARIANT: R5 -- At most ONE is_rounding=True line per entry
         rounding_lines = [line for line in lines if line.is_rounding]
         non_rounding_lines = [line for line in lines if not line.is_rounding]
 
@@ -767,22 +793,8 @@ class JournalWriter:
                 )
 
     def _finalize_posting(self, entry: JournalEntry) -> None:
-        """Assign sequence and mark as posted.
-
-        Preconditions:
-            - ``entry`` is a DRAFT JournalEntry with lines already flushed.
-
-        Postconditions:
-            - ``entry.status`` is POSTED.
-            - ``entry.seq`` is a monotonically increasing sequence number.
-            - ``entry.posted_at`` is set to the current clock time.
-            - R21 snapshot columns are validated as non-NULL.
-
-        Raises:
-            MissingReferenceSnapshotError: If required snapshot fields are NULL.
-        """
-        # INVARIANT: R21 — Reference snapshot determinism
-        # Validate reference snapshots
+        """Assign sequence and mark as posted."""
+        # INVARIANT: R21 -- Reference snapshot determinism
         self._validate_reference_snapshots(entry)
 
         logger.info(
@@ -798,7 +810,7 @@ class JournalWriter:
             },
         )
 
-        # INVARIANT: R9 — Sequence monotonicity via locked counter row
+        # INVARIANT: R9 -- Sequence monotonicity via locked counter row
         seq = self._sequence_service.next_value(SequenceService.JOURNAL_ENTRY)
         assert seq > 0, "R9 violation: sequence must be strictly positive"
         entry.seq = seq
@@ -842,28 +854,17 @@ class JournalWriter:
             )
 
     def _validate_subledger_controls(self, intent: AccountingIntent) -> None:
-        """
-        G9: Validate subledger control contracts after posting.
+        """G9: Validate subledger control contracts after posting.
 
-        For each subledger ledger intent with enforce_on_post=True:
-        1. Get GL control account balance (already includes flushed journal entries)
-        2. Get SL aggregate balance (before SL entries are created)
-        3. Compute projected SL balance after SL entries would be created
-        4. Run reconciler to check if SL-GL will be in balance
-        5. Raise SubledgerReconciliationError if blocking violations found
-
-        Invariants enforced:
-        - SL-G3: Per-currency reconciliation
-        - SL-G4: Same session for all queries (snapshot isolation)
-        - SL-G5: Blocking violations abort the transaction
+        # INVARIANT: SL-G3, SL-G4, SL-G5
         """
         from finance_kernel.domain.subledger_control import (
             SubledgerReconciler,
             SubledgerType,
         )
         from finance_kernel.domain.values import Money
-        from finance_kernel.selectors.subledger_selector import SubledgerSelector
         from finance_kernel.selectors.ledger_selector import LedgerSelector
+        from finance_kernel.selectors.subledger_selector import SubledgerSelector
 
         registry = self._subledger_control_registry
         if registry is None:
@@ -871,15 +872,10 @@ class JournalWriter:
 
         reconciler = SubledgerReconciler()
         # SL-G4: Selectors created lazily but share the SAME session
-        # (snapshot isolation). Lazy init avoids accessing self._session
-        # when no subledger ledger intents require enforcement.
         sl_selector: SubledgerSelector | None = None
         gl_selector: LedgerSelector | None = None
 
         for ledger_intent in intent.ledger_intents:
-            # Convert ledger_id (str) to SubledgerType for registry lookup.
-            # Non-subledger ledgers (e.g., "GL") won't match any SubledgerType
-            # and are safely skipped.
             try:
                 sl_type = SubledgerType(ledger_intent.ledger_id)
             except ValueError:
@@ -914,24 +910,17 @@ class JournalWriter:
 
             # SL-G3: Check per currency
             for currency in ledger_intent.currencies:
-                # 1. GL control account balance "after" posting.
-                #    Journal entries are already flushed in the same transaction,
-                #    so LedgerSelector sees them.
                 gl_balances = gl_selector.account_balance(
                     account_id=control_account_id,
                     as_of_date=intent.effective_date,
                     currency=currency,
                 )
                 if gl_balances:
-                    raw_gl_balance = gl_balances[0].balance  # always debit - credit
+                    raw_gl_balance = gl_balances[0].balance
                 else:
                     raw_gl_balance = Decimal("0")
 
-                # Normalize GL balance to match SL sign convention:
-                # GL always returns (debit - credit).
-                # Credit-normal accounts (AP, PAYROLL): negate to get
-                # economic balance matching SL convention (credit - debit).
-                # Debit-normal accounts (AR, INVENTORY, BANK): use as-is.
+                # Normalize GL balance to match SL sign convention
                 if not contract.binding.is_debit_normal:
                     gl_economic = -raw_gl_balance
                 else:
@@ -939,17 +928,12 @@ class JournalWriter:
 
                 control_balance_after = Money.of(gl_economic, currency)
 
-                # 2. SL aggregate balance "before" (SL entries not yet created)
                 sl_before = sl_selector.get_aggregate_balance(
                     subledger_type=sl_type,
                     as_of_date=intent.effective_date,
                     currency=currency,
                 )
 
-                # 3. Compute projected SL delta from intent lines.
-                #    SL balance convention:
-                #      debit-normal:  delta = sum(debits) - sum(credits)
-                #      credit-normal: delta = sum(credits) - sum(debits)
                 debit_total = ledger_intent.total_debits(currency)
                 credit_total = ledger_intent.total_credits(currency)
 
@@ -960,9 +944,6 @@ class JournalWriter:
 
                 sl_after = Money.of(sl_before.amount + sl_delta, currency)
 
-                # 4. Run reconciler.
-                #    validate_post() only uses "after" values for enforcement;
-                #    "before" values are passed for audit completeness.
                 checked_at = self._clock.now()
                 violations = reconciler.validate_post(
                     contract=contract,
@@ -974,7 +955,7 @@ class JournalWriter:
                     checked_at=checked_at,
                 )
 
-                # 5. SL-G5: Blocking violations abort the transaction
+                # SL-G5: Blocking violations abort the transaction
                 blocking = [v for v in violations if v.blocking]
                 if blocking:
                     violation_msgs = [v.message for v in blocking]
@@ -1023,13 +1004,7 @@ class JournalWriter:
                     )
 
     def _validate_snapshot_freshness(self, intent: AccountingIntent) -> None:
-        """
-        G10: Validate reference snapshot is still current.
-
-        Retrieves the full snapshot by ID and validates that its
-        component hashes still match the current state of reference data.
-        If any component has changed, raises StaleReferenceSnapshotError.
-        """
+        """G10: Validate reference snapshot is still current."""
         if self._snapshot_service is None:
             return
 
@@ -1037,7 +1012,6 @@ class JournalWriter:
         if snapshot_id is None:
             return
 
-        # Retrieve the full snapshot object
         full_snapshot = self._snapshot_service.get(snapshot_id)
         if full_snapshot is None:
             logger.warning(

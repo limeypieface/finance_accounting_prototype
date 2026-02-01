@@ -14,7 +14,6 @@ import pytest
 
 from finance_kernel.models.account import AccountType, NormalBalance
 from finance_kernel.selectors.ledger_selector import TrialBalanceRow
-
 from finance_modules.reporting.config import ReportingConfig
 from finance_modules.reporting.models import (
     BalanceSheetFormat,
@@ -37,7 +36,6 @@ from finance_modules.reporting.statements import (
     enrich_trial_balance,
     render_to_dict,
 )
-
 
 # =========================================================================
 # Fixtures / helpers

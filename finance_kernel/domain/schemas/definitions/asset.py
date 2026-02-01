@@ -13,7 +13,6 @@ from finance_kernel.domain.schemas.base import (
 )
 from finance_kernel.domain.schemas.registry import EventSchemaRegistry
 
-
 # ============================================================================
 # asset.acquisition - Recording purchase of fixed asset
 # ============================================================================

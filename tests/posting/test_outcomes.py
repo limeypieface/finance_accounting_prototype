@@ -17,15 +17,16 @@ Test classes:
 
 from __future__ import annotations
 
-import pytest
 from uuid import uuid4
+
+import pytest
 
 from finance_kernel.domain.clock import DeterministicClock
 from finance_kernel.models.interpretation_outcome import (
+    VALID_TRANSITIONS,
     FailureType,
     InterpretationOutcome,
     OutcomeStatus,
-    VALID_TRANSITIONS,
 )
 from finance_kernel.services.outcome_recorder import (
     InvalidOutcomeTransitionError,
@@ -33,7 +34,6 @@ from finance_kernel.services.outcome_recorder import (
     OutcomeRecorder,
 )
 from finance_kernel.services.retry_service import RetryNotAllowedError, RetryService
-
 
 # ---------------------------------------------------------------------------
 # Helpers

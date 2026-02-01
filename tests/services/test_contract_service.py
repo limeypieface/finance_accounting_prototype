@@ -15,6 +15,16 @@ from uuid import uuid4
 
 import pytest
 
+from finance_kernel.exceptions import (
+    CLINInactiveError,
+    CLINNotFoundError,
+    ContractCeilingExceededError,
+    ContractFundingExceededError,
+    ContractInactiveError,
+    ContractNotFoundError,
+    ContractPOPExpiredError,
+    UnallowableCostToContractError,
+)
 from finance_kernel.models.contract import (
     Contract,
     ContractLineItem,
@@ -27,17 +37,6 @@ from finance_kernel.services.contract_service import (
     ContractInfo,
     ContractService,
 )
-from finance_kernel.exceptions import (
-    CLINInactiveError,
-    CLINNotFoundError,
-    ContractCeilingExceededError,
-    ContractFundingExceededError,
-    ContractInactiveError,
-    ContractNotFoundError,
-    ContractPOPExpiredError,
-    UnallowableCostToContractError,
-)
-
 
 # ============================================================================
 # Fixtures

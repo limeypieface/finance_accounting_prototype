@@ -1,25 +1,4 @@
-"""
-Currency -- ISO 4217 registry and precision-derived rounding.
-
-Responsibility:
-    Provides the single source of truth for currency validation, decimal place
-    information, and rounding tolerances.
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    R16 -- ISO 4217 enforcement at boundary
-    R17 -- Precision-derived tolerance (rounding tolerance derived from
-           currency decimal places, never hard-coded)
-
-Failure modes:
-    - ValueError from ``validate()`` if currency code is not ISO 4217
-
-Audit relevance:
-    Currency precision directly controls rounding tolerance (R17) and
-    therefore the maximum hidden amount in a rounding line (R5, R22).
-"""
+"""Currency -- ISO 4217 registry and precision-derived rounding."""
 
 from dataclasses import dataclass
 from decimal import Decimal
@@ -28,18 +7,7 @@ from typing import ClassVar
 
 @dataclass(frozen=True)
 class CurrencyInfo:
-    """
-    Information about a single ISO 4217 currency.
-
-    Contract:
-        ``code`` is a 3-character uppercase ISO 4217 code.
-        ``decimal_places`` is the number of minor units (0-4).
-
-    Guarantees:
-        - ``rounding_tolerance`` is deterministically derived from
-          ``decimal_places`` (R17).
-        - Frozen dataclass -- cannot be mutated.
-    """
+    """Information about a single ISO 4217 currency."""
 
     code: str
     decimal_places: int
@@ -47,14 +15,7 @@ class CurrencyInfo:
 
     @property
     def rounding_tolerance(self) -> Decimal:
-        """
-        Maximum rounding tolerance for this currency.
-
-        Derived from decimal places: 1 unit in the smallest denomination.
-        For USD (2 decimals): 0.01 (1 cent)
-        For JPY (0 decimals): 1 (1 yen)
-        For KWD (3 decimals): 0.001 (1 fils)
-        """
+        """Maximum rounding tolerance derived from decimal places (R17)."""
         if self.decimal_places == 0:
             return Decimal("1")
         return Decimal("0." + "0" * (self.decimal_places - 1) + "1")
@@ -68,26 +29,7 @@ class CurrencyInfo:
 
 
 class CurrencyRegistry:
-    """
-    Registry of ISO 4217 currencies with their decimal places.
-
-    This is the single source of truth for currency validation
-    and precision information.
-
-    Contract:
-        All monetary operations in the system must validate currencies
-        through this registry (R16).
-
-    Guarantees:
-        - ``is_valid()`` returns ``True`` only for ISO 4217 codes.
-        - ``get_rounding_tolerance()`` always derives tolerance from
-          currency precision (R17 -- never a hard-coded constant).
-        - ``validate()`` returns a normalized uppercase code or raises.
-
-    Non-goals:
-        - Does NOT store exchange rates (that is FX engine territory).
-        - Does NOT perform monetary arithmetic (see ``Money`` value object).
-    """
+    """Registry of ISO 4217 currencies with decimal places (R16, R17)."""
 
     # ISO 4217 currencies with their decimal places
     # Source: https://www.iso.org/iso-4217-currency-codes.html
@@ -297,11 +239,7 @@ class CurrencyRegistry:
 
     @classmethod
     def get_decimal_places(cls, code: str) -> int:
-        """
-        Get decimal places for a currency.
-
-        R17 Compliance: Returns DEFAULT_DECIMAL_PLACES for unknown currencies.
-        """
+        """Get decimal places for a currency (R17)."""
         info = cls.get_info(code)
         return info.decimal_places if info else cls.DEFAULT_DECIMAL_PLACES
 
@@ -310,12 +248,7 @@ class CurrencyRegistry:
 
     @classmethod
     def get_rounding_tolerance(cls, code: str) -> Decimal:
-        """
-        Get the rounding tolerance for a currency.
-
-        R17 Compliance: Tolerance is ALWAYS derived from currency precision.
-        For unknown currencies, uses DEFAULT_DECIMAL_PLACES.
-        """
+        """Get rounding tolerance derived from currency precision (R17)."""
         info = cls.get_info(code)
         if info:
             return info.rounding_tolerance
@@ -324,29 +257,14 @@ class CurrencyRegistry:
 
     @classmethod
     def _tolerance_from_decimal_places(cls, decimal_places: int) -> Decimal:
-        """
-        Compute rounding tolerance from decimal places.
-
-        R17 Compliance: Tolerance must be derived, not fixed.
-        """
+        """Compute rounding tolerance from decimal places (R17)."""
         if decimal_places == 0:
             return Decimal("1")
         return Decimal("0." + "0" * (decimal_places - 1) + "1")
 
     @classmethod
     def validate(cls, code: str) -> str:
-        """
-        Validate and normalize a currency code.
-
-        Args:
-            code: The currency code to validate.
-
-        Returns:
-            Normalized (uppercase) currency code.
-
-        Raises:
-            ValueError: If the currency code is invalid.
-        """
+        """Validate and normalize a currency code (R16)."""
         if not code or not isinstance(code, str):
             raise ValueError(f"Invalid currency code: {code!r}")
 

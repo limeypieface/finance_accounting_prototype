@@ -14,40 +14,44 @@ Run with:
     pytest tests/adversarial/test_pressure.py -v --timeout=300
 """
 
-import pytest
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import UTC, date, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from threading import Barrier
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from finance_kernel.db.engine import get_session_factory
-from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
-from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
-from finance_kernel.services.outcome_recorder import OutcomeRecorder
-from finance_kernel.services.sequence_service import SequenceService
-from finance_kernel.services.period_service import PeriodService
-from finance_kernel.selectors.ledger_selector import LedgerSelector
-from finance_kernel.domain.clock import SystemClock, DeterministicClock
 from finance_kernel.domain.accounting_intent import (
     AccountingIntent,
     AccountingIntentSnapshot,
     IntentLine,
     LedgerIntent,
 )
+from finance_kernel.domain.clock import DeterministicClock, SystemClock
 from finance_kernel.domain.meaning_builder import (
     EconomicEventData,
     MeaningBuilderResult,
 )
-from finance_kernel.models.account import Account, AccountType, NormalBalance, AccountTag
+from finance_kernel.models.account import (
+    Account,
+    AccountTag,
+    AccountType,
+    NormalBalance,
+)
 from finance_kernel.models.event import Event
 from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus
-
+from finance_kernel.models.journal import JournalEntry, JournalEntryStatus, JournalLine
+from finance_kernel.selectors.ledger_selector import LedgerSelector
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
+from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
+from finance_kernel.services.outcome_recorder import OutcomeRecorder
+from finance_kernel.services.period_service import PeriodService
+from finance_kernel.services.sequence_service import SequenceService
 
 pytestmark = pytest.mark.postgres
 
@@ -144,10 +148,11 @@ def _make_coordinator(session, role_resolver, clock=None):
 
 def _create_source_event(session, source_event_id, actor_id, effective_date, event_type="test.event"):
     """Create a source Event record (FK requirement for JournalEntry)."""
-    from finance_kernel.utils.hashing import hash_payload
     from datetime import datetime, timezone
 
-    now = datetime.now(timezone.utc)
+    from finance_kernel.utils.hashing import hash_payload
+
+    now = datetime.now(UTC)
     payload = {"test": "data"}
     evt = Event(
         event_id=source_event_id,
@@ -714,7 +719,10 @@ class TestTimeTraveler:
         try:
             coordinator = _make_coordinator(session, role_resolver)
 
-            from finance_kernel.domain.accounting_policy import GuardCondition, GuardType
+            from finance_kernel.domain.accounting_policy import (
+                GuardCondition,
+                GuardType,
+            )
             from finance_kernel.domain.meaning_builder import GuardEvaluationResult
 
             no_period_guard = GuardEvaluationResult.block(

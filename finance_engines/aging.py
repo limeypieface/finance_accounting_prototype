@@ -41,15 +41,15 @@ Usage:
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from typing import Sequence
 from uuid import UUID
 
+from finance_engines.tracer import traced_engine
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
-from finance_engines.tracer import traced_engine
 
 logger = get_logger("engines.aging")
 

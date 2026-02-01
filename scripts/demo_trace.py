@@ -18,7 +18,7 @@ import logging
 import sys
 import time
 from dataclasses import asdict
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -86,31 +86,33 @@ def kill_orphaned():
 def seed_database():
     """Seed the database with 8 real business transactions. Returns list of (event_id, entry_ids, memo)."""
     from finance_kernel.db.engine import (
-        init_engine_from_url,
         drop_tables,
         get_session,
+        init_engine_from_url,
     )
-    from finance_modules._orm_registry import create_all_tables
     from finance_kernel.db.immutability import register_immutability_listeners
-    from finance_kernel.domain.clock import DeterministicClock
-    from finance_kernel.models.account import Account, AccountType, NormalBalance
-    from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-    from finance_kernel.models.event import Event
-    from finance_kernel.services.auditor_service import AuditorService
-    from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
-    from finance_kernel.services.outcome_recorder import OutcomeRecorder
-    from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
     from finance_kernel.domain.accounting_intent import (
         AccountingIntent,
         AccountingIntentSnapshot,
         IntentLine,
         LedgerIntent,
     )
+    from finance_kernel.domain.clock import DeterministicClock
     from finance_kernel.domain.meaning_builder import (
         EconomicEventData,
         MeaningBuilderResult,
     )
+    from finance_kernel.models.account import Account, AccountType, NormalBalance
+    from finance_kernel.models.event import Event
+    from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
+    from finance_kernel.services.auditor_service import AuditorService
+    from finance_kernel.services.interpretation_coordinator import (
+        InterpretationCoordinator,
+    )
+    from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
+    from finance_kernel.services.outcome_recorder import OutcomeRecorder
     from finance_kernel.utils.hashing import hash_payload
+    from finance_modules._orm_registry import create_all_tables
 
     # Connect + reset
     print("  [1/6] Connecting to PostgreSQL...")
@@ -132,7 +134,7 @@ def seed_database():
     register_immutability_listeners()
 
     session = get_session()
-    clock = DeterministicClock(datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+    clock = DeterministicClock(datetime(2025, 6, 15, 12, 0, 0, tzinfo=UTC))
     actor_id = uuid4()
 
     # Chart of accounts
@@ -253,9 +255,9 @@ def seed_database():
 def load_existing_entries():
     """Load all journal entries from the database for tracing."""
     from finance_kernel.db.engine import get_session
-    from finance_kernel.models.journal import JournalEntry
     from finance_kernel.models.event import Event
     from finance_kernel.models.interpretation_outcome import InterpretationOutcome
+    from finance_kernel.models.journal import JournalEntry
 
     session = get_session()
 
@@ -396,7 +398,7 @@ def print_decision_journal(timeline):
 
     if log_entries:
         print(f"  Structured log decisions ({len(log_entries)}):")
-        print(f"  Each entry shows a decision made during posting runtime.")
+        print("  Each entry shows a decision made during posting runtime.")
         print()
 
         for i, te in enumerate(log_entries):
@@ -405,14 +407,14 @@ def print_decision_journal(timeline):
 
             if action == "interpretation_started":
                 print(f"  [{i:>2}] INTERPRETATION STARTED")
-                print(f"       The pipeline began interpreting an economic event.")
+                print("       The pipeline began interpreting an economic event.")
                 print(f"       Profile: {d.get('profile_id')} v{d.get('profile_version')}")
                 print(f"       Event: {str(d.get('source_event_id', ''))[:8]}...")
                 print(f"       Effective date: {d.get('effective_date')}")
 
             elif action == "config_in_force":
                 print(f"  [{i:>2}] CONFIGURATION SNAPSHOT (R21)")
-                print(f"       The system recorded which config versions were active at posting time.")
+                print("       The system recorded which config versions were active at posting time.")
                 print(f"       COA version: {d.get('coa_version')}")
                 print(f"       Dimension schema: {d.get('dimension_schema_version')}")
                 print(f"       Rounding policy: {d.get('rounding_policy_version')}")
@@ -424,7 +426,7 @@ def print_decision_journal(timeline):
 
             elif action == "balance_validated":
                 print(f"  [{i:>2}] BALANCE VALIDATED")
-                print(f"       Double-entry balance check per currency per ledger.")
+                print("       Double-entry balance check per currency per ledger.")
                 print(f"       Ledger: {d.get('ledger_id')}  Currency: {d.get('currency')}")
                 print(f"       Sum debits:  {d.get('sum_debit')}")
                 print(f"       Sum credits: {d.get('sum_credit')}")
@@ -433,19 +435,19 @@ def print_decision_journal(timeline):
 
             elif action == "role_resolved":
                 print(f"  [{i:>2}] ROLE RESOLVED")
-                print(f"       Semantic account role mapped to COA code at posting time (L1).")
+                print("       Semantic account role mapped to COA code at posting time (L1).")
                 acct_id = str(d.get('account_id', ''))[:8]
                 print(f"       Role: {d.get('role')} -> Account {d.get('account_code')} ({acct_id}...)")
                 print(f"       Side: {d.get('side')}  Amount: {d.get('amount')} {d.get('currency')}")
 
             elif action == "line_written":
                 print(f"  [{i:>2}] LINE WRITTEN")
-                print(f"       A journal line was persisted to the database.")
+                print("       A journal line was persisted to the database.")
                 print(f"       Seq {d.get('line_seq')}: {d.get('role')} -> {d.get('account_code')}")
                 print(f"       Side: {d.get('side')}  Amount: {d.get('amount')} {d.get('currency')}")
                 rounding = d.get('is_rounding', False)
                 if rounding:
-                    print(f"       ** ROUNDING LINE (R5/R22) **")
+                    print("       ** ROUNDING LINE (R5/R22) **")
 
             elif action == "invariant_checked":
                 print(f"  [{i:>2}] INVARIANT CHECKED")
@@ -453,11 +455,11 @@ def print_decision_journal(timeline):
                 passed = d.get('passed', False)
                 print(f"       {inv}: {'PASS' if passed else 'FAIL'}")
                 if inv == "R21_REFERENCE_SNAPSHOT":
-                    print(f"       All version numbers recorded on journal entry for replay.")
+                    print("       All version numbers recorded on journal entry for replay.")
 
             elif action == "journal_entry_created":
                 print(f"  [{i:>2}] JOURNAL ENTRY CREATED")
-                print(f"       A new journal entry was committed to the ledger.")
+                print("       A new journal entry was committed to the ledger.")
                 print(f"       Entry: {str(d.get('entry_id', ''))[:8]}...")
                 print(f"       Status: {d.get('status')}  Seq: {d.get('seq')}")
                 print(f"       Idempotency key: {d.get('idempotency_key')}")
@@ -465,13 +467,13 @@ def print_decision_journal(timeline):
 
             elif action == "journal_write_completed":
                 print(f"  [{i:>2}] JOURNAL WRITE COMPLETED")
-                print(f"       All ledger writes finished successfully.")
+                print("       All ledger writes finished successfully.")
                 print(f"       Entries created: {d.get('entry_count')}")
                 print(f"       Duration: {d.get('duration_ms')}ms")
 
             elif action == "outcome_recorded":
                 print(f"  [{i:>2}] OUTCOME RECORDED")
-                print(f"       InterpretationOutcome written to DB (P15: one per event).")
+                print("       InterpretationOutcome written to DB (P15: one per event).")
                 print(f"       Status: {d.get('status')}")
                 ids = d.get('journal_entry_ids')
                 if ids:
@@ -479,18 +481,18 @@ def print_decision_journal(timeline):
 
             elif action == "interpretation_posted":
                 print(f"  [{i:>2}] INTERPRETATION POSTED")
-                print(f"       The coordinator confirmed the posting is complete.")
+                print("       The coordinator confirmed the posting is complete.")
                 print(f"       Total entries: {d.get('entry_count')}")
 
             elif action == "reproducibility_proof":
                 print(f"  [{i:>2}] REPRODUCIBILITY PROOF")
-                print(f"       Canonical hashes for deterministic replay verification.")
+                print("       Canonical hashes for deterministic replay verification.")
                 print(f"       Input hash:  {str(d.get('input_hash', ''))[:16]}...")
                 print(f"       Output hash: {str(d.get('output_hash', ''))[:16]}...")
 
             elif action == "FINANCE_KERNEL_TRACE":
                 print(f"  [{i:>2}] FINANCE_KERNEL_TRACE")
-                print(f"       Top-level trace emitted by the coordinator.")
+                print("       Top-level trace emitted by the coordinator.")
                 print(f"       Policy: {d.get('policy_name')} v{d.get('policy_version')}")
                 print(f"       Outcome: {d.get('outcome_status')}")
                 ih = str(d.get('input_hash', ''))
@@ -500,7 +502,7 @@ def print_decision_journal(timeline):
 
             elif action == "interpretation_completed":
                 print(f"  [{i:>2}] INTERPRETATION COMPLETED")
-                print(f"       Pipeline execution finished.")
+                print("       Pipeline execution finished.")
                 print(f"       Success: {d.get('success')}")
                 print(f"       Duration: {d.get('duration_ms')}ms")
 
@@ -514,7 +516,7 @@ def print_decision_journal(timeline):
 
     if audit_entries:
         print(f"  Audit trail ({len(audit_entries)}):")
-        print(f"  Each audit event is part of the immutable hash chain (R11).")
+        print("  Each audit event is part of the immutable hash chain (R11).")
         print()
         print(f"  {'#':>3}  {'action':<30} {'entity_type':<15} {'seq':>5}")
         print(f"  {'---':>3}  {'------':<30} {'-----------':<15} {'---':>5}")
@@ -637,7 +639,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    from finance_kernel.db.engine import init_engine_from_url, get_session
+    from finance_kernel.db.engine import get_session, init_engine_from_url
 
     # Connect
     try:
@@ -695,12 +697,12 @@ def main() -> int:
     print()
     print(hline("-"))
     print(f"  Tracing {total} posted entries...")
-    print(f"  Each trace shows the complete runtime decision trail:")
-    print(f"    - Origin event (what happened)")
-    print(f"    - Journal entry (what was recorded)")
-    print(f"    - Interpretation outcome (how it was classified)")
-    print(f"    - Decision journal (every step the system took)")
-    print(f"    - Integrity verification (proof nothing was tampered)")
+    print("  Each trace shows the complete runtime decision trail:")
+    print("    - Origin event (what happened)")
+    print("    - Journal entry (what was recorded)")
+    print("    - Interpretation outcome (how it was classified)")
+    print("    - Decision journal (every step the system took)")
+    print("    - Integrity verification (proof nothing was tampered)")
     print(hline("-"))
 
     complete_count = 0

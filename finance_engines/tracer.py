@@ -51,7 +51,8 @@ import hashlib
 import json
 import logging
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 # Engine tracer uses its own logger namespace to avoid importing kernel logging.
 # In production this logger is configured by the application root.

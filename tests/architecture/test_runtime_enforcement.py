@@ -22,12 +22,13 @@ G12 — Correction period lock enforcement
 
 from __future__ import annotations
 
-import pytest
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from unittest.mock import MagicMock, PropertyMock, patch, call
-from uuid import uuid4, UUID
+from unittest.mock import MagicMock, PropertyMock, call, patch
+from uuid import UUID, uuid4
+
+import pytest
 
 from finance_kernel.domain.accounting_intent import (
     AccountingIntent,
@@ -50,7 +51,6 @@ from finance_kernel.exceptions import (
     StaleReferenceSnapshotError,
     SubledgerReconciliationError,
 )
-
 
 # ============================================================================
 # Helpers

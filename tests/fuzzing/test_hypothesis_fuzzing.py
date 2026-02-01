@@ -11,14 +11,16 @@ These tests verify that:
 4. Large payloads are handled gracefully
 """
 
-import pytest
-from uuid import uuid4
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import uuid4
+
+import pytest
 
 try:
-    from hypothesis import given, strategies as st, settings, assume, HealthCheck
+    from hypothesis import HealthCheck, assume, given, settings
+    from hypothesis import strategies as st
     from hypothesis.strategies import composite
 
     HYPOTHESIS_AVAILABLE = True
@@ -75,7 +77,6 @@ except ImportError:
 
 from finance_kernel.domain.clock import DeterministicClock
 from finance_kernel.models.journal import JournalEntry
-
 
 # Hypothesis strategies for posting pipeline fuzzing
 

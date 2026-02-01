@@ -47,7 +47,7 @@ No new database columns. No external log infrastructure needed.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -99,7 +99,7 @@ class LogCapture(logging.Handler):
         """Build a dict from a LogRecord when JSON parsing fails."""
         entry: dict[str, Any] = {
             "ts": datetime.fromtimestamp(
-                record.created, tz=timezone.utc
+                record.created, tz=UTC
             ).isoformat(),
             "level": record.levelname,
             "logger": record.name,

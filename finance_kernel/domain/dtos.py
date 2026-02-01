@@ -57,6 +57,8 @@ if TYPE_CHECKING:
     from finance_kernel.models.fiscal_period import FiscalPeriod as FiscalPeriodModel
     from finance_kernel.models.journal import (
         JournalEntry as JournalEntryModel,
+    )
+    from finance_kernel.models.journal import (
         JournalLine as JournalLineModel,
     )
 
@@ -313,7 +315,7 @@ class EventEnvelope:
         return f"{self.producer}:{self.event_type}:{self.event_id}"
 
     @classmethod
-    def from_model(cls, model: "EventModel") -> "EventEnvelope":
+    def from_model(cls, model: EventModel) -> EventEnvelope:
         """
         Create an EventEnvelope from an Event ORM model.
 
@@ -384,12 +386,12 @@ class ValidationResult:
     errors: tuple[ValidationError, ...] = field(default_factory=tuple)
 
     @classmethod
-    def success(cls) -> "ValidationResult":
+    def success(cls) -> ValidationResult:
         """Create a successful validation result."""
         return cls(is_valid=True, errors=())
 
     @classmethod
-    def failure(cls, *errors: ValidationError) -> "ValidationResult":
+    def failure(cls, *errors: ValidationError) -> ValidationResult:
         """Create a failed validation result."""
         return cls(is_valid=False, errors=tuple(errors))
 
@@ -568,7 +570,7 @@ class JournalEntryRecord:
     currency_registry_version: int | None = None
 
     @classmethod
-    def from_model(cls, model: "JournalEntryModel") -> "JournalEntryRecord":
+    def from_model(cls, model: JournalEntryModel) -> JournalEntryRecord:
         """
         Create a JournalEntryRecord from a JournalEntry ORM model.
 
@@ -821,7 +823,7 @@ class FiscalPeriodInfo:
         return self.start_date <= check_date <= self.end_date
 
     @classmethod
-    def from_model(cls, model: "FiscalPeriodModel") -> "FiscalPeriodInfo":
+    def from_model(cls, model: FiscalPeriodModel) -> FiscalPeriodInfo:
         """
         Create a FiscalPeriodInfo from a FiscalPeriod ORM model.
 
@@ -874,7 +876,7 @@ class AccountInfo:
     description: str | None = None
 
     @classmethod
-    def from_model(cls, model: "AccountModel") -> "AccountInfo":
+    def from_model(cls, model: AccountModel) -> AccountInfo:
         """
         Create an AccountInfo from an Account ORM model.
 
@@ -926,7 +928,7 @@ class ExchangeRateInfo:
         return self.rate.rate
 
     @classmethod
-    def from_model(cls, model: "ExchangeRateModel") -> "ExchangeRateInfo":
+    def from_model(cls, model: ExchangeRateModel) -> ExchangeRateInfo:
         """
         Create an ExchangeRateInfo from an ExchangeRate ORM model.
 

@@ -9,26 +9,31 @@ Challenge the state machine implementations with:
 5. Concurrent transition patterns
 """
 
-import pytest
 from dataclasses import dataclass
-from typing import Set, Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Set, Tuple
+
+import pytest
 
 from finance_modules.ap.workflows import INVOICE_WORKFLOW as AP_INVOICE_WORKFLOW
 from finance_modules.ap.workflows import PAYMENT_WORKFLOW as AP_PAYMENT_WORKFLOW
 from finance_modules.ar.workflows import INVOICE_WORKFLOW as AR_INVOICE_WORKFLOW
 from finance_modules.ar.workflows import RECEIPT_WORKFLOW as AR_RECEIPT_WORKFLOW
-from finance_modules.inventory.workflows import RECEIPT_WORKFLOW as INV_RECEIPT_WORKFLOW
-from finance_modules.inventory.workflows import ISSUE_WORKFLOW as INV_ISSUE_WORKFLOW
-from finance_modules.inventory.workflows import TRANSFER_WORKFLOW as INV_TRANSFER_WORKFLOW
-from finance_modules.wip.workflows import WORK_ORDER_WORKFLOW
 from finance_modules.assets.workflows import ASSET_WORKFLOW
-from finance_modules.expense.workflows import EXPENSE_REPORT_WORKFLOW
-from finance_modules.tax.workflows import TAX_RETURN_WORKFLOW
-from finance_modules.procurement.workflows import REQUISITION_WORKFLOW, PURCHASE_ORDER_WORKFLOW
-from finance_modules.payroll.workflows import PAYROLL_RUN_WORKFLOW
-from finance_modules.gl.workflows import PERIOD_CLOSE_WORKFLOW
 from finance_modules.cash.workflows import RECONCILIATION_WORKFLOW
-
+from finance_modules.expense.workflows import EXPENSE_REPORT_WORKFLOW
+from finance_modules.gl.workflows import PERIOD_CLOSE_WORKFLOW
+from finance_modules.inventory.workflows import ISSUE_WORKFLOW as INV_ISSUE_WORKFLOW
+from finance_modules.inventory.workflows import RECEIPT_WORKFLOW as INV_RECEIPT_WORKFLOW
+from finance_modules.inventory.workflows import (
+    TRANSFER_WORKFLOW as INV_TRANSFER_WORKFLOW,
+)
+from finance_modules.payroll.workflows import PAYROLL_RUN_WORKFLOW
+from finance_modules.procurement.workflows import (
+    PURCHASE_ORDER_WORKFLOW,
+    REQUISITION_WORKFLOW,
+)
+from finance_modules.tax.workflows import TAX_RETURN_WORKFLOW
+from finance_modules.wip.workflows import WORK_ORDER_WORKFLOW
 
 ALL_WORKFLOWS = [
     ("AP Invoice", AP_INVOICE_WORKFLOW),
@@ -54,7 +59,7 @@ ALL_WORKFLOWS = [
 # Helper Functions
 # =============================================================================
 
-def get_valid_transitions(workflow) -> Dict[str, Set[str]]:
+def get_valid_transitions(workflow) -> dict[str, set[str]]:
     """Get map of state -> set of valid target states."""
     transitions = {}
     for t in workflow.transitions:
@@ -64,7 +69,7 @@ def get_valid_transitions(workflow) -> Dict[str, Set[str]]:
     return transitions
 
 
-def get_transition_actions(workflow) -> Dict[Tuple[str, str], List[str]]:
+def get_transition_actions(workflow) -> dict[tuple[str, str], list[str]]:
     """Get map of (from_state, to_state) -> list of actions."""
     actions = {}
     for t in workflow.transitions:
@@ -75,7 +80,7 @@ def get_transition_actions(workflow) -> Dict[Tuple[str, str], List[str]]:
     return actions
 
 
-def find_path_to_state(workflow, target_state: str) -> Optional[List[str]]:
+def find_path_to_state(workflow, target_state: str) -> list[str] | None:
     """Find a path from initial state to target state using BFS."""
     from collections import deque
 
@@ -446,7 +451,8 @@ class TestBusinessRuleValidation:
 # =============================================================================
 
 try:
-    from hypothesis import given, strategies as st, settings, assume
+    from hypothesis import assume, given, settings
+    from hypothesis import strategies as st
 
     HYPOTHESIS_AVAILABLE = True
 except ImportError:
@@ -485,7 +491,7 @@ class TestWorkflowFuzzing:
         """Test all possible paths up to given length."""
         valid_transitions = get_valid_transitions(workflow)
 
-        def explore(state: str, depth: int, visited: Set[str]) -> bool:
+        def explore(state: str, depth: int, visited: set[str]) -> bool:
             """Explore paths from state up to depth."""
             if depth == 0:
                 return True

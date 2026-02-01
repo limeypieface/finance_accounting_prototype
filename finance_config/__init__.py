@@ -120,7 +120,7 @@ def get_active_config(
     validation = validate_configuration(config_set)
     if not validation.is_valid:
         raise ValueError(
-            f"Configuration validation failed:\n"
+            "Configuration validation failed:\n"
             + "\n".join(f"  - {e}" for e in validation.errors)
         )
 
@@ -160,7 +160,7 @@ def get_active_config(
 
 def _find_matching_config(
     sets_dir: Path, legal_entity: str, as_of_date: date
-) -> tuple["AccountingConfigurationSet", Path]:
+) -> tuple[AccountingConfigurationSet, Path]:
     """Find the matching configuration set for a scope and date.
 
     Scans all subdirectories in *sets_dir*, assembles each, and returns

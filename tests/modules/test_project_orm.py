@@ -23,7 +23,6 @@ from finance_modules.project.orm import (
     ProjectPhaseModel,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helper: create a valid ProjectModel for FK-parent needs
 # ---------------------------------------------------------------------------

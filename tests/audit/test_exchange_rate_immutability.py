@@ -14,21 +14,26 @@ These tests verify that:
 5. Enforcement exists at both ORM and database levels
 """
 
-import pytest
 from datetime import datetime
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from finance_kernel.models.exchange_rate import ExchangeRate
-from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
-from finance_kernel.models.event import Event
 from finance_kernel.exceptions import (
     ExchangeRateImmutableError,
     ExchangeRateReferencedError,
     InvalidExchangeRateError,
+)
+from finance_kernel.models.event import Event
+from finance_kernel.models.exchange_rate import ExchangeRate
+from finance_kernel.models.journal import (
+    JournalEntry,
+    JournalEntryStatus,
+    JournalLine,
+    LineSide,
 )
 
 

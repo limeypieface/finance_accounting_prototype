@@ -12,7 +12,7 @@ Usage:
 """
 
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -311,10 +311,6 @@ def create_fiscal_period(session, actor_id):
 
 def build_posting_pipeline(session, accounts, clock):
     """Wire up the full interpretation pipeline and return a post() helper."""
-    from finance_kernel.services.auditor_service import AuditorService
-    from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
-    from finance_kernel.services.outcome_recorder import OutcomeRecorder
-    from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
     from finance_kernel.domain.accounting_intent import (
         AccountingIntent,
         AccountingIntentSnapshot,
@@ -326,6 +322,12 @@ def build_posting_pipeline(session, accounts, clock):
         MeaningBuilderResult,
     )
     from finance_kernel.models.event import Event
+    from finance_kernel.services.auditor_service import AuditorService
+    from finance_kernel.services.interpretation_coordinator import (
+        InterpretationCoordinator,
+    )
+    from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
+    from finance_kernel.services.outcome_recorder import OutcomeRecorder
     from finance_kernel.utils.hashing import hash_payload
 
     auditor = AuditorService(session, clock)
@@ -416,12 +418,12 @@ def main() -> int:
     import logging
     logging.disable(logging.CRITICAL)  # suppress kernel logs for clean output
 
-    from finance_kernel.db.engine import init_engine_from_url, get_session
-    from finance_modules._orm_registry import create_all_tables
+    from finance_kernel.db.engine import get_session, init_engine_from_url
     from finance_kernel.domain.clock import DeterministicClock
-    from finance_modules.reporting.service import ReportingService
-    from finance_modules.reporting.models import IncomeStatementFormat
+    from finance_modules._orm_registry import create_all_tables
     from finance_modules.reporting.config import ReportingConfig
+    from finance_modules.reporting.models import IncomeStatementFormat
+    from finance_modules.reporting.service import ReportingService
 
     # 1. Connect
     try:
@@ -433,7 +435,7 @@ def main() -> int:
         return 1
 
     session = get_session()
-    clock = DeterministicClock(datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+    clock = DeterministicClock(datetime(2025, 6, 15, 12, 0, 0, tzinfo=UTC))
     actor_id = uuid4()
 
     try:

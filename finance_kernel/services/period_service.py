@@ -49,6 +49,8 @@ from sqlalchemy.orm import Session
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.dtos import (
     FiscalPeriodInfo,
+)
+from finance_kernel.domain.dtos import (
     PeriodStatus as DomainPeriodStatus,
 )
 from finance_kernel.exceptions import (

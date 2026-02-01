@@ -16,13 +16,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import yaml
 from datetime import date
 from typing import Any
 
+import yaml
+
 from finance_kernel.domain.accounting_policy import AccountingPolicy
 from finance_kernel.domain.policy_bridge import ModuleLineMapping
-
 
 # ---------------------------------------------------------------------------
 # Profile collection — import all module profiles
@@ -30,18 +30,18 @@ from finance_kernel.domain.policy_bridge import ModuleLineMapping
 
 def collect_all_profiles() -> dict[str, list[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]]]]:
     """Import and collect all profiles from all modules."""
-    from finance_modules.inventory.profiles import _ALL_PROFILES as inv
     from finance_modules.ap.profiles import _ALL_PROFILES as ap
     from finance_modules.ar.profiles import _ALL_PROFILES as ar
+    from finance_modules.assets.profiles import _ALL_PROFILES as assets
     from finance_modules.cash.profiles import _ALL_PROFILES as cash
+    from finance_modules.contracts.profiles import _ALL_PROFILES as contracts
     from finance_modules.expense.profiles import _ALL_PROFILES as expense
     from finance_modules.gl.profiles import _ALL_PROFILES as gl
+    from finance_modules.inventory.profiles import _ALL_PROFILES as inv
     from finance_modules.payroll.profiles import _ALL_PROFILES as payroll
     from finance_modules.procurement.profiles import _ALL_PROFILES as procurement
     from finance_modules.tax.profiles import _ALL_PROFILES as tax
     from finance_modules.wip.profiles import _ALL_PROFILES as wip
-    from finance_modules.assets.profiles import _ALL_PROFILES as assets
-    from finance_modules.contracts.profiles import _ALL_PROFILES as contracts
 
     return {
         "inventory": list(inv),

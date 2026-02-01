@@ -12,17 +12,18 @@ from decimal import Decimal
 
 import pytest
 
-from finance_kernel.domain.values import Money
 from finance_engines.ice import (
-    ICEScheduleType,
-    CostElement,
     AllowabilityStatus,
+    ContractCeilingInput,
+    ContractCostInput,
+    CostElement,
+    ICEInput,
+    ICEScheduleType,
+    ICESubmission,
+    ICEValidationFinding,
+    IndirectPoolInput,
     LaborDetailInput,
     OtherDirectCostInput,
-    ContractCostInput,
-    IndirectPoolInput,
-    ContractCeilingInput,
-    ICEInput,
     ScheduleA,
     ScheduleALine,
     ScheduleB,
@@ -37,8 +38,6 @@ from finance_engines.ice import (
     ScheduleILine,
     ScheduleJ,
     ScheduleJLine,
-    ICEValidationFinding,
-    ICESubmission,
     compile_ice_submission,
     compile_schedule_a,
     compile_schedule_b,
@@ -48,7 +47,7 @@ from finance_engines.ice import (
     compile_schedule_i,
     compile_schedule_j,
 )
-
+from finance_kernel.domain.values import Money
 
 # ============================================================================
 # Fixtures / Helpers
@@ -1202,7 +1201,7 @@ class TestDeterminism:
         s1 = compile_schedule_a(costs, USD)
         s2 = compile_schedule_a(costs, USD)
         assert s1.grand_total_direct.amount == s2.grand_total_direct.amount
-        for l1, l2 in zip(s1.lines, s2.lines):
+        for l1, l2 in zip(s1.lines, s2.lines, strict=False):
             assert l1.contract_number == l2.contract_number
             assert l1.total_direct.amount == l2.total_direct.amount
 

@@ -19,7 +19,7 @@ Regression thresholds:
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from uuid import UUID, uuid4, uuid5
 
 import pytest
@@ -27,10 +27,10 @@ from sqlalchemy import text
 
 from finance_kernel.db.base import Base
 from tests.benchmarks.conftest import (
-    FY_START,
-    FY_END,
-    EFFECTIVE,
     COA_UUID_NS,
+    EFFECTIVE,
+    FY_END,
+    FY_START,
     create_accounts_from_config,
 )
 from tests.benchmarks.helpers import (
@@ -42,8 +42,8 @@ from tests.benchmarks.helpers import (
 from tests.benchmarks.tier_config import (
     TIERS,
     load_tier_config,
-    register_tier_modules,
     make_tier_scenarios,
+    register_tier_modules,
 )
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.postgres]
@@ -60,7 +60,7 @@ class TestComplexityScaling:
         from finance_kernel.db.engine import get_session
         from finance_kernel.domain.clock import DeterministicClock
         from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-        from finance_kernel.models.party import Party, PartyType, PartyStatus
+        from finance_kernel.models.party import Party, PartyStatus, PartyType
         from finance_kernel.services.module_posting_service import ModulePostingService
         from finance_services.invokers import register_standard_engines
         from finance_services.posting_orchestrator import PostingOrchestrator
@@ -84,7 +84,7 @@ class TestComplexityScaling:
 
         # 4. Wire pipeline
         session = get_session()
-        clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+        clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC))
         actor_id = uuid4()
 
         create_accounts_from_config(session, tier_config, actor_id)

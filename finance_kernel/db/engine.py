@@ -1,35 +1,8 @@
-"""
-Module: finance_kernel.db.engine
-Responsibility: SQLAlchemy engine initialization, session factory management,
-    and transactional scope utilities.  This is the single point of database
-    connection configuration for the entire system.
-Architecture position: Kernel > DB.  May import from db/base.py and db/triggers.py.
-    MUST NOT import from models/, services/, selectors/, domain/, or outer layers
-    (except for create_tables/drop_tables which import models and triggers).
-
-Invariants enforced:
-    - PostgreSQL is the ONLY supported backend (isolation_level, triggers,
-      JSONB, SELECT ... FOR UPDATE all require PostgreSQL 15+).
-    - Session isolation level is READ COMMITTED (default for PostgreSQL),
-      with explicit row-level locking (FOR UPDATE) used where stronger
-      isolation is needed (R8, R9, R12).
-    - Connection pooling via QueuePool with pre-ping to handle stale connections.
-
-Failure modes:
-    - RuntimeError if get_engine/get_session/get_session_factory called before
-      init_engine_from_url().
-    - OperationalError on deadlock during trigger installation (retried up to 3x).
-    - Connection pool exhaustion if pool_size + max_overflow is exceeded.
-
-Audit relevance:
-    All database transactions flow through sessions created by this module.
-    The session_scope() context manager ensures atomic commit-or-rollback
-    semantics, which is foundational for the L5 atomicity invariant.
-"""
+"""SQLAlchemy engine initialization, session factory, and transactional scope."""
 
 import atexit
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
@@ -54,27 +27,7 @@ def init_engine_from_url(
     pool_timeout: int = 30,
     pool_recycle: int = 1800,
 ) -> Engine:
-    """
-    Initialize the SQLAlchemy engine from a PostgreSQL database URL.
-
-    Preconditions: database_url is a valid PostgreSQL connection string.
-        Must not have been called before without a reset_engine() in between
-        (idempotent -- second call overwrites the first).
-    Postconditions: Module-level _engine and _SessionFactory are initialized.
-        All subsequent get_engine/get_session calls use this engine.
-
-    Args:
-        database_url: PostgreSQL connection URL (e.g., postgresql://user:pass@host/db)
-        echo: If True, log all SQL statements.
-        pool_size: Number of connections to keep in the pool.
-        max_overflow: Max connections beyond pool_size.
-        pool_pre_ping: If True, test connections before use (handles stale connections).
-        pool_timeout: Seconds to wait for a connection from the pool before giving up.
-        pool_recycle: Seconds after which a connection is automatically recycled.
-
-    Returns:
-        SQLAlchemy Engine instance.
-    """
+    """Initialize the SQLAlchemy engine from a PostgreSQL database URL."""
     global _engine, _SessionFactory
 
     _engine = create_engine(
@@ -106,38 +59,21 @@ def init_engine_from_url(
 
 
 def get_engine() -> Engine:
-    """
-    Get the current engine instance.
-
-    Raises:
-        RuntimeError: If engine has not been initialized.
-    """
+    """Get the current engine instance."""
     if _engine is None:
         raise RuntimeError("Engine not initialized. Call init_engine_from_url() first.")
     return _engine
 
 
 def get_session() -> Session:
-    """
-    Get a new session instance.
-
-    Raises:
-        RuntimeError: If engine has not been initialized.
-    """
+    """Get a new session instance."""
     if _SessionFactory is None:
         raise RuntimeError("Engine not initialized. Call init_engine_from_url() first.")
     return _SessionFactory()
 
 
 def get_session_factory() -> sessionmaker[Session]:
-    """
-    Get the session factory for creating sessions.
-
-    Useful for multi-threaded scenarios where each thread needs its own session.
-
-    Raises:
-        RuntimeError: If engine has not been initialized.
-    """
+    """Get the session factory for creating sessions."""
     if _SessionFactory is None:
         raise RuntimeError("Engine not initialized. Call init_engine_from_url() first.")
     return _SessionFactory
@@ -145,22 +81,7 @@ def get_session_factory() -> sessionmaker[Session]:
 
 @contextmanager
 def session_scope() -> Generator[Session, None, None]:
-    """
-    Provide a transactional scope around a series of operations.
-
-    Preconditions: Engine must be initialized via init_engine_from_url().
-    Postconditions: On normal exit, session is committed and closed.
-        On exception, session is rolled back and closed.  The exception
-        is re-raised to the caller.
-
-    Raises:
-        RuntimeError: If engine is not initialized.
-
-    Usage:
-        with session_scope() as session:
-            session.add(entity)
-            # Commits on successful exit, rolls back on exception
-    """
+    """Provide a transactional scope: commits on success, rolls back on exception."""
     session = get_session()
     logger.debug("transaction_started")
     try:
@@ -176,48 +97,20 @@ def session_scope() -> Generator[Session, None, None]:
 
 
 def create_tables(install_triggers: bool = True, *, kernel_only: bool = False) -> None:
-    """
-    Create all tables registered in Base.metadata, with safety guard.
+    """Create all tables registered in Base.metadata.
 
-    Safety guard
-    ------------
     In a full-system context (default), module ORM models MUST be imported
-    into ``Base.metadata`` before this function is called — otherwise the
-    schema will be incomplete (kernel tables only, missing ~106 module
-    tables).  The canonical way to do this is::
-
-        from finance_modules._orm_registry import create_all_tables
-        create_all_tables()
-
-    If you are deliberately creating only kernel tables (e.g. in a
-    kernel-only unit test), pass ``kernel_only=True`` to bypass the guard.
-
-    Preconditions: Engine must be initialized via init_engine_from_url().
-        Unless *kernel_only* is True, all ORM models (kernel + module) must
-        be imported so Base.metadata contains all table definitions.
-    Postconditions: All registered tables exist in the database.  If
-        *install_triggers* is True, R10 immutability triggers are installed.
-
-    Args:
-        install_triggers: If True, install database-level immutability triggers
-                         for R10 compliance.
-        kernel_only: If True, skip the module-table guard.  Only kernel tables
-                     will be created.  **Do not use in production or full-system
-                     tests.**
-
-    Raises:
-        RuntimeError: If engine is not initialized, or if module tables are
-            missing from metadata and *kernel_only* is False.
-        OperationalError: If trigger installation fails after 3 retries.
+    into Base.metadata before calling -- use ``create_all_tables()`` from
+    ``finance_modules._orm_registry``.  Pass ``kernel_only=True`` to bypass
+    the guard for kernel-only unit tests.
     """
     import time
+
     from finance_kernel.db.base import Base
 
     engine = get_engine()
 
     # Guard: prevent incomplete schema in full-system contexts.
-    # Kernel alone defines ~15 tables; modules add ~106.  If fewer than
-    # 25 tables are registered, module ORM models were not imported.
     if not kernel_only:
         table_count = len(Base.metadata.tables)
         if table_count < 25:
@@ -235,14 +128,11 @@ def create_tables(install_triggers: bool = True, *, kernel_only: bool = False) -
 
     Base.metadata.create_all(engine)
 
-    # Install triggers for defense-in-depth.
-    # Retry on deadlock: stale connections from a prior run may still hold
-    # locks when _kill_orphaned_connections() terminates them right before
-    # this function runs.  PostgreSQL needs a moment to fully reclaim the
-    # locks released by terminated backends.
+    # Install triggers for defense-in-depth (retry on deadlock).
     if install_triggers:
-        from finance_kernel.db.triggers import install_immutability_triggers
         from sqlalchemy.exc import OperationalError
+
+        from finance_kernel.db.triggers import install_immutability_triggers
 
         max_retries = 3
         for attempt in range(max_retries):
@@ -262,9 +152,7 @@ def create_tables(install_triggers: bool = True, *, kernel_only: bool = False) -
 
 
 def drop_tables() -> None:
-    """
-    Drop all tables. Use with caution - primarily for testing.
-    """
+    """Drop all tables. Use with caution -- primarily for testing."""
     from finance_kernel.db.base import Base
     from finance_kernel.db.triggers import uninstall_immutability_triggers
 
@@ -274,11 +162,7 @@ def drop_tables() -> None:
 
 
 def reset_engine() -> None:
-    """
-    Reset the engine and session factory.
-
-    Useful for test cleanup.
-    """
+    """Reset the engine and session factory. Useful for test cleanup."""
     global _engine, _SessionFactory
 
     if _engine is not None:

@@ -10,14 +10,14 @@ Tests validate correct status transitions (paid, partially paid, overdue, cancel
 credit note handling, validation rules, and status audit tracking.
 """
 
-import pytest
-from decimal import Decimal
-from datetime import date, timedelta
-from uuid import uuid4
 from dataclasses import dataclass, field
-from typing import List, Optional
+from datetime import date, timedelta
+from decimal import Decimal
 from enum import Enum
+from typing import List, Optional
+from uuid import uuid4
 
+import pytest
 
 # =============================================================================
 # Domain Models for Invoice Status
@@ -50,7 +50,7 @@ class Invoice:
     due_date: date
     total_amount: Decimal
     status: InvoiceStatus = InvoiceStatus.DRAFT
-    outstanding_amount: Optional[Decimal] = None
+    outstanding_amount: Decimal | None = None
     paid_amount: Decimal = Decimal("0")
 
     def __post_init__(self):
@@ -838,10 +838,10 @@ class MockInvoiceRepository:
             ),
         ]
 
-    def find_by_status(self, status: InvoiceStatus) -> List[Invoice]:
+    def find_by_status(self, status: InvoiceStatus) -> list[Invoice]:
         return [inv for inv in self.invoices if inv.status == status]
 
-    def find_by_party(self, party_id: str) -> List[Invoice]:
+    def find_by_party(self, party_id: str) -> list[Invoice]:
         return [inv for inv in self.invoices if inv.party_id == party_id]
 
 
@@ -894,7 +894,7 @@ class StatusTracker:
     """Track status change history."""
 
     def __init__(self):
-        self.history: dict[str, List[StatusChange]] = {}
+        self.history: dict[str, list[StatusChange]] = {}
 
     def record_change(
         self,
@@ -912,7 +912,7 @@ class StatusTracker:
             change_date=change_date,
         ))
 
-    def get_history(self, invoice_id: str) -> List[tuple]:
+    def get_history(self, invoice_id: str) -> list[tuple]:
         if invoice_id not in self.history:
             return []
         return [
@@ -920,7 +920,7 @@ class StatusTracker:
             for c in self.history[invoice_id]
         ]
 
-    def get_current_status(self, invoice_id: str) -> Optional[InvoiceStatus]:
+    def get_current_status(self, invoice_id: str) -> InvoiceStatus | None:
         if invoice_id not in self.history or not self.history[invoice_id]:
             return None
         return self.history[invoice_id][-1].to_status

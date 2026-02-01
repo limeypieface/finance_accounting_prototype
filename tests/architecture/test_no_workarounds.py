@@ -19,7 +19,6 @@ import ast
 import inspect
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # 1. TestNoDirectEconomicLinkInModules
 # ---------------------------------------------------------------------------

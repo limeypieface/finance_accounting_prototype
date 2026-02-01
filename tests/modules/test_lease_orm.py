@@ -16,14 +16,13 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from finance_modules.lease.orm import (
+    LeaseLiabilityModel,
     LeaseModel,
     LeaseModificationModel,
     LeasePaymentModel,
-    LeaseLiabilityModel,
     ROUAssetModel,
 )
 from tests.modules.conftest import TEST_LESSEE_ID
-
 
 # ---------------------------------------------------------------------------
 # Helpers

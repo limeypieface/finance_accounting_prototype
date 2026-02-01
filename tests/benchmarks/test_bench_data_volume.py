@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import UTC
 from decimal import Decimal
 from uuid import uuid4
 
@@ -26,8 +27,8 @@ from sqlalchemy import text
 from finance_kernel.db.base import Base
 from tests.benchmarks.conftest import (
     EFFECTIVE,
-    FY_START,
     FY_END,
+    FY_START,
     create_accounts_from_config,
     make_simple_event,
 )
@@ -77,12 +78,13 @@ class TestDataVolumeScaling:
 
     def test_data_volume_scaling(self, db_engine, db_tables):
         from datetime import datetime, timezone
+
         from finance_config import get_active_config
         from finance_config.bridges import build_role_resolver
         from finance_kernel.db.engine import get_session
         from finance_kernel.domain.clock import DeterministicClock
         from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-        from finance_kernel.models.party import Party, PartyType, PartyStatus
+        from finance_kernel.models.party import Party, PartyStatus, PartyType
         from finance_kernel.services.module_posting_service import ModulePostingService
         from finance_modules import register_all_modules
         from finance_services.invokers import register_standard_engines
@@ -102,7 +104,7 @@ class TestDataVolumeScaling:
 
         # Seed shared data
         session = get_session()
-        clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+        clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC))
         actor_id = uuid4()
         create_accounts_from_config(session, config, actor_id)
 

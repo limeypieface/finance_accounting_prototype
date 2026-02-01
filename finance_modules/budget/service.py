@@ -41,9 +41,9 @@ maintain full history of changes.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Sequence
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
@@ -59,9 +59,9 @@ from finance_kernel.services.module_posting_service import (
 from finance_modules.budget.models import (
     BudgetEntry,
     BudgetLock,
+    BudgetStatus,
     BudgetVariance,
     BudgetVersion,
-    BudgetStatus,
     Encumbrance,
     EncumbranceStatus,
     ForecastEntry,

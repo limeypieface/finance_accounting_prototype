@@ -19,24 +19,32 @@ Financial Impact:
 This is the most critical immutability invariant in the entire system.
 """
 
-import pytest
 from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 
-from finance_kernel.models.account import Account, AccountType, NormalBalance
-from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
-from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
 from finance_kernel.domain.accounting_intent import (
     AccountingIntent,
     AccountingIntentSnapshot,
     IntentLine,
     LedgerIntent,
 )
-from finance_kernel.domain.meaning_builder import EconomicEventData, MeaningBuilderResult
+from finance_kernel.domain.meaning_builder import (
+    EconomicEventData,
+    MeaningBuilderResult,
+)
 from finance_kernel.exceptions import ImmutabilityViolationError
+from finance_kernel.models.account import Account, AccountType, NormalBalance
+from finance_kernel.models.journal import (
+    JournalEntry,
+    JournalEntryStatus,
+    JournalLine,
+    LineSide,
+)
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
 from tests.conftest import make_source_event
 
 

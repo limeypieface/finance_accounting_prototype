@@ -10,24 +10,25 @@ Covers:
 - Edge cases and error handling
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
-from finance_kernel.domain.values import Money
+import pytest
+
 from finance_engines.matching import (
-    MatchingEngine,
     MatchCandidate,
+    MatchingEngine,
     MatchResult,
-    MatchTolerance,
     MatchStatus,
-    MatchType,
     MatchSuggestion,
+    MatchTolerance,
+    MatchType,
     ToleranceType,
     create_three_way_match,
     create_two_way_match,
 )
+from finance_kernel.domain.values import Money
 
 
 class TestMatchCandidateCreation:

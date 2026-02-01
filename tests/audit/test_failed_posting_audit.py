@@ -11,18 +11,18 @@ These tests verify that:
 4. InterpretationOutcome records are created for all postings
 """
 
-import pytest
-from uuid import uuid4
 from datetime import date, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
-from finance_kernel.services.period_service import PeriodService
-from finance_kernel.services.auditor_service import AuditorService
-from finance_kernel.models.audit_event import AuditEvent, AuditAction
-from finance_kernel.models.journal import JournalEntry
 from finance_kernel.domain.clock import DeterministicClock
+from finance_kernel.models.audit_event import AuditAction, AuditEvent
+from finance_kernel.models.journal import JournalEntry
+from finance_kernel.services.auditor_service import AuditorService
+from finance_kernel.services.period_service import PeriodService
 
 
 class TestPostingAuditRecords:

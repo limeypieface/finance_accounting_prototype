@@ -13,17 +13,17 @@ from decimal import Decimal
 
 import pytest
 
-from finance_kernel.domain.dtos import ValidationError
 from finance_kernel.domain.accounting_policy import (
     AccountingPolicy,
     GuardCondition,
     GuardType,
     LedgerEffect,
-    PrecedenceMode,
     PolicyMeaning,
     PolicyPrecedence,
     PolicyTrigger,
+    PrecedenceMode,
 )
+from finance_kernel.domain.dtos import ValidationError
 from finance_kernel.domain.ledger_registry import LedgerRegistry
 from finance_kernel.domain.policy_compiler import PolicyCompiler
 from finance_kernel.domain.policy_selector import (
@@ -38,7 +38,6 @@ from finance_kernel.domain.schemas.base import (
     EventSchema,
 )
 from finance_kernel.domain.schemas.registry import EventSchemaRegistry
-
 
 # ============================================================================
 # Fixtures

@@ -316,10 +316,10 @@ def print_missing_facts(facts) -> None:
 
 def list_entries(session) -> int:
     """List all traceable journal entries in the database."""
-    from finance_kernel.models.journal import JournalEntry, JournalLine
-    from finance_kernel.models.event import Event
     from finance_kernel.models.account import Account
+    from finance_kernel.models.event import Event
     from finance_kernel.models.interpretation_outcome import InterpretationOutcome
+    from finance_kernel.models.journal import JournalEntry, JournalLine
 
     entries = (
         session.query(JournalEntry)
@@ -438,7 +438,7 @@ def main() -> int:
     # Suppress library logging
     logging.disable(logging.CRITICAL)
 
-    from finance_kernel.db.engine import init_engine_from_url, get_session
+    from finance_kernel.db.engine import get_session, init_engine_from_url
 
     # Connect
     try:

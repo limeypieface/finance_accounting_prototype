@@ -26,7 +26,6 @@ from finance_modules.revenue.orm import (
 )
 from tests.modules.conftest import TEST_CUSTOMER_ID, TEST_REVENUE_CONTRACT_ID
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

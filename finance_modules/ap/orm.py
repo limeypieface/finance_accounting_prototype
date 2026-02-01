@@ -29,7 +29,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from finance_kernel.db.base import TrackedBase
 
-
 # ---------------------------------------------------------------------------
 # 1. VendorProfileModel
 # ---------------------------------------------------------------------------

@@ -64,7 +64,6 @@ from finance_config.loader import (
     parse_scope,
     parse_subledger_contract,
 )
-from finance_kernel.exceptions import FinanceKernelError
 from finance_config.schema import (
     AccountingConfigurationSet,
     ControlRule,
@@ -75,6 +74,7 @@ from finance_config.schema import (
     RoleBinding,
     SubledgerContractDef,
 )
+from finance_kernel.exceptions import FinanceKernelError
 
 
 class AssemblyError(FinanceKernelError):

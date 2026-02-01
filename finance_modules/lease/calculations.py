@@ -9,9 +9,9 @@ Domain math that engines don't cover:
 - ROU asset adjustment
 """
 
+from collections.abc import Sequence
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Sequence
 
 
 def present_value(

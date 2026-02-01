@@ -42,7 +42,6 @@ from finance_modules.credit_loss.models import (
 )
 from finance_modules.credit_loss.service import CreditLossService
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

@@ -12,19 +12,20 @@ Covers:
 - Edge cases and error handling
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
-from finance_kernel.domain.values import Money
+import pytest
+
 from finance_engines.allocation import (
     AllocationEngine,
-    AllocationTarget,
     AllocationLine,
-    AllocationResult,
     AllocationMethod,
+    AllocationResult,
+    AllocationTarget,
 )
+from finance_kernel.domain.values import Money
 
 
 class TestProRataAllocation:

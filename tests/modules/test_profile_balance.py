@@ -9,15 +9,15 @@ import pytest
 
 from finance_modules.ap.profiles import AP_PROFILES
 from finance_modules.ar.profiles import AR_PROFILES
-from finance_modules.inventory.profiles import INVENTORY_PROFILES
-from finance_modules.wip.profiles import WIP_PROFILES
 from finance_modules.assets.profiles import ASSET_PROFILES
-from finance_modules.expense.profiles import EXPENSE_PROFILES
-from finance_modules.tax.profiles import TAX_PROFILES
-from finance_modules.procurement.profiles import PROCUREMENT_PROFILES
-from finance_modules.payroll.profiles import PAYROLL_PROFILES
-from finance_modules.gl.profiles import GL_PROFILES
 from finance_modules.cash.profiles import CASH_PROFILES
+from finance_modules.expense.profiles import EXPENSE_PROFILES
+from finance_modules.gl.profiles import GL_PROFILES
+from finance_modules.inventory.profiles import INVENTORY_PROFILES
+from finance_modules.payroll.profiles import PAYROLL_PROFILES
+from finance_modules.procurement.profiles import PROCUREMENT_PROFILES
+from finance_modules.tax.profiles import TAX_PROFILES
+from finance_modules.wip.profiles import WIP_PROFILES
 
 
 def count_sides(profile):

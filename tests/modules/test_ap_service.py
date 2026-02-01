@@ -19,7 +19,6 @@ from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.ap.service import APService
 from tests.modules.conftest import TEST_VENDOR_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

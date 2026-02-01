@@ -1,284 +1,8 @@
-"""
-Typed Exception Hierarchy for the Finance Kernel (R18 Compliance).
-
-===============================================================================
-WHY TYPED EXCEPTIONS
-===============================================================================
-
-Financial systems must handle errors precisely. Generic exceptions like
-ValueError or RuntimeError force callers to parse error messages - which is:
-  - Fragile (message wording changes break code)
-  - Non-portable (different languages, logs, APIs)
-  - Hard to test (string matching in tests is brittle)
-
-R18 Compliance requires:
-  1. Every error has a TYPED exception class (catch by type, not message)
-  2. Every exception has a CODE attribute (machine-readable, API-safe)
-  3. Exceptions carry structured DATA (not just a message string)
-
-Example - WRONG way to handle errors:
-    try:
-        post_event(event)
-    except Exception as e:
-        if "closed period" in str(e):  # FRAGILE - message might change
-            handle_closed_period()
-
-Example - RIGHT way (what this module enables):
-    try:
-        post_event(event)
-    except ClosedPeriodError as e:  # Typed catch
-        log.warning(f"Period {e.period_code} is closed")  # Structured data
-        api_response(code=e.code, period=e.period_code)   # Machine-readable
-
-===============================================================================
-EXCEPTION HIERARCHY
-===============================================================================
-
-All exceptions inherit from FinanceKernelError:
-
-    FinanceKernelError (base)
-    |
-    +-- EventError
-    |   +-- EventNotFoundError
-    |   +-- EventAlreadyExistsError
-    |   +-- PayloadMismatchError
-    |   +-- UnsupportedSchemaVersionError
-    |
-    +-- PostingError
-    |   +-- AlreadyPostedError
-    |   +-- UnbalancedEntryError
-    |   +-- InvalidAccountError
-    |   +-- MissingDimensionError
-    |   +-- InvalidDimensionValueError
-    |   +-- InactiveDimensionError
-    |   +-- InactiveDimensionValueError
-    |   +-- DimensionNotFoundError
-    |
-    +-- PeriodError
-    |   +-- ClosedPeriodError
-    |   +-- PeriodNotFoundError
-    |   +-- PeriodAlreadyClosedError
-    |   +-- PeriodOverlapError
-    |   +-- PeriodImmutableError
-    |   +-- AdjustmentsNotAllowedError
-    |
-    +-- AccountError
-    |   +-- AccountNotFoundError
-    |   +-- AccountInactiveError
-    |   +-- AccountReferencedError
-    |   +-- RoundingAccountNotFoundError
-    |
-    +-- CurrencyError
-    |   +-- InvalidCurrencyError
-    |   +-- CurrencyMismatchError
-    |   +-- ExchangeRateNotFoundError
-    |
-    +-- AuditError
-    |   +-- AuditChainBrokenError
-    |
-    +-- ReversalError
-    |   +-- EntryNotPostedError
-    |   +-- EntryAlreadyReversedError
-    |
-    +-- ConcurrencyError
-    |   +-- OptimisticLockError
-    |
-    +-- ImmutabilityError
-    |   +-- ImmutabilityViolationError
-    |
-    +-- RoundingError
-    |   +-- MultipleRoundingLinesError
-    |   +-- RoundingAmountExceededError
-    |
-    +-- ExchangeRateError
-    |   +-- ExchangeRateImmutableError
-    |   +-- ExchangeRateReferencedError
-    |   +-- InvalidExchangeRateError
-    |   +-- ExchangeRateArbitrageError
-    |
-    +-- EconomicLinkError
-    |   +-- SelfLinkError
-    |   +-- InvalidLinkTypeError
-    |   +-- LinkCycleError
-    |   +-- DuplicateLinkError
-    |   +-- MaxChildrenExceededError
-    |   +-- ArtifactNotFoundError
-    |   +-- LinkImmutableError
-    |
-    +-- ReconciliationError
-    |   +-- OverapplicationError
-    |   +-- DocumentAlreadyMatchedError
-    |   +-- MatchVarianceExceededError
-    |   +-- BankReconciliationError
-    |
-    +-- ValuationError
-    |   +-- InsufficientInventoryError
-    |   +-- LotNotFoundError
-    |   +-- LotDepletedError
-    |   +-- StandardCostNotFoundError
-    |
-    +-- CorrectionError
-    |   +-- AlreadyCorrectedError
-    |   +-- CorrectionCascadeBlockedError
-    |   +-- UnwindDepthExceededError
-    |   +-- NoGLImpactError
-    |
-    +-- ActorError
-        +-- InvalidActorError
-        +-- ActorFrozenError
-
-===============================================================================
-ERROR CODES - QUICK REFERENCE
-===============================================================================
-
-Category        | Code                        | When Raised
-----------------|-----------------------------|-----------------------------------------
-Event           | EVENT_NOT_FOUND             | Event ID doesn't exist
-                | EVENT_ALREADY_EXISTS        | Duplicate event ID (idempotency)
-                | PAYLOAD_MISMATCH            | Same ID, different payload (tampering?)
-                | UNSUPPORTED_SCHEMA_VERSION  | Event version not supported
-----------------|-----------------------------|-----------------------------------------
-Posting         | ALREADY_POSTED              | Event already has journal entry (OK)
-                | UNBALANCED_ENTRY            | Debits != Credits
-                | INVALID_ACCOUNT             | Account can't be posted to
-                | MISSING_DIMENSION           | Required dimension not provided
-                | INVALID_DIMENSION_VALUE     | Dimension value doesn't exist
-                | INACTIVE_DIMENSION          | Dimension is deactivated
-                | INACTIVE_DIMENSION_VALUE    | Dimension value is deactivated
-                | DIMENSION_NOT_FOUND         | Dimension code doesn't exist
-                | POSTING_RULE_NOT_FOUND      | No strategy for event type
-----------------|-----------------------------|-----------------------------------------
-Period          | CLOSED_PERIOD               | Posting to closed period (R12)
-                | PERIOD_NOT_FOUND            | No period covers this date
-                | PERIOD_ALREADY_CLOSED       | Period already closed
-                | PERIOD_OVERLAP              | Date range conflicts (R12)
-                | PERIOD_IMMUTABLE            | Modifying closed period (R13)
-                | ADJUSTMENTS_NOT_ALLOWED     | Period disallows adjustments (R13)
-----------------|-----------------------------|-----------------------------------------
-Account         | ACCOUNT_NOT_FOUND           | Account ID doesn't exist
-                | ACCOUNT_INACTIVE            | Account is deactivated
-                | ACCOUNT_REFERENCED          | Can't delete, has posted lines
-                | ROUNDING_ACCOUNT_NOT_FOUND  | No rounding account for currency
-----------------|-----------------------------|-----------------------------------------
-Currency        | INVALID_CURRENCY            | Not a valid ISO 4217 code
-                | CURRENCY_MISMATCH           | Mixed currencies in operation
-                | EXCHANGE_RATE_NOT_FOUND     | No rate for currency pair/date
-----------------|-----------------------------|-----------------------------------------
-Audit           | AUDIT_CHAIN_BROKEN          | Hash chain validation failed (R10)
-----------------|-----------------------------|-----------------------------------------
-Reversal        | ENTRY_NOT_POSTED            | Can only reverse posted entries
-                | ENTRY_ALREADY_REVERSED      | Entry was already reversed
-----------------|-----------------------------|-----------------------------------------
-Concurrency     | OPTIMISTIC_LOCK_CONFLICT    | Concurrent modification detected
-----------------|-----------------------------|-----------------------------------------
-Immutability    | IMMUTABILITY_VIOLATION      | Modifying immutable record (R10)
-----------------|-----------------------------|-----------------------------------------
-Rounding        | MULTIPLE_ROUNDING_LINES     | >1 rounding line (fraud prevention)
-                | ROUNDING_AMOUNT_EXCEEDED    | Rounding too large (fraud prevention)
-----------------|-----------------------------|-----------------------------------------
-Exchange Rate   | EXCHANGE_RATE_IMMUTABLE     | Rate used, can't modify
-                | EXCHANGE_RATE_REFERENCED    | Rate used, can't delete
-                | INVALID_EXCHANGE_RATE       | Rate is zero/negative/invalid
-                | EXCHANGE_RATE_ARBITRAGE     | Rate creates arbitrage opportunity
-----------------|-----------------------------|-----------------------------------------
-Economic Link   | SELF_LINK                   | Artifact linking to itself
-                | INVALID_LINK_TYPE           | Link type invalid for artifact types
-                | LINK_CYCLE                  | Creates cycle in link graph
-                | DUPLICATE_LINK              | Link already exists
-                | MAX_CHILDREN_EXCEEDED       | Too many children for link type
-                | ARTIFACT_NOT_FOUND          | Referenced artifact doesn't exist
-                | LINK_IMMUTABLE              | Modifying immutable link
-----------------|-----------------------------|-----------------------------------------
-Reconciliation  | OVERAPPLICATION             | Applied more than remaining balance
-                | DOCUMENT_ALREADY_MATCHED    | Document fully matched, can't apply
-                | MATCH_VARIANCE_EXCEEDED     | 3-way match variance too large
-                | BANK_RECONCILIATION_ERROR   | Bank statement matching error
-----------------|-----------------------------|-----------------------------------------
-Valuation       | INSUFFICIENT_INVENTORY      | Not enough inventory to consume
-                | LOT_NOT_FOUND               | Cost lot doesn't exist
-                | LOT_DEPLETED                | Cost lot has no remaining quantity
-                | STANDARD_COST_NOT_FOUND     | No standard cost for item
-----------------|-----------------------------|-----------------------------------------
-Correction      | ALREADY_CORRECTED           | Document already corrected
-                | CORRECTION_CASCADE_BLOCKED  | Downstream artifact blocks cascade
-                | UNWIND_DEPTH_EXCEEDED       | Cascade too deep
-                | NO_GL_IMPACT                | Document has no GL entries
-
-===============================================================================
-HANDLING PATTERNS
-===============================================================================
-
-1. CATCH SPECIFIC EXCEPTIONS (not base classes):
-
-    try:
-        orchestrator.post(event)
-    except ClosedPeriodError as e:
-        # Handle closed period specifically
-        notify_user(f"Period {e.period_code} is closed")
-    except PostingError as e:
-        # Catch-all for other posting issues
-        log.error(f"Posting failed: {e.code}")
-
-2. USE STRUCTURED DATA (not message parsing):
-
-    except UnbalancedEntryError as e:
-        return {
-            "error": e.code,
-            "debits": e.debits,
-            "credits": e.credits,
-            "currency": e.currency,
-        }
-
-3. IDEMPOTENCY HANDLING (AlreadyPostedError is success):
-
-    try:
-        entry = orchestrator.post(event)
-    except AlreadyPostedError as e:
-        # This is OK - event was already processed
-        entry = get_entry(e.journal_entry_id)
-    return entry
-
-4. AUDIT CHAIN ERRORS (critical - investigate immediately):
-
-    except AuditChainBrokenError as e:
-        alert_security_team(e)
-        halt_processing()  # Don't continue with broken audit trail
-
-===============================================================================
-DESIGN DECISIONS
-===============================================================================
-
-1. WHY INHERIT FROM Exception (not ValueError, etc.)?
-   Domain exceptions should be catchable as a group. Inheriting from
-   built-in types mixes domain errors with programming errors.
-
-2. WHY code CLASS ATTRIBUTE (not instance)?
-   Codes are static per exception type. Class attribute enables:
-   - ClosedPeriodError.code without instantiation
-   - API documentation generation
-   - Static analysis
-
-3. WHY STORE ALL CONTEXT AS ATTRIBUTES?
-   Exceptions may be logged, serialized, or sent to APIs. Structured
-   attributes survive; parsed message strings don't.
-
-4. WHY SEPARATE ERROR CATEGORIES?
-   Enables middleware to handle categories differently:
-   - PeriodError -> user-facing "try different date"
-   - ImmutabilityError -> log security alert
-   - ConcurrencyError -> auto-retry
-
-===============================================================================
-"""
+"""Typed exception hierarchy for the finance kernel (R18 compliance)."""
 
 
 class FinanceKernelError(Exception):
-    """
-    Base exception for all finance kernel errors.
-
-    R18 Compliance: All subclasses must have a `code` class attribute
-    for machine-readable error identification.
-    """
+    """Base exception for all finance kernel errors (R18)."""
 
     code: str = "FINANCE_KERNEL_ERROR"
 
@@ -313,11 +37,7 @@ class EventAlreadyExistsError(EventError):
 
 
 class PayloadMismatchError(EventError):
-    """
-    Event ID exists but with different payload hash.
-
-    This is a protocol violation - events are immutable.
-    """
+    """Event ID exists but with different payload hash (protocol violation)."""
 
     code: str = "PAYLOAD_MISMATCH"
 
@@ -345,12 +65,7 @@ class UnsupportedSchemaVersionError(EventError):
 
 
 class SchemaValidationError(EventError):
-    """
-    Event payload does not match registered schema.
-
-    P10 Compliance: All event payloads must validate against their registered
-    schema before processing.
-    """
+    """Event payload does not match registered schema (P10)."""
 
     code: str = "SCHEMA_VALIDATION_ERROR"
 
@@ -370,12 +85,7 @@ class SchemaValidationError(EventError):
 
 
 class InvalidFieldReferenceError(EventError):
-    """
-    Field reference does not exist in event schema.
-
-    P10 Compliance: Profile field references must be validated against
-    the event schema during compilation.
-    """
+    """Field reference does not exist in event schema (P10)."""
 
     code: str = "INVALID_FIELD_REFERENCE"
 
@@ -540,11 +250,7 @@ class PeriodAlreadyClosedError(PeriodError):
 
 
 class PeriodOverlapError(PeriodError):
-    """
-    New period date range overlaps with existing period.
-
-    R12 Compliance: Date ranges must not overlap.
-    """
+    """New period date range overlaps with existing period (R12)."""
 
     code: str = "PERIOD_OVERLAP"
 
@@ -566,11 +272,7 @@ class PeriodOverlapError(PeriodError):
 
 
 class PeriodImmutableError(PeriodError):
-    """
-    Attempted to modify a closed period.
-
-    R13 Compliance: Closed periods must be immutable.
-    """
+    """Attempted to modify a closed period (R13)."""
 
     code: str = "PERIOD_IMMUTABLE"
 
@@ -584,11 +286,7 @@ class PeriodImmutableError(PeriodError):
 
 
 class AdjustmentsNotAllowedError(PeriodError):
-    """
-    Attempted to post an adjusting entry to a period that doesn't allow adjustments.
-
-    R13 Compliance: allows_adjustments must be enforced.
-    """
+    """Period does not allow adjusting entries (R13)."""
 
     code: str = "ADJUSTMENTS_NOT_ALLOWED"
 
@@ -818,12 +516,7 @@ class ImmutabilityError(FinanceKernelError):
 
 
 class ImmutabilityViolationError(ImmutabilityError):
-    """
-    Attempted to modify or delete an immutable record.
-
-    R10 Compliance: JournalEntry, JournalLine, and AuditEvent
-    are immutable after posting/creation.
-    """
+    """Attempted to modify or delete an immutable record (R10)."""
 
     code: str = "IMMUTABILITY_VIOLATION"
 
@@ -846,12 +539,7 @@ class RoundingError(FinanceKernelError):
 
 
 class MultipleRoundingLinesError(RoundingError):
-    """
-    Entry has more than one line marked is_rounding=True.
-
-    From journal.py docstring: "exactly one line must be marked is_rounding=true"
-    This invariant prevents hidden manipulation via multiple rounding entries.
-    """
+    """Entry has more than one line marked is_rounding=True."""
 
     code: str = "MULTIPLE_ROUNDING_LINES"
 
@@ -865,13 +553,7 @@ class MultipleRoundingLinesError(RoundingError):
 
 
 class RoundingAmountExceededError(RoundingError):
-    """
-    Rounding line amount exceeds the maximum allowed threshold.
-
-    Rounding is for sub-penny currency conversion remainders only.
-    A large "rounding" adjustment is not rounding - it's an error or fraud.
-    Typical threshold: 0.01 per non-rounding line (1 minor unit).
-    """
+    """Rounding line amount exceeds the maximum allowed threshold."""
 
     code: str = "ROUNDING_AMOUNT_EXCEEDED"
 
@@ -899,13 +581,7 @@ class ReferenceSnapshotError(FinanceKernelError):
 
 
 class MissingReferenceSnapshotError(ReferenceSnapshotError):
-    """
-    Posted journal entry is missing required reference snapshot version identifiers.
-
-    R21 Compliance: Every posted JournalEntry must record immutable version
-    identifiers for all reference data used during posting. This enables
-    deterministic replay.
-    """
+    """Posted entry missing required reference snapshot version identifiers (R21)."""
 
     code: str = "MISSING_REFERENCE_SNAPSHOT"
 
@@ -920,13 +596,7 @@ class MissingReferenceSnapshotError(ReferenceSnapshotError):
 
 
 class StaleReferenceSnapshotError(ReferenceSnapshotError):
-    """
-    Reference snapshot is stale — current data has changed since capture.
-
-    G10 Compliance: At posting time, the intent's reference snapshot must
-    match the current state of reference data. If any component has changed,
-    the posting is rejected to prevent decisions based on outdated data.
-    """
+    """Reference snapshot is stale -- current data has changed since capture (G10)."""
 
     code: str = "STALE_REFERENCE_SNAPSHOT"
 
@@ -954,12 +624,7 @@ class StrategyLifecycleError(FinanceKernelError):
 
 
 class StrategyVersionError(StrategyLifecycleError):
-    """
-    Strategy version is outside its supported range.
-
-    R23 Compliance: Each strategy declares supported_from_version and
-    supported_to_version (nullable). Replay must enforce compatibility.
-    """
+    """Strategy version is outside its supported range (R23)."""
 
     code: str = "STRATEGY_VERSION_OUT_OF_RANGE"
 
@@ -982,13 +647,7 @@ class StrategyVersionError(StrategyLifecycleError):
 
 
 class StrategyRoundingViolationError(StrategyLifecycleError):
-    """
-    Strategy attempted to create rounding lines directly.
-
-    R22 Compliance: Only the Bookkeeper may generate is_rounding=true
-    JournalLines. Strategies are prohibited from targeting rounding
-    accounts directly.
-    """
+    """Strategy attempted to create rounding lines directly (R22)."""
 
     code: str = "STRATEGY_ROUNDING_VIOLATION"
 
@@ -1011,13 +670,7 @@ class ExchangeRateError(FinanceKernelError):
 
 
 class ExchangeRateImmutableError(ExchangeRateError):
-    """
-    Attempted to modify an ExchangeRate that has been used in journal lines.
-
-    Once an ExchangeRate is referenced by any JournalLine (via exchange_rate_id),
-    it becomes immutable. This prevents retroactive manipulation of historical
-    multi-currency transactions.
-    """
+    """ExchangeRate referenced by journal lines cannot be modified."""
 
     code: str = "EXCHANGE_RATE_IMMUTABLE"
 
@@ -1032,12 +685,7 @@ class ExchangeRateImmutableError(ExchangeRateError):
 
 
 class ExchangeRateReferencedError(ExchangeRateError):
-    """
-    Attempted to delete an ExchangeRate that is referenced by journal lines.
-
-    Exchange rates cannot be deleted once used in any JournalLine, as this
-    would break the audit trail and make historical entries uninterpretable.
-    """
+    """ExchangeRate referenced by journal lines cannot be deleted."""
 
     code: str = "EXCHANGE_RATE_REFERENCED"
 
@@ -1051,12 +699,7 @@ class ExchangeRateReferencedError(ExchangeRateError):
 
 
 class InvalidExchangeRateError(ExchangeRateError):
-    """
-    Exchange rate value is invalid (zero, negative, or mathematically impossible).
-
-    Exchange rates must be positive non-zero values. A rate of zero would
-    make currency conversion undefined, and negative rates are meaningless.
-    """
+    """Exchange rate value is invalid (zero, negative, or out of range)."""
 
     code: str = "INVALID_EXCHANGE_RATE"
 
@@ -1069,13 +712,7 @@ class InvalidExchangeRateError(ExchangeRateError):
 
 
 class ExchangeRateArbitrageError(ExchangeRateError):
-    """
-    Exchange rate creates an arbitrage opportunity with its inverse.
-
-    If rate A/B = X exists, then the inverse rate B/A must equal 1/X
-    (within tolerance). Inconsistent rates could be exploited to create
-    phantom value or hide losses.
-    """
+    """Exchange rate creates an arbitrage opportunity with its inverse."""
 
     code: str = "EXCHANGE_RATE_ARBITRAGE"
 
@@ -1109,12 +746,7 @@ class EconomicLinkError(FinanceKernelError):
 
 
 class SelfLinkError(EconomicLinkError):
-    """
-    Attempted to create a link where parent equals child.
-
-    L2 Compliance: Self-links are not allowed. An artifact cannot be
-    its own parent or child.
-    """
+    """Artifact cannot link to itself (L2)."""
 
     code: str = "SELF_LINK"
 
@@ -1126,13 +758,7 @@ class SelfLinkError(EconomicLinkError):
 
 
 class InvalidLinkTypeError(EconomicLinkError):
-    """
-    Link type is not valid for the given artifact types.
-
-    L5 Compliance: Each link type defines valid parent/child artifact
-    type combinations. Attempting to create a link with incompatible
-    types is rejected.
-    """
+    """Link type is not valid for the given artifact types (L5)."""
 
     code: str = "INVALID_LINK_TYPE"
 
@@ -1154,13 +780,7 @@ class InvalidLinkTypeError(EconomicLinkError):
 
 
 class LinkCycleError(EconomicLinkError):
-    """
-    Creating this link would introduce a cycle in the link graph.
-
-    L3 Compliance: The link graph must be acyclic for certain link types
-    (e.g., FULFILLED_BY, SOURCED_FROM). Cycles would create infinite loops
-    in traversal and represent impossible economic relationships.
-    """
+    """Creating this link would introduce a cycle in the link graph (L3)."""
 
     code: str = "LINK_CYCLE"
 
@@ -1174,12 +794,7 @@ class LinkCycleError(EconomicLinkError):
 
 
 class DuplicateLinkError(EconomicLinkError):
-    """
-    A link with the same parent, child, and type already exists.
-
-    Links are unique on (link_type, parent_ref, child_ref). Creating
-    a duplicate would double-count the relationship.
-    """
+    """A link with the same parent, child, and type already exists."""
 
     code: str = "DUPLICATE_LINK"
 
@@ -1193,12 +808,7 @@ class DuplicateLinkError(EconomicLinkError):
 
 
 class MaxChildrenExceededError(EconomicLinkError):
-    """
-    Parent artifact has reached maximum allowed children for this link type.
-
-    Some link types are constrained (e.g., REVERSED_BY can only have one
-    child - an entry can only be reversed once).
-    """
+    """Parent artifact has reached maximum allowed children for this link type."""
 
     code: str = "MAX_CHILDREN_EXCEEDED"
 
@@ -1220,12 +830,7 @@ class MaxChildrenExceededError(EconomicLinkError):
 
 
 class ArtifactNotFoundError(EconomicLinkError):
-    """
-    Referenced artifact does not exist.
-
-    Links must reference existing artifacts. Creating a link to a
-    non-existent artifact would leave a dangling pointer.
-    """
+    """Referenced artifact does not exist."""
 
     code: str = "ARTIFACT_NOT_FOUND"
 
@@ -1238,13 +843,7 @@ class ArtifactNotFoundError(EconomicLinkError):
 
 
 class LinkImmutableError(EconomicLinkError):
-    """
-    Attempted to modify or delete an immutable link.
-
-    L1 Compliance: Links are immutable once created. They cannot be
-    updated or deleted. To "undo" a link, create a compensating
-    relationship (e.g., REVERSED_BY).
-    """
+    """Links are immutable once created (L1)."""
 
     code: str = "LINK_IMMUTABLE"
 
@@ -1266,12 +865,7 @@ class ReconciliationError(FinanceKernelError):
 
 
 class OverapplicationError(ReconciliationError):
-    """
-    Attempted to apply more than the remaining balance.
-
-    When applying payments to invoices (or credits to documents),
-    the applied amount cannot exceed the remaining unapplied balance.
-    """
+    """Applied amount exceeds remaining balance."""
 
     code: str = "OVERAPPLICATION"
 
@@ -1293,12 +887,7 @@ class OverapplicationError(ReconciliationError):
 
 
 class DocumentAlreadyMatchedError(ReconciliationError):
-    """
-    Document is already fully matched and cannot accept more applications.
-
-    Once a document's remaining balance reaches zero, no further
-    payments or credits can be applied.
-    """
+    """Document is already fully matched."""
 
     code: str = "DOCUMENT_ALREADY_MATCHED"
 
@@ -1310,12 +899,7 @@ class DocumentAlreadyMatchedError(ReconciliationError):
 
 
 class MatchVarianceExceededError(ReconciliationError):
-    """
-    Three-way match variance exceeds configured tolerance.
-
-    When matching PO -> Receipt -> Invoice, price or quantity
-    variances must be within configured tolerances.
-    """
+    """Three-way match variance exceeds configured tolerance."""
 
     code: str = "MATCH_VARIANCE_EXCEEDED"
 
@@ -1340,11 +924,7 @@ class MatchVarianceExceededError(ReconciliationError):
 
 
 class BankReconciliationError(ReconciliationError):
-    """
-    Bank statement reconciliation error.
-
-    Errors specific to matching bank statement lines with GL entries.
-    """
+    """Bank statement reconciliation error."""
 
     code: str = "BANK_RECONCILIATION_ERROR"
 
@@ -1357,14 +937,7 @@ class BankReconciliationError(ReconciliationError):
 
 
 class SubledgerReconciliationError(ReconciliationError):
-    """
-    Subledger/GL control account reconciliation failed at posting time.
-
-    G9 Compliance: When a SubledgerControlContract with enforce_on_post=True
-    exists for a ledger, the posting must maintain subledger–GL balance
-    within the configured tolerance. If the post would cause the subledger
-    to drift from its GL control account, the posting is rejected.
-    """
+    """Subledger/GL control account reconciliation failed at posting time (G9)."""
 
     code: str = "SUBLEDGER_RECONCILIATION_FAILED"
 
@@ -1391,12 +964,7 @@ class ValuationError(FinanceKernelError):
 
 
 class InsufficientInventoryError(ValuationError):
-    """
-    Not enough inventory available to fulfill the requested quantity.
-
-    When consuming inventory via FIFO/LIFO/etc., there must be
-    sufficient quantity in available cost lots.
-    """
+    """Not enough inventory available to fulfill the requested quantity."""
 
     code: str = "INSUFFICIENT_INVENTORY"
 
@@ -1419,12 +987,7 @@ class InsufficientInventoryError(ValuationError):
 
 
 class LotNotFoundError(ValuationError):
-    """
-    Specified cost lot does not exist.
-
-    When using specific identification (lot picking), the
-    specified lot must exist.
-    """
+    """Specified cost lot does not exist."""
 
     code: str = "LOT_NOT_FOUND"
 
@@ -1438,12 +1001,7 @@ class LotNotFoundError(ValuationError):
 
 
 class LotDepletedError(ValuationError):
-    """
-    Cost lot has no remaining quantity.
-
-    When consuming from a specific lot, the lot must have
-    available quantity remaining.
-    """
+    """Cost lot has no remaining quantity."""
 
     code: str = "LOT_DEPLETED"
 
@@ -1456,12 +1014,7 @@ class LotDepletedError(ValuationError):
 
 
 class StandardCostNotFoundError(ValuationError):
-    """
-    No standard cost defined for the item.
-
-    When using standard costing, a standard cost must be
-    defined for the item before it can be issued.
-    """
+    """No standard cost defined for the item."""
 
     code: str = "STANDARD_COST_NOT_FOUND"
 
@@ -1484,12 +1037,7 @@ class CorrectionError(FinanceKernelError):
 
 
 class AlreadyCorrectedError(CorrectionError):
-    """
-    Document has already been corrected/voided.
-
-    A document can only be corrected once. To make further
-    corrections, correct the correction document.
-    """
+    """Document has already been corrected/voided."""
 
     code: str = "ALREADY_CORRECTED"
 
@@ -1502,12 +1050,7 @@ class AlreadyCorrectedError(CorrectionError):
 
 
 class CorrectionCascadeBlockedError(CorrectionError):
-    """
-    Correction cascade is blocked by a downstream artifact.
-
-    When unwinding a document cascade, some downstream artifacts
-    may not be correctable (e.g., period closed, already corrected).
-    """
+    """Correction cascade is blocked by a downstream artifact."""
 
     code: str = "CORRECTION_CASCADE_BLOCKED"
 
@@ -1529,13 +1072,7 @@ class CorrectionCascadeBlockedError(CorrectionError):
 
 
 class UnwindDepthExceededError(CorrectionError):
-    """
-    Correction cascade exceeded maximum allowed depth.
-
-    To prevent runaway recursion, cascade unwinding has a
-    maximum depth limit. If exceeded, the correction must
-    be handled manually.
-    """
+    """Correction cascade exceeded maximum allowed depth."""
 
     code: str = "UNWIND_DEPTH_EXCEEDED"
 
@@ -1550,13 +1087,7 @@ class UnwindDepthExceededError(CorrectionError):
 
 
 class NoGLImpactError(CorrectionError):
-    """
-    Document has no GL entries to correct.
-
-    Some documents may not have GL impact (e.g., draft documents,
-    non-financial artifacts). These cannot be "corrected" in the
-    accounting sense.
-    """
+    """Document has no GL entries to correct."""
 
     code: str = "NO_GL_IMPACT"
 
@@ -1577,12 +1108,7 @@ class PartyError(FinanceKernelError):
 
 
 class PartyNotFoundError(PartyError):
-    """
-    Party with given code or ID was not found.
-
-    Parties are required for transactions with external entities
-    (customers, suppliers, employees).
-    """
+    """Party with given code or ID was not found."""
 
     code: str = "PARTY_NOT_FOUND"
 
@@ -1592,12 +1118,7 @@ class PartyNotFoundError(PartyError):
 
 
 class PartyFrozenError(PartyError):
-    """
-    Party is frozen and cannot transact.
-
-    Frozen parties are blocked from new transactions. This may be
-    due to credit issues, legal holds, or other business reasons.
-    """
+    """Party is frozen and cannot transact."""
 
     code: str = "PARTY_FROZEN"
 
@@ -1611,12 +1132,7 @@ class PartyFrozenError(PartyError):
 
 
 class PartyInactiveError(PartyError):
-    """
-    Party is inactive and cannot be used for new transactions.
-
-    Inactive parties still exist for historical reference but
-    cannot be assigned to new documents or transactions.
-    """
+    """Party is inactive and cannot be used for new transactions."""
 
     code: str = "PARTY_INACTIVE"
 
@@ -1628,12 +1144,7 @@ class PartyInactiveError(PartyError):
 
 
 class CreditLimitExceededError(PartyError):
-    """
-    Transaction would exceed party's credit limit.
-
-    For customers with credit limits, new invoices or orders
-    cannot exceed the remaining available credit.
-    """
+    """Transaction would exceed party's credit limit."""
 
     code: str = "CREDIT_LIMIT_EXCEEDED"
 
@@ -1659,12 +1170,7 @@ class CreditLimitExceededError(PartyError):
 
 
 class PartyReferencedError(PartyError):
-    """
-    Party cannot be deleted because it is referenced by transactions.
-
-    Parties with transaction history cannot be deleted, only
-    deactivated or closed.
-    """
+    """Party cannot be deleted because it is referenced by transactions."""
 
     code: str = "PARTY_REFERENCED"
 
@@ -1687,11 +1193,7 @@ class ContractError(FinanceKernelError):
 
 
 class ContractNotFoundError(ContractError):
-    """
-    Contract with given number or ID was not found.
-
-    Contracts are required for cost-chargeable government work.
-    """
+    """Contract with given number or ID was not found."""
 
     code: str = "CONTRACT_NOT_FOUND"
 
@@ -1701,12 +1203,7 @@ class ContractNotFoundError(ContractError):
 
 
 class ContractInactiveError(ContractError):
-    """
-    Contract is not active and cannot accept new charges.
-
-    Contracts that are suspended, completed, or closed cannot
-    accept new cost charges.
-    """
+    """Contract is not active and cannot accept new charges."""
 
     code: str = "CONTRACT_INACTIVE"
 
@@ -1719,11 +1216,7 @@ class ContractInactiveError(ContractError):
 
 
 class ContractFundingExceededError(ContractError):
-    """
-    Charge would exceed contract's funded amount.
-
-    DCAA requires that costs do not exceed obligated funding.
-    """
+    """Charge would exceed contract's funded amount (DCAA)."""
 
     code: str = "CONTRACT_FUNDING_EXCEEDED"
 
@@ -1748,11 +1241,7 @@ class ContractFundingExceededError(ContractError):
 
 
 class ContractCeilingExceededError(ContractError):
-    """
-    Charge would exceed contract's ceiling amount.
-
-    Contract ceiling is the maximum total value (not-to-exceed).
-    """
+    """Charge would exceed contract's ceiling amount."""
 
     code: str = "CONTRACT_CEILING_EXCEEDED"
 
@@ -1777,11 +1266,7 @@ class ContractCeilingExceededError(ContractError):
 
 
 class ContractPOPExpiredError(ContractError):
-    """
-    Charge date is outside contract's period of performance.
-
-    Costs can only be charged within the period of performance.
-    """
+    """Charge date is outside contract's period of performance."""
 
     code: str = "CONTRACT_POP_EXPIRED"
 
@@ -1804,11 +1289,7 @@ class ContractPOPExpiredError(ContractError):
 
 
 class CLINNotFoundError(ContractError):
-    """
-    Contract line item (CLIN) was not found.
-
-    Costs must be charged to valid CLINs.
-    """
+    """Contract line item (CLIN) was not found."""
 
     code: str = "CLIN_NOT_FOUND"
 
@@ -1821,9 +1302,7 @@ class CLINNotFoundError(ContractError):
 
 
 class CLINInactiveError(ContractError):
-    """
-    CLIN is not active and cannot accept charges.
-    """
+    """CLIN is not active and cannot accept charges."""
 
     code: str = "CLIN_INACTIVE"
 
@@ -1836,11 +1315,7 @@ class CLINInactiveError(ContractError):
 
 
 class UnallowableCostToContractError(ContractError):
-    """
-    Unallowable cost cannot be charged to a government contract.
-
-    DCAA requires strict segregation of allowable and unallowable costs.
-    """
+    """Unallowable cost cannot be charged to a government contract (DCAA)."""
 
     code: str = "UNALLOWABLE_COST_TO_CONTRACT"
 
@@ -1870,12 +1345,7 @@ class ActorError(FinanceKernelError):
 
 
 class InvalidActorError(ActorError):
-    """
-    Actor ID does not reference a valid, active party.
-
-    Every posting must be performed by a known actor. This guard
-    prevents phantom actor IDs from entering the audit trail.
-    """
+    """Actor ID does not reference a valid, active party."""
 
     code: str = "INVALID_ACTOR"
 
@@ -1887,13 +1357,7 @@ class InvalidActorError(ActorError):
 
 
 class ActorFrozenError(ActorError):
-    """
-    Actor is frozen and cannot perform postings.
-
-    A frozen actor cannot initiate new financial transactions.
-    This may be due to administrative hold, compliance review,
-    or termination.
-    """
+    """Actor is frozen and cannot perform postings."""
 
     code: str = "ACTOR_FROZEN"
 

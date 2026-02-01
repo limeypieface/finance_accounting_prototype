@@ -10,17 +10,18 @@ Covers:
 - Edge cases and error handling
 """
 
-import pytest
 from decimal import Decimal
 
-from finance_kernel.domain.values import Money, Currency
+import pytest
+
 from finance_engines.variance import (
+    VarianceAllocation,
     VarianceCalculator,
+    VarianceDisposition,
     VarianceResult,
     VarianceType,
-    VarianceDisposition,
-    VarianceAllocation,
 )
+from finance_kernel.domain.values import Currency, Money
 
 
 class TestPriceVariance:

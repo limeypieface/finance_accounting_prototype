@@ -39,6 +39,7 @@ Total: ~180 lines of module-specific code.
 This module orchestrates the kernel's journal posting and provides GL-specific features.
 """
 
+from finance_modules.gl.config import GLConfig
 from finance_modules.gl.models import (
     Account,
     AccountHierarchy,
@@ -53,7 +54,6 @@ from finance_modules.gl.models import (
 )
 from finance_modules.gl.profiles import GL_PROFILES
 from finance_modules.gl.workflows import PERIOD_CLOSE_WORKFLOW
-from finance_modules.gl.config import GLConfig
 
 __all__ = [
     "Account",

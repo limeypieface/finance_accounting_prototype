@@ -49,13 +49,19 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from finance_engines.tax import (
+    TaxCalculationResult,
+    TaxCalculator,
+    TaxRate,
+)
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
@@ -65,16 +71,11 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingService,
     ModulePostingStatus,
 )
-from finance_engines.tax import (
-    TaxCalculationResult,
-    TaxCalculator,
-    TaxRate,
-)
 from finance_modules.tax.helpers import (
-    calculate_temporary_differences,
+    aggregate_multi_jurisdiction,
     calculate_dta_valuation_allowance,
     calculate_effective_tax_rate,
-    aggregate_multi_jurisdiction,
+    calculate_temporary_differences,
 )
 from finance_modules.tax.models import (
     DeferredTaxAsset,

@@ -17,7 +17,7 @@ Usage:
 import logging
 import sys
 import time
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4, uuid5
@@ -406,12 +406,12 @@ def full_setup(session, clock):
     # Load YAML config
     from finance_config import get_active_config
     from finance_config.bridges import build_role_resolver
-    from finance_services.invokers import register_standard_engines
     from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-    from finance_kernel.models.party import Party, PartyType, PartyStatus
-    from finance_services.posting_orchestrator import PostingOrchestrator
+    from finance_kernel.models.party import Party, PartyStatus, PartyType
     from finance_kernel.services.module_posting_service import ModulePostingService
     from finance_modules import register_all_modules
+    from finance_services.invokers import register_standard_engines
+    from finance_services.posting_orchestrator import PostingOrchestrator
 
     config = get_active_config(legal_entity="*", as_of_date=EFFECTIVE)
     actor_id = uuid4()
@@ -471,15 +471,15 @@ def resume_setup(clock):
 
     Returns the same 6-tuple as full_setup().
     """
-    from finance_kernel.db.engine import get_session
-    from finance_kernel.db.immutability import register_immutability_listeners
     from finance_config import get_active_config
     from finance_config.bridges import build_role_resolver
-    from finance_services.invokers import register_standard_engines
+    from finance_kernel.db.engine import get_session
+    from finance_kernel.db.immutability import register_immutability_listeners
     from finance_kernel.models.party import Party
-    from finance_services.posting_orchestrator import PostingOrchestrator
     from finance_kernel.services.module_posting_service import ModulePostingService
     from finance_modules import register_all_modules
+    from finance_services.invokers import register_standard_engines
+    from finance_services.posting_orchestrator import PostingOrchestrator
 
     register_immutability_listeners()
 
@@ -516,9 +516,15 @@ def resume_setup(clock):
 def _build_simple_pipeline(session, role_resolver, orchestrator, actor_id):
     """Build a post() function for simple debit/credit events."""
     from finance_kernel.domain.accounting_intent import (
-        AccountingIntent, AccountingIntentSnapshot, IntentLine, LedgerIntent,
+        AccountingIntent,
+        AccountingIntentSnapshot,
+        IntentLine,
+        LedgerIntent,
     )
-    from finance_kernel.domain.meaning_builder import EconomicEventData, MeaningBuilderResult
+    from finance_kernel.domain.meaning_builder import (
+        EconomicEventData,
+        MeaningBuilderResult,
+    )
     from finance_kernel.models.event import Event
     from finance_kernel.utils.hashing import hash_payload
 
@@ -626,9 +632,9 @@ def print_menu():
 
 
 def show_journal(session):
-    from finance_kernel.models.journal import JournalEntry, JournalLine
     from finance_kernel.models.account import Account
     from finance_kernel.models.event import Event
+    from finance_kernel.models.journal import JournalEntry, JournalLine
 
     acct_map = {a.id: a for a in session.query(Account).all()}
     event_map = {}
@@ -771,7 +777,7 @@ def _render_trace(session, event_id, event_payload_map, acct_map, config):
                 print(f"    can_transact: {party.can_transact}")
             else:
                 print(f"    actor_id:     {actor_id}")
-                print(f"    actor_code:   (not found in party table)")
+                print("    actor_code:   (not found in party table)")
         except Exception:
             print(f"    actor_id:     {actor_id}")
 
@@ -1027,10 +1033,10 @@ def _render_trace(session, event_id, event_payload_map, acct_map, config):
 
 def show_trace(session, config=None):
     """Let the user pick a journal entry by sequence number and trace it."""
-    from finance_kernel.models.journal import JournalEntry
     from finance_kernel.models.account import Account
     from finance_kernel.models.event import Event
     from finance_kernel.models.interpretation_outcome import InterpretationOutcome
+    from finance_kernel.models.journal import JournalEntry
 
     entries = session.query(JournalEntry).order_by(JournalEntry.seq).all()
     if not entries:
@@ -1181,7 +1187,7 @@ def show_failed_traces(session, config=None):
         return
 
     if idx < 0 or idx >= len(non_posted):
-        print(f"\n  Number out of range.\n")
+        print("\n  Number out of range.\n")
         return
 
     outcome = non_posted[idx]
@@ -1197,10 +1203,10 @@ def show_failed_traces(session, config=None):
 
 def _build_close_orchestrator(session, orchestrator, clock, config):
     """Build a PeriodCloseOrchestrator from the existing PostingOrchestrator."""
-    from finance_modules.reporting.service import ReportingService
-    from finance_modules.reporting.config import ReportingConfig
-    from finance_modules.gl.service import GeneralLedgerService
     from finance_config.bridges import build_role_resolver
+    from finance_modules.gl.service import GeneralLedgerService
+    from finance_modules.reporting.config import ReportingConfig
+    from finance_modules.reporting.service import ReportingService
     from finance_services.period_close_orchestrator import PeriodCloseOrchestrator
 
     reporting_config = ReportingConfig(entity_name=ENTITY)
@@ -1282,7 +1288,7 @@ def handle_health_check(session, orchestrator, clock, config):
     print()
 
     # Activity
-    print(f"  Period Activity:")
+    print("  Period Activity:")
     print(f"    Entries: {result.period_entry_count}   "
           f"Rejected: {result.period_rejection_count}")
 
@@ -1426,7 +1432,7 @@ def handle_close_workflow(session, orchestrator, clock, config, actor_id):
         print(f"  Closed at:             {cert.closed_at}")
         print(f"  Correlation ID:        {cert.correlation_id}")
         print()
-        print(f"  Trial Balance:")
+        print("  Trial Balance:")
         print(f"    Debits:  ${cert.trial_balance_debits:>14,.2f}")
         print(f"    Credits: ${cert.trial_balance_credits:>14,.2f}")
         print()
@@ -1515,12 +1521,15 @@ def show_subledger_reports(session, clock):
 
 
 def show_reports(session, clock):
-    from finance_modules.reporting.service import ReportingService
-    from finance_modules.reporting.models import IncomeStatementFormat
     from finance_modules.reporting.config import ReportingConfig
+    from finance_modules.reporting.models import IncomeStatementFormat
+    from finance_modules.reporting.service import ReportingService
     from scripts.demo_reports import (
-        print_trial_balance, print_balance_sheet, print_income_statement,
-        print_equity_changes, print_cash_flow,
+        print_balance_sheet,
+        print_cash_flow,
+        print_equity_changes,
+        print_income_statement,
+        print_trial_balance,
     )
 
     config = ReportingConfig(entity_name=ENTITY)
@@ -1564,8 +1573,8 @@ def show_reports(session, clock):
 
 def post_subledger_scenario(session, post_simple, orchestrator, scenario, actor_id, clock):
     """Post a subledger scenario: GL entry + subledger entry."""
-    from finance_kernel.domain.subledger_control import SubledgerType
     from finance_engines.subledger import SubledgerEntry
+    from finance_kernel.domain.subledger_control import SubledgerType
     from finance_kernel.domain.values import Money
 
     # 1. Post the GL entry
@@ -1690,7 +1699,7 @@ def main() -> int:
         if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
             h.setLevel(logging.CRITICAL + 1)
 
-    from finance_kernel.db.engine import init_engine_from_url, get_session
+    from finance_kernel.db.engine import get_session, init_engine_from_url
     from finance_kernel.domain.clock import DeterministicClock
 
     try:
@@ -1699,7 +1708,7 @@ def main() -> int:
         print(f"  ERROR: {exc}", file=sys.stderr)
         return 1
 
-    clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+    clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC))
 
     # Check for existing data before deciding whether to reset or resume
     from finance_kernel.db.engine import get_session as _get_session
@@ -1839,7 +1848,7 @@ def main() -> int:
                     session.commit()
                     evt_id = result.outcome.source_event_id if result.outcome else "?"
                     print(f"\n  Posted: {desc} -- {_fmt(amt)}  (Dr {dr_lbl} / Cr {cr_lbl})")
-                    print(f"    Use T to trace this entry.")
+                    print("    Use T to trace this entry.")
                 else:
                     session.rollback()
                     err = getattr(result, 'error_message', None) or getattr(result, 'error_code', '?')
@@ -1878,7 +1887,7 @@ def main() -> int:
                     print(f"    GL: Dr {scenario['gl_debit']} / Cr {scenario['gl_credit']}")
                     print(f"    SL: {scenario['sl_type']} entity={scenario['entity_id']}  "
                           f"doc={scenario['doc_type']}")
-                    print(f"    Use S to view subledger reports, T to trace the GL entry.")
+                    print("    Use S to view subledger reports, T to trace the GL entry.")
                 else:
                     session.rollback()
                     err = getattr(result, 'error_message', None) or getattr(result, 'error_code', '?')

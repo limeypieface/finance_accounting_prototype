@@ -12,11 +12,13 @@ Invariants tested:
 - L5: Type compatibility per link type
 """
 
-import pytest
 from datetime import datetime
 from uuid import uuid4
 
+import pytest
+
 from finance_kernel.domain.economic_link import (
+    LINK_TYPE_SPECS,
     ArtifactRef,
     ArtifactType,
     EconomicLink,
@@ -24,7 +26,6 @@ from finance_kernel.domain.economic_link import (
     LinkQuery,
     LinkType,
     LinkTypeSpec,
-    LINK_TYPE_SPECS,
 )
 
 

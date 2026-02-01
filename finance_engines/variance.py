@@ -54,9 +54,9 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
 
-from finance_kernel.domain.values import Money, Currency
-from finance_kernel.logging_config import get_logger
 from finance_engines.tracer import traced_engine
+from finance_kernel.domain.values import Currency, Money
+from finance_kernel.logging_config import get_logger
 
 logger = get_logger("engines.variance")
 

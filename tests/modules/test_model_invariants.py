@@ -7,25 +7,38 @@ data corruption or impossible states if violated.
 These tests verify that invalid data is rejected with ValueError exceptions.
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
-from finance_modules.ap.models import Invoice, InvoiceLine, Vendor, PaymentBatch
-from finance_modules.ar.models import Invoice as ARInvoice, Receipt, Customer
-from finance_modules.inventory.models import (
-    Item, ItemType, InventoryReceipt, InventoryIssue,
-    StockLevel, StockTransfer,
-)
-from finance_modules.procurement.models import (
-    PurchaseOrder, PurchaseOrderLine, Requisition, RequisitionLine,
-)
-from finance_modules.wip.models import WorkOrder, Operation
-from finance_modules.payroll.models import Employee, PayType, PayFrequency
-from finance_modules.expense.models import ExpenseReport, ExpenseLine, ExpenseCategory, PaymentMethod
-from finance_modules.gl.models import Account, AccountType, FiscalPeriod
+import pytest
 
+from finance_modules.ap.models import Invoice, InvoiceLine, PaymentBatch, Vendor
+from finance_modules.ar.models import Customer, Receipt
+from finance_modules.ar.models import Invoice as ARInvoice
+from finance_modules.expense.models import (
+    ExpenseCategory,
+    ExpenseLine,
+    ExpenseReport,
+    PaymentMethod,
+)
+from finance_modules.gl.models import Account, AccountType, FiscalPeriod
+from finance_modules.inventory.models import (
+    InventoryIssue,
+    InventoryReceipt,
+    Item,
+    ItemType,
+    StockLevel,
+    StockTransfer,
+)
+from finance_modules.payroll.models import Employee, PayFrequency, PayType
+from finance_modules.procurement.models import (
+    PurchaseOrder,
+    PurchaseOrderLine,
+    Requisition,
+    RequisitionLine,
+)
+from finance_modules.wip.models import Operation, WorkOrder
 
 # =============================================================================
 # AP Invoice Amount Invariants

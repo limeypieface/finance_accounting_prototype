@@ -38,20 +38,20 @@ Total: ~150 lines of module-specific code.
 Aging, allocation, and matching come from shared engines.
 """
 
+from finance_modules.ar.config import ARConfig
 from finance_modules.ar.models import (
+    AutoApplyRule,
+    CreditDecision,
+    CreditMemo,
     Customer,
+    DunningHistory,
+    DunningLevel,
     Invoice,
     InvoiceLine,
     Receipt,
-    CreditMemo,
-    DunningHistory,
-    DunningLevel,
-    CreditDecision,
-    AutoApplyRule,
 )
 from finance_modules.ar.profiles import AR_PROFILES
 from finance_modules.ar.workflows import INVOICE_WORKFLOW, RECEIPT_WORKFLOW
-from finance_modules.ar.config import ARConfig
 
 __all__ = [
     "Customer",

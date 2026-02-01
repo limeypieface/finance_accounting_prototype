@@ -18,9 +18,10 @@ The balance solver mirrors _build_intent_lines() in policy_bridge.py:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from tests.benchmarks.engine_templates import get_engine_payload
 from tests.benchmarks.event_shape import (
     ContextField,
     EventShape,
@@ -28,7 +29,6 @@ from tests.benchmarks.event_shape import (
     ForeachField,
     LedgerSpec,
 )
-from tests.benchmarks.engine_templates import get_engine_payload
 
 
 @dataclass

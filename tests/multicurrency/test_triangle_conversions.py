@@ -11,17 +11,17 @@ These tests verify that:
 4. No phantom value is created or destroyed
 """
 
-import pytest
+from datetime import UTC, date, datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from uuid import uuid4
-from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
 
+import pytest
 from sqlalchemy import select
 
-from finance_kernel.domain.values import Money
-from finance_kernel.domain.currency import CurrencyRegistry
-from finance_kernel.models.exchange_rate import ExchangeRate
 from finance_kernel.domain.clock import DeterministicClock
+from finance_kernel.domain.currency import CurrencyRegistry
+from finance_kernel.domain.values import Money
+from finance_kernel.models.exchange_rate import ExchangeRate
 
 
 class TestTriangleCurrencyConversions:
@@ -35,7 +35,7 @@ class TestTriangleCurrencyConversions:
     @pytest.fixture
     def exchange_rates(self, session, test_actor_id):
         """Create exchange rates for testing."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         rates = [
             # USD -> EUR
@@ -119,7 +119,7 @@ class TestTriangleCurrencyConversions:
         # Tolerance: 1% of the original amount (reasonable for compound rounding)
         tolerance = amount_usd * Decimal("0.01")
 
-        print(f"\n[E3] Triangle Conversion Test:")
+        print("\n[E3] Triangle Conversion Test:")
         print(f"  USD: {amount_usd}")
         print(f"  Path 1 (USD->EUR->GBP): {step2_gbp} GBP")
         print(f"  Path 2 (USD->GBP direct): {direct_gbp} GBP")
@@ -157,7 +157,7 @@ class TestTriangleCurrencyConversions:
         change = step3_usd - amount_usd
         change_percent = (abs(change) / amount_usd) * Decimal("100")
 
-        print(f"\n[E3] Round-Trip Test:")
+        print("\n[E3] Round-Trip Test:")
         print(f"  Start: {amount_usd} USD")
         print(f"  After USD->EUR: {step1_eur} EUR")
         print(f"  After EUR->GBP: {step2_gbp} GBP")
@@ -190,7 +190,7 @@ class TestTriangleCurrencyConversions:
         final_change = abs(current - amount)
         change_percent = (final_change / amount) * Decimal("100")
 
-        print(f"\n[E3] Compound Conversion Test (100 round-trips):")
+        print("\n[E3] Compound Conversion Test (100 round-trips):")
         print(f"  Start: {amount}")
         print(f"  End: {current}")
         print(f"  Change: {final_change} ({change_percent:.2f}%)")
@@ -221,7 +221,7 @@ class TestArbitrageDetection:
         # Calculate product of rates around triangle
         triangle_product = usd_eur * eur_gbp * gbp_usd
 
-        print(f"\n[Arbitrage Detection]:")
+        print("\n[Arbitrage Detection]:")
         print(f"  USD/EUR: {usd_eur}")
         print(f"  EUR/GBP: {eur_gbp}")
         print(f"  GBP/USD: {gbp_usd}")
@@ -253,7 +253,7 @@ class TestArbitrageDetection:
             Decimal("0.0001"), rounding=ROUND_HALF_UP
         )
 
-        print(f"\n[Inverse Rate Consistency]:")
+        print("\n[Inverse Rate Consistency]:")
         print(f"  USD/EUR: {usd_eur}")
         print(f"  Expected EUR/USD: {expected_eur_usd}")
 
@@ -309,7 +309,7 @@ class TestRoundingDocumentation:
         rounding_lines = [l for l in entry.lines if l.is_rounding]
 
         if rounding_lines:
-            print(f"\n[Rounding Documentation]:")
+            print("\n[Rounding Documentation]:")
             for line in rounding_lines:
                 print(f"  Rounding line: {line.side.value} {line.amount} {line.currency}")
 
@@ -343,7 +343,7 @@ class TestCurrencyPrecision:
         usd_tolerance = CurrencyRegistry.get_rounding_tolerance("USD")
         jpy_tolerance = CurrencyRegistry.get_rounding_tolerance("JPY")
 
-        print(f"\n[Currency Precision]:")
+        print("\n[Currency Precision]:")
         print(f"  USD tolerance: {usd_tolerance}")
         print(f"  JPY tolerance: {jpy_tolerance}")
 
@@ -364,7 +364,7 @@ class TestCurrencyPrecision:
         # JPY should be rounded to whole numbers
         jpy_rounded = jpy_result.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
-        print(f"\n[Cross-Currency Precision]:")
+        print("\n[Cross-Currency Precision]:")
         print(f"  USD: {usd_amount}")
         print(f"  Rate: {usd_jpy_rate}")
         print(f"  Raw JPY: {jpy_result}")

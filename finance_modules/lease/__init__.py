@@ -36,6 +36,7 @@ assets on the balance sheet.  All lease transactions produce immutable
 journal entries with full provenance through the kernel audit chain (R11).
 """
 
+from finance_modules.lease.config import LeaseConfig
 from finance_modules.lease.models import (
     AmortizationScheduleLine,
     Lease,
@@ -46,7 +47,6 @@ from finance_modules.lease.models import (
     ROUAsset,
 )
 from finance_modules.lease.profiles import LEASE_PROFILES
-from finance_modules.lease.config import LeaseConfig
 
 __all__ = [
     "AmortizationScheduleLine",

@@ -17,9 +17,6 @@ from finance_kernel.domain.schemas.base import (
     EventFieldType,
     EventSchema,
 )
-from finance_kernel.domain.schemas.registry import (
-    EventSchemaRegistry,
-)
 
 # Import definitions to trigger registration
 from finance_kernel.domain.schemas.definitions import (
@@ -32,7 +29,9 @@ from finance_kernel.domain.schemas.definitions import (
     inventory,
     payroll,
 )
-
+from finance_kernel.domain.schemas.registry import (
+    EventSchemaRegistry,
+)
 
 # ============================================================================
 # Helper Functions

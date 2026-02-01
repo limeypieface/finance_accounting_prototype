@@ -21,7 +21,6 @@ from finance_modules.cash.orm import (
 )
 from tests.modules.conftest import TEST_BANK_ACCOUNT_ID
 
-
 # ---------------------------------------------------------------------------
 # 1. BankAccountModel
 # ---------------------------------------------------------------------------

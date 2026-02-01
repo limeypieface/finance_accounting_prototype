@@ -57,13 +57,26 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Sequence
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from finance_engines.allocation import (
+    AllocationEngine,
+    AllocationMethod,
+    AllocationResult,
+    AllocationTarget,
+)
+from finance_engines.allocation_cascade import (
+    AllocationStep,
+    AllocationStepResult,
+    build_dcaa_cascade,
+    execute_cascade,
+)
+from finance_engines.variance import VarianceCalculator, VarianceResult
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType
 from finance_kernel.domain.values import Money
@@ -75,19 +88,6 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingService,
     ModulePostingStatus,
 )
-from finance_engines.allocation import (
-    AllocationEngine,
-    AllocationMethod,
-    AllocationResult,
-    AllocationTarget,
-)
-from finance_engines.allocation_cascade import (
-    AllocationStep,
-    AllocationStepResult,
-    execute_cascade,
-    build_dcaa_cascade,
-)
-from finance_engines.variance import VarianceCalculator, VarianceResult
 from finance_modules.payroll.helpers import (
     calculate_federal_withholding,
     calculate_fica,

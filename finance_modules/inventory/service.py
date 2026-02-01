@@ -49,13 +49,16 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from finance_engines.valuation import ConsumptionResult, CostMethod
+from finance_engines.variance import VarianceCalculator, VarianceResult
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType
 from finance_kernel.domain.values import Money, Quantity
@@ -67,13 +70,14 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingService,
     ModulePostingStatus,
 )
-from finance_services.valuation_service import ValuationLayer
-from finance_engines.valuation import ConsumptionResult, CostMethod
-from finance_engines.variance import VarianceCalculator, VarianceResult
+from finance_modules.inventory.helpers import (
+    calculate_eoq as _calculate_eoq,
+)
+from finance_modules.inventory.helpers import (
+    calculate_reorder_point as _calculate_reorder_point,
+)
 from finance_modules.inventory.helpers import (
     classify_abc as _classify_abc,
-    calculate_reorder_point as _calculate_reorder_point,
-    calculate_eoq as _calculate_eoq,
 )
 from finance_modules.inventory.models import (
     ABCClassification,
@@ -82,10 +86,11 @@ from finance_modules.inventory.models import (
     ReorderPoint,
 )
 from finance_modules.inventory.orm import (
-    InventoryReceiptModel,
-    InventoryAdjustmentModel,
     CycleCountModel,
+    InventoryAdjustmentModel,
+    InventoryReceiptModel,
 )
+from finance_services.valuation_service import ValuationLayer
 
 logger = get_logger("modules.inventory.service")
 

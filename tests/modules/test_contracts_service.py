@@ -13,14 +13,13 @@ from __future__ import annotations
 import inspect
 from datetime import date
 from decimal import Decimal
-from uuid import uuid4, uuid5, NAMESPACE_DNS
+from uuid import NAMESPACE_DNS, uuid4, uuid5
 
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.contracts.service import GovernmentContractsService
 from tests.modules.conftest import TEST_CUSTOMER_ID
-
 
 # =============================================================================
 # Fixtures
@@ -50,7 +49,7 @@ def test_gov_contract(session, test_actor_id, test_customer_party):
     uuid5(NAMESPACE_DNS, contract_id).  ORM FK constraints require the
     corresponding kernel Contract row to exist.
     """
-    from finance_kernel.models.contract import Contract, ContractType, ContractStatus
+    from finance_kernel.models.contract import Contract, ContractStatus, ContractType
     existing = session.get(Contract, _CONTRACT_UUID)
     if existing is not None:
         return existing
@@ -138,10 +137,9 @@ class TestContractsServiceIntegration:
             BillingContractType,
             BillingInput,
             CostBreakdown,
+            IndirectRates,
         )
         from finance_kernel.domain.values import Money
-
-        from finance_engines.billing import IndirectRates
 
         billing_input = BillingInput(
             contract_type=BillingContractType.CPFF,
@@ -256,6 +254,7 @@ class TestContractsServiceIntegration:
     def test_compile_ice(self, contracts_service, deterministic_clock):
         """Compile ICE submission schedules (pure engine computation)."""
         from datetime import date
+
         from finance_engines.ice import (
             ContractCostInput,
             ICEInput,

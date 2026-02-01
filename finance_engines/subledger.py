@@ -56,7 +56,9 @@ from decimal import Decimal
 from enum import Enum
 from uuid import UUID, uuid4
 
-from finance_kernel.domain.subledger_control import SubledgerType  # SL-G9: canonical enum from kernel domain
+from finance_kernel.domain.subledger_control import (
+    SubledgerType,  # SL-G9: canonical enum from kernel domain
+)
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 

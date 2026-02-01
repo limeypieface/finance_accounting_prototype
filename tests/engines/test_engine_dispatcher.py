@@ -12,9 +12,10 @@ Covers:
 - Integration: invokers produce correct outputs for known inputs
 """
 
-import pytest
 from decimal import Decimal
 from typing import Any
+
+import pytest
 
 from finance_config.compiler import (
     CompiledPolicy,
@@ -31,16 +32,15 @@ from finance_config.schema import (
     PolicyMeaningDef,
     PolicyTriggerDef,
 )
-from finance_services.engine_dispatcher import (
-    EngineDispatcher,
-    EngineInvoker,
-)
 from finance_kernel.domain.engine_types import (
     EngineDispatchResult,
     EngineTraceRecord,
 )
+from finance_services.engine_dispatcher import (
+    EngineDispatcher,
+    EngineInvoker,
+)
 from finance_services.invokers import register_standard_engines
-
 
 # ---------------------------------------------------------------------------
 # Test Helpers

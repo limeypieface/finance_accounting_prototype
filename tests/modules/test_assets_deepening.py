@@ -22,7 +22,6 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
-from tests.modules.conftest import TEST_ASSET_ID
 from finance_modules.assets.helpers import (
     calculate_impairment_loss,
     double_declining_balance,
@@ -36,7 +35,7 @@ from finance_modules.assets.models import (
     DepreciationComponent,
 )
 from finance_modules.assets.service import FixedAssetService
-
+from tests.modules.conftest import TEST_ASSET_ID
 
 # =============================================================================
 # Fixtures

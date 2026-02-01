@@ -46,85 +46,32 @@ from finance_kernel.logging_config import get_logger
 
 logger = get_logger("engines")
 
-from finance_engines.variance import (
-    VarianceCalculator,
-    VarianceResult,
-    VarianceType,
-    VarianceDisposition,
+from finance_engines.aging import (
+    AgeBucket,
+    AgedItem,
+    AgingCalculator,
+    AgingReport,
 )
 from finance_engines.allocation import (
     AllocationEngine,
-    AllocationTarget,
     AllocationLine,
-    AllocationResult,
     AllocationMethod,
-)
-from finance_engines.matching import (
-    MatchingEngine,
-    MatchCandidate,
-    MatchResult,
-    MatchTolerance,
-    MatchStatus,
-    MatchType,
-    ToleranceType,
-)
-from finance_engines.aging import (
-    AgingCalculator,
-    AgeBucket,
-    AgedItem,
-    AgingReport,
-)
-from finance_engines.subledger import (
-    SubledgerEntry,
-)
-from finance_engines.tax import (
-    TaxCalculator,
-    TaxRate,
-    TaxLine,
-    TaxCalculationResult,
-    TaxType,
-)
-
-# Pure domain objects from composite engine subpackages
-from finance_engines.valuation import (
-    CostLot,
-    CostLayer,
-    CostLayerConsumption,
-    ConsumptionResult,
-    StandardCostResult,
-    CostMethod,
-)
-from finance_engines.reconciliation import (
-    ReconciliationState,
-    ReconciliationStatus,
-    DocumentMatch,
-    PaymentApplication,
-    ThreeWayMatchResult,
-    BankReconciliationLine,
-    BankReconciliationStatus,
-)
-from finance_engines.correction import (
-    UnwindPlan,
-    AffectedArtifact,
-    CompensatingEntry,
-    CompensatingLine,
-    CorrectionResult,
-    CorrectionType,
-    UnwindStrategy,
+    AllocationResult,
+    AllocationTarget,
 )
 from finance_engines.allocation_cascade import (
     AllocationBase,
     AllocationStep,
     AllocationStepResult,
-    execute_cascade,
     build_dcaa_cascade,
     calculate_contract_total,
+    execute_cascade,
 )
 from finance_engines.billing import (
     BillingContractType,
-    BillingLineType,
     BillingInput,
     BillingLineItem,
+    BillingLineType,
     BillingResult,
     CostBreakdown,
     IndirectRates,
@@ -132,23 +79,34 @@ from finance_engines.billing import (
     MilestoneEntry,
     RateAdjustmentInput,
     RateAdjustmentResult,
-    calculate_billing,
-    calculate_indirect_costs,
-    calculate_fee,
-    calculate_rate_adjustment,
-    apply_withholding,
     apply_funding_limit,
+    apply_withholding,
+    calculate_billing,
+    calculate_fee,
+    calculate_indirect_costs,
+    calculate_rate_adjustment,
+)
+from finance_engines.correction import (
+    AffectedArtifact,
+    CompensatingEntry,
+    CompensatingLine,
+    CorrectionResult,
+    CorrectionType,
+    UnwindPlan,
+    UnwindStrategy,
 )
 from finance_engines.ice import (
-    ICEScheduleType,
-    CostElement,
     AllowabilityStatus,
+    ContractCeilingInput,
+    ContractCostInput,
+    CostElement,
+    ICEInput,
+    ICEScheduleType,
+    ICESubmission,
+    ICEValidationFinding,
+    IndirectPoolInput,
     LaborDetailInput,
     OtherDirectCostInput,
-    ContractCostInput,
-    IndirectPoolInput,
-    ContractCeilingInput,
-    ICEInput,
     ScheduleA,
     ScheduleALine,
     ScheduleB,
@@ -163,8 +121,6 @@ from finance_engines.ice import (
     ScheduleILine,
     ScheduleJ,
     ScheduleJLine,
-    ICEValidationFinding,
-    ICESubmission,
     compile_ice_submission,
     compile_schedule_a,
     compile_schedule_b,
@@ -173,6 +129,50 @@ from finance_engines.ice import (
     compile_schedule_h,
     compile_schedule_i,
     compile_schedule_j,
+)
+from finance_engines.matching import (
+    MatchCandidate,
+    MatchingEngine,
+    MatchResult,
+    MatchStatus,
+    MatchTolerance,
+    MatchType,
+    ToleranceType,
+)
+from finance_engines.reconciliation import (
+    BankReconciliationLine,
+    BankReconciliationStatus,
+    DocumentMatch,
+    PaymentApplication,
+    ReconciliationState,
+    ReconciliationStatus,
+    ThreeWayMatchResult,
+)
+from finance_engines.subledger import (
+    SubledgerEntry,
+)
+from finance_engines.tax import (
+    TaxCalculationResult,
+    TaxCalculator,
+    TaxLine,
+    TaxRate,
+    TaxType,
+)
+
+# Pure domain objects from composite engine subpackages
+from finance_engines.valuation import (
+    ConsumptionResult,
+    CostLayer,
+    CostLayerConsumption,
+    CostLot,
+    CostMethod,
+    StandardCostResult,
+)
+from finance_engines.variance import (
+    VarianceCalculator,
+    VarianceDisposition,
+    VarianceResult,
+    VarianceType,
 )
 
 __all__ = [

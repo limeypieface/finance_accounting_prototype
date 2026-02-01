@@ -44,9 +44,10 @@ metrics.  All journal entries feed the kernel audit chain (R11).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session

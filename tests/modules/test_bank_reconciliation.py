@@ -11,18 +11,13 @@ using real architecture:
 CRITICAL: Bank reconciliation ensures cash records match bank statements.
 """
 
-import pytest
 from dataclasses import replace
-from decimal import Decimal
 from datetime import date, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
-from finance_modules.cash.models import (
-    BankTransaction,
-    Reconciliation,
-    ReconciliationStatus,
-    TransactionType,
-)
+import pytest
+
 from finance_engines.matching import (
     MatchCandidate,
     MatchingEngine,
@@ -34,9 +29,14 @@ from finance_engines.reconciliation.domain import (
     BankReconciliationLine,
     BankReconciliationStatus,
 )
-from finance_kernel.domain.values import Money
 from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType
-
+from finance_kernel.domain.values import Money
+from finance_modules.cash.models import (
+    BankTransaction,
+    Reconciliation,
+    ReconciliationStatus,
+    TransactionType,
+)
 
 # =============================================================================
 # Helpers

@@ -20,7 +20,6 @@ from finance_kernel.domain.schemas.base import (
 )
 from finance_kernel.domain.schemas.registry import EventSchemaRegistry
 
-
 # ============================================================================
 # contract.cost_incurred - Recording allowable costs to contract
 # ============================================================================

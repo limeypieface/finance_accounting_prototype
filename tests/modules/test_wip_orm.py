@@ -7,16 +7,15 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from finance_modules.wip.orm import (
-    WorkOrderModel,
-    WorkOrderLineModel,
-    OperationModel,
-    LaborEntryModel,
-    OverheadApplicationModel,
     ByproductRecordModel,
+    LaborEntryModel,
+    OperationModel,
+    OverheadApplicationModel,
     ProductionCostSummaryModel,
     UnitCostBreakdownModel,
+    WorkOrderLineModel,
+    WorkOrderModel,
 )
-
 
 # ---------------------------------------------------------------------------
 # Local helpers -- create parent rows with correct ORM field names

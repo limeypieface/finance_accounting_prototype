@@ -8,8 +8,8 @@ Validates that ALL 12 module services:
 
 from __future__ import annotations
 
-import inspect
 import importlib
+import inspect
 from decimal import Decimal
 from uuid import uuid4
 
@@ -17,15 +17,15 @@ import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from tests.modules.conftest import (
-    TEST_VENDOR_ID,
-    TEST_CUSTOMER_ID,
-    TEST_BANK_ACCOUNT_ID,
     TEST_ASSET_CATEGORY_ID,
-    TEST_TAX_JURISDICTION_ID,
-    TEST_WORK_ORDER_ID,
+    TEST_BANK_ACCOUNT_ID,
+    TEST_CUSTOMER_ID,
     TEST_OPERATION_ID,
     TEST_PAY_PERIOD_ID,
     TEST_PAYROLL_EMPLOYEE_ID,
+    TEST_TAX_JURISDICTION_ID,
+    TEST_VENDOR_ID,
+    TEST_WORK_ORDER_ID,
 )
 
 # All 12 module service classes

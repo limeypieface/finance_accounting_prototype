@@ -1,34 +1,12 @@
-"""
-PolicyAuthority -- Governance layer controlling economic capabilities.
-
-Responsibility:
-    Controls which modules may create/clear balances, capitalize, recognize
-    revenue, write off, and which economic types can post to which ledgers.
-    Prevents "creative accounting by configuration."
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    (governance-level -- enforced at MeaningBuilder, AccountingIntent, and
-    JournalWriter enforcement points)
-
-Failure modes:
-    - PolicyViolation returned (never raises) when capability, ledger
-      access, or economic type constraints are violated.
-
-Audit relevance:
-    All policies are versioned and snapshotable for audit and replay.
-    Auditors verify that modules operated within their authorized
-    capabilities and did not post to forbidden ledgers.
-"""
+"""PolicyAuthority -- Governance layer controlling economic capabilities."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Mapping, FrozenSet
+from typing import FrozenSet
 from uuid import UUID
 
 from finance_kernel.logging_config import get_logger
@@ -37,12 +15,7 @@ logger = get_logger("domain.policy_authority")
 
 
 class EconomicCapability(str, Enum):
-    """
-    Economic actions that can be authorized.
-
-    These are the fundamental accounting actions that modules can perform.
-    Each capability has specific audit and control implications.
-    """
+    """Economic actions that can be authorized."""
 
     # Balance operations
     CREATE_BALANCE = "create_balance"  # Create new account balance
@@ -78,11 +51,7 @@ class EconomicCapability(str, Enum):
 
 
 class ModuleType(str, Enum):
-    """
-    Module types that can hold economic authority.
-
-    These represent the major functional areas of the system.
-    """
+    """Module types that can hold economic authority."""
 
     GL = "gl"  # General Ledger
     AP = "ap"  # Accounts Payable
@@ -99,18 +68,7 @@ class ModuleType(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ModuleAuthorization:
-    """
-    Authorization for a module to perform economic actions.
-
-    Contract:
-        Defines capabilities, allowed ledgers, and restricted roles for
-        a single module type.
-
-    Guarantees:
-        - Frozen dataclass -- immutable after construction.
-        - ``has_capability()`` / ``can_post_to_ledger()`` / ``can_use_role()``
-          are deterministic membership checks.
-    """
+    """Authorization for a module to perform economic actions."""
 
     module_type: ModuleType
     capabilities: frozenset[EconomicCapability]
@@ -142,12 +100,7 @@ class ModuleAuthorization:
 
 @dataclass(frozen=True, slots=True)
 class LedgerRoleMapping:
-    """
-    Maps a ledger role to its control account.
-
-    This binding ensures that subledger postings always
-    correspond to the correct GL control account.
-    """
+    """Maps a ledger role to its control account."""
 
     ledger_id: str
     role_code: str
@@ -159,11 +112,7 @@ class LedgerRoleMapping:
 
 @dataclass(frozen=True, slots=True)
 class EconomicTypeConstraint:
-    """
-    Constraint on which ledgers an economic type can affect.
-
-    Prevents posting economic events to inappropriate ledgers.
-    """
+    """Constraint on which ledgers an economic type can affect."""
 
     economic_type: str  # e.g., "inventory.receipt", "ap.invoice"
     required_ledgers: frozenset[str]  # Must post to these
@@ -171,11 +120,7 @@ class EconomicTypeConstraint:
     forbidden_ledgers: frozenset[str]  # Never post to these
 
     def validate_ledgers(self, target_ledgers: frozenset[str]) -> list[str]:
-        """
-        Validate that target ledgers satisfy constraints.
-
-        Returns list of error messages (empty if valid).
-        """
+        """Validate that target ledgers satisfy constraints."""
         errors: list[str] = []
 
         # Check required ledgers are present
@@ -223,24 +168,7 @@ class PolicyViolation:
 
 @dataclass(frozen=True)
 class PolicyAuthority:
-    """
-    Central registry of all economic policies.
-
-    This is the source of truth for what actions are permitted
-    in the system.  All enforcement points consult this registry.
-
-    Contract:
-        Immutable, versioned.  Changes create new versions (never mutate).
-
-    Guarantees:
-        - ``validate_module_action()`` and ``validate_economic_type_posting()``
-          return lists of ``PolicyViolation`` (empty if valid).
-        - Frozen dataclass -- the registry itself is immutable.
-
-    Non-goals:
-        - Does NOT persist policies (services handle serialisation).
-        - Does NOT enforce at posting time (enforcement points consult it).
-    """
+    """Central registry of all economic policies."""
 
     version: int
     effective_from: datetime
@@ -310,11 +238,7 @@ class PolicyAuthority:
         ledger_id: str,
         as_of: datetime | None = None,
     ) -> list[PolicyViolation]:
-        """
-        Validate that a module can perform an action on a ledger.
-
-        Returns list of policy violations (empty if valid).
-        """
+        """Validate that a module can perform an action on a ledger."""
         violations: list[PolicyViolation] = []
 
         auth = self.get_module_authorization(module_type, as_of)
@@ -390,11 +314,7 @@ class PolicyAuthority:
         economic_type: str,
         target_ledgers: frozenset[str],
     ) -> list[PolicyViolation]:
-        """
-        Validate that an economic type can post to target ledgers.
-
-        Returns list of policy violations (empty if valid).
-        """
+        """Validate that an economic type can post to target ledgers."""
         violations: list[PolicyViolation] = []
 
         constraint = self.get_economic_type_constraint(economic_type)
@@ -445,19 +365,7 @@ class PolicyAuthority:
 
 
 class PolicyAuthorityBuilder:
-    """
-    Builder for constructing PolicyAuthority instances.
-
-    Contract:
-        Fluent API: call ``authorize_module()``, ``map_ledger_role()``,
-        ``constrain_economic_type()``, then ``build()``.
-
-    Guarantees:
-        ``build()`` returns an immutable ``PolicyAuthority``.
-
-    Non-goals:
-        - Not thread-safe during construction (builder is mutable).
-    """
+    """Builder for constructing PolicyAuthority instances."""
 
     def __init__(self, version: int = 1):
         self._version = version
@@ -615,11 +523,7 @@ def create_standard_inventory_authorization() -> ModuleAuthorization:
 
 
 def create_default_policy_registry() -> PolicyAuthority:
-    """
-    Create a default policy registry with standard configurations.
-
-    This provides sensible defaults for a typical ERP setup.
-    """
+    """Create a default policy registry with standard configurations."""
     builder = PolicyAuthorityBuilder(version=1)
 
     # Add standard module authorizations

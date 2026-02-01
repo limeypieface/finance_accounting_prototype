@@ -68,45 +68,45 @@ Usage:
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
-from typing import Mapping, Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
-from finance_kernel.domain.values import Money, Quantity
+from finance_engines.allocation import (
+    AllocationEngine,
+    AllocationMethod,
+    AllocationTarget,
+)
+from finance_engines.valuation.cost_lot import (
+    ConsumptionResult,
+    CostLayer,
+    CostLayerConsumption,
+    CostLot,
+    CostMethod,
+    StandardCostResult,
+)
 from finance_kernel.domain.economic_link import (
     ArtifactRef,
     ArtifactType,
     EconomicLink,
     LinkType,
 )
+from finance_kernel.domain.values import Money, Quantity
 from finance_kernel.exceptions import (
     InsufficientInventoryError,
-    LotNotFoundError,
     LotDepletedError,
+    LotNotFoundError,
     StandardCostNotFoundError,
 )
+from finance_kernel.logging_config import get_logger
 from finance_kernel.models.cost_lot import CostLotModel
 from finance_kernel.services.link_graph_service import LinkGraphService
-from finance_kernel.logging_config import get_logger
-
-from finance_engines.allocation import (
-    AllocationEngine,
-    AllocationTarget,
-    AllocationMethod,
-)
-from finance_engines.valuation.cost_lot import (
-    CostLot,
-    CostLayer,
-    CostLayerConsumption,
-    ConsumptionResult,
-    StandardCostResult,
-    CostMethod,
-)
 
 logger = get_logger("services.valuation")
 
@@ -245,7 +245,7 @@ class ValuationLayer:
             parent_ref=source_ref,
             child_ref=lot.lot_ref,
             creating_event_id=creating_event_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             metadata={
                 "quantity": str(quantity.value),
                 "unit": quantity.unit,
@@ -698,7 +698,7 @@ class ValuationLayer:
             source_event_id=creating_event_id,
             source_artifact_type=lot.source_ref.artifact_type.value,
             source_artifact_id=lot.source_ref.artifact_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             lot_metadata=dict(lot.metadata) if lot.metadata else None,
         )
         self.session.add(model)
@@ -883,7 +883,7 @@ class ValuationLayer:
             parent_ref=lot.lot_ref,
             child_ref=consuming_ref,
             creating_event_id=creating_event_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             metadata={
                 "quantity_consumed": str(consumption.quantity_consumed.value),
                 "unit": consumption.quantity_consumed.unit,

@@ -23,7 +23,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4, uuid5
@@ -501,20 +501,20 @@ def main() -> int:
 
     from finance_config import get_active_config
     from finance_config.bridges import build_role_resolver
-    from finance_services.invokers import register_standard_engines
     from finance_kernel.db.engine import (
-        init_engine_from_url,
         drop_tables,
         get_session,
+        init_engine_from_url,
     )
-    from finance_modules._orm_registry import create_all_tables
     from finance_kernel.db.immutability import register_immutability_listeners
     from finance_kernel.domain.clock import DeterministicClock
     from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-    from finance_kernel.models.party import Party, PartyType, PartyStatus
+    from finance_kernel.models.party import Party, PartyStatus, PartyType
     from finance_kernel.services.module_posting_service import ModulePostingService
-    from finance_services.posting_orchestrator import PostingOrchestrator
     from finance_modules import register_all_modules
+    from finance_modules._orm_registry import create_all_tables
+    from finance_services.invokers import register_standard_engines
+    from finance_services.posting_orchestrator import PostingOrchestrator
 
     db_url = args.db_url
 
@@ -563,7 +563,7 @@ def main() -> int:
     register_immutability_listeners()
 
     session = get_session()
-    clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+    clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC))
     actor_id = uuid4()
 
     # -----------------------------------------------------------------
@@ -720,7 +720,7 @@ def main() -> int:
     first = next((p for p in posted_events if p[2]), None)
     if first:
         print(f"    python3 scripts/trace.py --event-id {first[1]}")
-    print(f"    python3 scripts/trace.py --list")
+    print("    python3 scripts/trace.py --list")
     print()
 
     # -----------------------------------------------------------------

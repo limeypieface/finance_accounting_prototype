@@ -52,8 +52,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -68,6 +69,7 @@ from finance_kernel.domain.reference_snapshot import (
     SnapshotRequest,
     SnapshotValidationResult,
 )
+
 
 class ReferenceSnapshotService:
     """
@@ -96,7 +98,7 @@ class ReferenceSnapshotService:
         self,
         session: Session,
         clock: Clock | None = None,
-        compiled_pack: "CompiledPolicyPack | None" = None,
+        compiled_pack: CompiledPolicyPack | None = None,
     ):
         """
         Initialize the service.
@@ -432,8 +434,9 @@ class ReferenceSnapshotService:
         Any account addition/removal changes the version.
         Content hash provides the true integrity check.
         """
-        from finance_kernel.models.account import Account
         from sqlalchemy import func
+
+        from finance_kernel.models.account import Account
 
         count = self._session.execute(
             select(func.count()).select_from(Account)
@@ -442,8 +445,9 @@ class ReferenceSnapshotService:
 
     def _get_dimension_schema_version(self) -> int:
         """Get current dimension schema version from record count."""
-        from finance_kernel.models.dimensions import Dimension
         from sqlalchemy import func
+
+        from finance_kernel.models.dimensions import Dimension
 
         count = self._session.execute(
             select(func.count()).select_from(Dimension)
@@ -452,8 +456,9 @@ class ReferenceSnapshotService:
 
     def _get_fx_rates_version(self) -> int:
         """Get current FX rates version from record count."""
-        from finance_kernel.models.exchange_rate import ExchangeRate
         from sqlalchemy import func
+
+        from finance_kernel.models.exchange_rate import ExchangeRate
 
         count = self._session.execute(
             select(func.count()).select_from(ExchangeRate)

@@ -16,7 +16,6 @@ import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

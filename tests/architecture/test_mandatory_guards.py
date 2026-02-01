@@ -19,12 +19,13 @@ G15 — CompilationReceipt for PolicySelector
 
 from __future__ import annotations
 
-import pytest
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from unittest.mock import MagicMock, PropertyMock, patch
 from uuid import uuid4
+
+import pytest
 
 from finance_kernel.domain.accounting_policy import (
     AccountingPolicy,
@@ -44,7 +45,6 @@ from finance_kernel.domain.policy_selector import (
     PolicySelector,
     UncompiledPolicyError,
 )
-
 
 # ============================================================================
 # Helpers

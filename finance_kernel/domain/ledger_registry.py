@@ -1,25 +1,4 @@
-"""
-LedgerRegistry -- Required account roles per economic type per ledger.
-
-Responsibility:
-    Defines what account roles are required for each economic type on each
-    ledger.  Used by PolicyCompiler for P7 validation (semantic completeness).
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    P7 -- Compiler rejects profiles that don't map to all required account
-          roles for the target ledger.
-
-Failure modes:
-    (none -- returns empty tuples for unknown ledgers or economic types)
-
-Audit relevance:
-    Auditors verify that every profile provides mappings for all roles
-    required by the LedgerRegistry (P7).  Missing roles would mean the
-    posting pipeline cannot resolve accounts at L1.
-"""
+"""LedgerRegistry -- Required account roles per economic type per ledger."""
 
 from dataclasses import dataclass
 from typing import ClassVar
@@ -31,45 +10,14 @@ logger = get_logger("domain.ledger_registry")
 
 @dataclass(frozen=True)
 class LedgerRequirements:
-    """
-    Requirements for a ledger by economic type.
-
-    Contract:
-        Maps each economic type to the account roles it must provide.
-
-    Guarantees:
-        Frozen dataclass -- immutable after construction.
-
-    Attributes:
-        required_roles: Account roles required for each economic type
-        dimension_requirements: Dimensions that must be provided
-    """
+    """Requirements for a ledger by economic type."""
 
     required_roles: dict[str, tuple[str, ...]]  # economic_type -> (role1, role2, ...)
     dimension_requirements: tuple[str, ...] = ()
 
 
 class LedgerRegistry:
-    """
-    Registry for ledger requirements.
-
-    Contract:
-        Class-level singleton registry.  ``register()`` adds a ledger,
-        ``get_required_roles()`` queries it.
-
-    Guarantees:
-        - ``get_required_roles()`` returns an empty tuple (never None) for
-          unknown ledgers or economic types.
-        - ``list_ledgers()`` returns a sorted list of all registered ledger IDs.
-
-    Non-goals:
-        - Does NOT persist to database (in-memory registry, populated at
-          module load and by config assembly).
-        - Does NOT resolve roles to COA accounts (that is L1 / JournalWriter).
-
-    Invariants enforced:
-        P7 -- Compiler rejects profiles that don't map to required accounts.
-    """
+    """Registry for ledger requirements (P7)."""
 
     # Class-level registry: ledger_id -> LedgerRequirements
     _ledgers: ClassVar[dict[str, LedgerRequirements]] = {}
@@ -81,14 +29,7 @@ class LedgerRegistry:
         required_roles: dict[str, tuple[str, ...]],
         dimension_requirements: tuple[str, ...] = (),
     ) -> None:
-        """
-        Register ledger requirements.
-
-        Args:
-            ledger_id: Ledger identifier (e.g., "GL")
-            required_roles: Map of economic_type -> required account roles
-            dimension_requirements: Required dimensions for this ledger
-        """
+        """Register ledger requirements."""
         cls._ledgers[ledger_id] = LedgerRequirements(
             required_roles=required_roles,
             dimension_requirements=dimension_requirements,
@@ -108,16 +49,7 @@ class LedgerRegistry:
         ledger_id: str,
         economic_type: str,
     ) -> tuple[str, ...]:
-        """
-        Get required account roles for an economic type on a ledger.
-
-        Args:
-            ledger_id: The ledger identifier.
-            economic_type: The economic event type.
-
-        Returns:
-            Tuple of required account role names.
-        """
+        """Get required account roles for an economic type on a ledger."""
         if ledger_id not in cls._ledgers:
             logger.debug(
                 "ledger_not_found",

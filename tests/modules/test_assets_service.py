@@ -19,7 +19,6 @@ from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.assets.service import FixedAssetService
 from tests.modules.conftest import TEST_ASSET_CATEGORY_ID, TEST_ASSET_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

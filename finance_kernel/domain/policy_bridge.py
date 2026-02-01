@@ -1,27 +1,4 @@
-"""
-PolicyBridge -- Connects module profiles to kernel posting pipeline.
-
-Responsibility:
-    Bridges finance modules and the kernel posting pipeline by storing
-    line mapping data alongside each AccountingPolicy and building
-    AccountingIntent objects from those mappings at posting time.
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    L1  -- Intent lines use account ROLES, resolved to COA at posting time
-    P11 -- Multi-ledger intents are built from LedgerEffects per profile
-
-Failure modes:
-    - ValueError from ``build_accounting_intent()`` if profile not found
-      or no lines could be built
-
-Audit relevance:
-    ModulePolicyRegistry is the authoritative mapping from profile to
-    line mappings.  Auditors verify that modules registered the correct
-    mappings and that intent construction matched the profile definition.
-"""
+"""PolicyBridge -- Connects module profiles to kernel posting pipeline."""
 
 from collections import defaultdict
 from dataclasses import dataclass
@@ -56,16 +33,7 @@ logger = get_logger("domain.policy_bridge")
 
 @dataclass(frozen=True)
 class ModuleLineMapping:
-    """
-    Canonical line mapping for AccountingIntent construction.
-
-    Attributes:
-        role: Account role as string (e.g., "INVENTORY", "GRNI")
-        side: "debit" or "credit"
-        ledger: Target ledger (default: "GL")
-        from_context: Payload field name to use for this line's amount
-        foreach: Payload collection field to iterate over
-    """
+    """Canonical line mapping for AccountingIntent construction."""
 
     role: str
     side: str
@@ -76,12 +44,7 @@ class ModuleLineMapping:
 
 @dataclass(frozen=True)
 class ModulePolicyEntry:
-    """
-    Complete module profile data stored in the registry.
-
-    Includes both the kernel AccountingPolicy (for MeaningBuilder/PolicySelector)
-    and the line mapping data (for AccountingIntent construction).
-    """
+    """Complete module profile data stored in the registry."""
 
     module_name: str
     profile_key: str
@@ -96,23 +59,7 @@ class ModulePolicyEntry:
 
 
 class ModulePolicyRegistry:
-    """
-    Registry for module profile data including line mappings.
-
-    Complements the kernel's PolicySelector by also storing
-    line mapping data needed for AccountingIntent construction.
-
-    Contract:
-        Class-level singleton registry.  ``register()`` adds entries;
-        ``get()`` / ``get_line_mappings()`` query them.
-
-    Guarantees:
-        - ``get()`` returns ``None`` (never raises) for unknown profiles.
-        - ``list_all()`` returns all registered entries.
-
-    Non-goals:
-        - Does NOT persist to database (in-memory, populated at startup).
-    """
+    """Registry for module profile data including line mappings."""
 
     _entries: ClassVar[dict[str, ModulePolicyEntry]] = {}
 
@@ -169,23 +116,7 @@ def register_rich_profile(
     profile: AccountingPolicy,
     line_mappings: tuple[ModuleLineMapping, ...],
 ) -> AccountingPolicy:
-    """
-    Register a pre-built kernel AccountingPolicy with line mappings.
-
-    This is the primary registration path. Modules create their own
-    AccountingPolicy instances with full control over guards, triggers,
-    effective dates, scope, and precedence. This function registers
-    the profile in both PolicySelector (for lookup) and
-    ModulePolicyRegistry (for intent construction).
-
-    Args:
-        module_name: Module identifier (e.g., "inventory", "ap").
-        profile: Pre-built kernel AccountingPolicy.
-        line_mappings: Line mappings for AccountingIntent construction.
-
-    Returns:
-        The registered AccountingPolicy (same instance passed in).
-    """
+    """Register a pre-built kernel AccountingPolicy with line mappings."""
     entry = ModulePolicyEntry(
         module_name=module_name,
         profile_key=profile.name,
@@ -227,13 +158,7 @@ def register_module_profile(
     effective_from: date = date(2024, 1, 1),
     ledger_id: str = "GL",
 ) -> AccountingPolicy:
-    """
-    Register a module profile from flat parameters.
-
-    .. deprecated::
-        Use ``register_rich_profile`` with a pre-built AccountingPolicy
-        for full control over guards, scope, precedence, and multi-ledger effects.
-    """
+    """Register a module profile from flat parameters (deprecated)."""
     debit_roles = [m for m in line_mappings if m.side == "debit"]
     credit_roles = [m for m in line_mappings if m.side == "credit"]
 
@@ -305,31 +230,7 @@ def build_accounting_intent(
     coa_version: int = 1,
     dimension_schema_version: int = 1,
 ) -> AccountingIntent:
-    """
-    Build an AccountingIntent from registered module profile line mappings.
-
-    Creates one LedgerIntent per ledger. For ledgers with explicit line
-    mappings, uses the mappings (supporting from_context, foreach).
-    For ledger effects without explicit mappings, auto-generates
-    simple debit/credit lines from the LedgerEffect.
-
-    Args:
-        profile_name: Registered profile name (e.g., "InventoryReceipt").
-        source_event_id: The source event ID.
-        effective_date: Accounting effective date.
-        amount: Primary monetary amount for the entry.
-        currency: Currency code (e.g., "USD").
-        payload: Event payload for from_context/foreach lookups.
-        description: Optional entry description.
-        coa_version: COA version for snapshot.
-        dimension_schema_version: Dimension schema version for snapshot.
-
-    Returns:
-        AccountingIntent ready for posting.
-
-    Raises:
-        ValueError: If profile not found or no lines could be built.
-    """
+    """Build an AccountingIntent from registered module profile line mappings."""
     entry = ModulePolicyRegistry.get(profile_name)
     if entry is None:
         raise ValueError(f"No module profile registered: {profile_name}")
@@ -435,14 +336,7 @@ def _build_intent_lines(
     currency: str,
     payload: dict[str, Any],
 ) -> list[IntentLine]:
-    """
-    Build IntentLine objects from module line mappings.
-
-    Handles three patterns:
-    - Simple lines: use the provided primary amount
-    - Context-based amounts: from_context reads amount from payload field
-    - Collection iteration: foreach creates one line per item in collection
-    """
+    """Build IntentLine objects from module line mappings."""
     lines: list[IntentLine] = []
 
     for mapping in line_mappings:

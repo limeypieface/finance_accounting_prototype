@@ -13,25 +13,38 @@ This test creates an account tree with balances and attempts to change
 the root's normal_balance. If this succeeds, financial reports are corrupted.
 """
 
-import pytest
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 
-from finance_kernel.models.account import Account, AccountType, NormalBalance, AccountTag
-from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
-from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
-from finance_kernel.services.outcome_recorder import OutcomeRecorder
-from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
 from finance_kernel.domain.accounting_intent import (
     AccountingIntent,
     AccountingIntentSnapshot,
     IntentLine,
     LedgerIntent,
 )
-from finance_kernel.domain.meaning_builder import EconomicEventData, MeaningBuilderResult
+from finance_kernel.domain.meaning_builder import (
+    EconomicEventData,
+    MeaningBuilderResult,
+)
 from finance_kernel.exceptions import ImmutabilityViolationError
+from finance_kernel.models.account import (
+    Account,
+    AccountTag,
+    AccountType,
+    NormalBalance,
+)
+from finance_kernel.models.journal import (
+    JournalEntry,
+    JournalEntryStatus,
+    JournalLine,
+    LineSide,
+)
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
+from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
+from finance_kernel.services.outcome_recorder import OutcomeRecorder
 from tests.conftest import make_source_event
 
 
@@ -403,13 +416,13 @@ class TestFinancialReportCorruption:
         print(f"{'='*60}")
         print(f"Account: {account.name}")
         print(f"Balance: ${balance_amount:,.2f} {balance_side.upper()}")
-        print(f"")
-        print(f"BEFORE (normal_balance=DEBIT):")
+        print("")
+        print("BEFORE (normal_balance=DEBIT):")
         print(f"  Reported as: ${reported_before:,.2f} ASSET")
-        print(f"")
-        print(f"AFTER (normal_balance=CREDIT):")
+        print("")
+        print("AFTER (normal_balance=CREDIT):")
         print(f"  Reported as: ${reported_after:,.2f} (LIABILITY)")
-        print(f"")
+        print("")
         print(f"TOTAL SWING: ${abs(swing):,.2f}")
         print(f"{'='*60}")
 

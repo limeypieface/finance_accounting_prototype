@@ -50,13 +50,19 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Sequence
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from finance_engines.aging import AgingCalculator, AgingReport
+from finance_engines.allocation import (
+    AllocationEngine,
+    AllocationMethod,
+    AllocationTarget,
+)
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType
 from finance_kernel.domain.values import Money
@@ -68,13 +74,6 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingService,
     ModulePostingStatus,
 )
-from finance_services.reconciliation_service import ReconciliationManager
-from finance_engines.allocation import (
-    AllocationEngine,
-    AllocationMethod,
-    AllocationTarget,
-)
-from finance_engines.aging import AgingCalculator, AgingReport
 from finance_modules.ar.models import (
     AutoApplyRule,
     CreditDecision,
@@ -88,6 +87,7 @@ from finance_modules.ar.orm import (
     ARInvoiceModel,
     ARReceiptModel,
 )
+from finance_services.reconciliation_service import ReconciliationManager
 
 logger = get_logger("modules.ar.service")
 
@@ -339,7 +339,7 @@ class ARService:
 
             # If specific per-invoice amounts are provided, apply directly
             if invoice_amounts and len(invoice_amounts) == len(invoice_ids):
-                allocations = list(zip(invoice_ids, invoice_amounts))
+                allocations = list(zip(invoice_ids, invoice_amounts, strict=False))
             elif payment_amount is not None:
                 # Engine: allocate payment across invoices
                 targets = [
@@ -358,7 +358,7 @@ class ARService:
 
                 allocations = [
                     (inv_id, line.allocated.amount)
-                    for inv_id, line in zip(invoice_ids, alloc_result.lines)
+                    for inv_id, line in zip(invoice_ids, alloc_result.lines, strict=False)
                     if not line.allocated.is_zero
                 ]
 

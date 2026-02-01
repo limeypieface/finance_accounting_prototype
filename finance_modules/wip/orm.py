@@ -32,7 +32,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, String, Index, Text, UniqueConstraint, Date
+from sqlalchemy import Date, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from finance_kernel.db.base import TrackedBase, UUIDString

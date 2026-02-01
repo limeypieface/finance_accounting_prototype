@@ -40,7 +40,6 @@ from finance_modules.tax.models import (
 from finance_modules.tax.service import TaxService
 from tests.modules.conftest import TEST_TAX_JURISDICTION_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

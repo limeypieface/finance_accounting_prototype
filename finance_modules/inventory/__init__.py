@@ -42,27 +42,27 @@ Total: ~200 lines of module-specific code.
 Valuation engines (FIFO, LIFO, weighted avg) come from shared engines.
 """
 
+from finance_modules.inventory.config import InventoryConfig
 from finance_modules.inventory.models import (
-    Item,
-    Location,
-    StockLevel,
-    InventoryReceipt,
-    InventoryIssue,
-    InventoryAdjustment,
-    StockTransfer,
-    CycleCount,
     ABCClassification,
-    ReorderPoint,
+    CycleCount,
+    InventoryAdjustment,
+    InventoryIssue,
+    InventoryReceipt,
+    Item,
     ItemValue,
+    Location,
+    ReorderPoint,
+    StockLevel,
+    StockTransfer,
 )
 from finance_modules.inventory.profiles import INVENTORY_PROFILES
+from finance_modules.inventory.service import InventoryService
 from finance_modules.inventory.workflows import (
-    RECEIPT_WORKFLOW,
     ISSUE_WORKFLOW,
+    RECEIPT_WORKFLOW,
     TRANSFER_WORKFLOW,
 )
-from finance_modules.inventory.config import InventoryConfig
-from finance_modules.inventory.service import InventoryService
 
 __all__ = [
     "Item",

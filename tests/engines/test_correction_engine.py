@@ -10,35 +10,34 @@ Tests cover:
 - Blocked artifact handling
 """
 
-import pytest
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.orm import Session
 
-from finance_kernel.domain.values import Money
+from finance_engines.correction import (
+    CompensatingEntry,
+    CompensatingLine,
+    CorrectionType,
+    UnwindPlan,
+    UnwindStrategy,
+)
 from finance_kernel.domain.economic_link import (
     ArtifactRef,
     ArtifactType,
     EconomicLink,
     LinkType,
 )
-from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_kernel.domain.values import Money
 from finance_kernel.exceptions import (
     AlreadyCorrectedError,
     CorrectionCascadeBlockedError,
     UnwindDepthExceededError,
 )
-
+from finance_kernel.services.link_graph_service import LinkGraphService
 from finance_services.correction_service import CorrectionEngine
-from finance_engines.correction import (
-    UnwindPlan,
-    UnwindStrategy,
-    CorrectionType,
-    CompensatingEntry,
-    CompensatingLine,
-)
 
 
 class TestUnwindPlanBuilding:
@@ -78,7 +77,7 @@ class TestUnwindPlanBuilding:
             parent_ref=po_ref,
             child_ref=receipt_ref,
             creating_event_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         link_graph.establish_link(link1)
 
@@ -88,7 +87,7 @@ class TestUnwindPlanBuilding:
             parent_ref=receipt_ref,
             child_ref=invoice_ref,
             creating_event_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         link_graph.establish_link(link2)
 
@@ -141,7 +140,7 @@ class TestAlreadyCorrected:
             parent_ref=po_ref,
             child_ref=correction_ref,
             creating_event_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         link_graph.establish_link(correction_link)
 
@@ -169,7 +168,7 @@ class TestAlreadyCorrected:
             parent_ref=po_ref,
             child_ref=correction_ref,
             creating_event_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         link_graph.establish_link(correction_link)
 
@@ -195,7 +194,7 @@ class TestDepthLimiting:
                 parent_ref=refs[i],
                 child_ref=refs[i + 1],
                 creating_event_id=uuid4(),
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
             link_graph.establish_link(link)
 
@@ -223,7 +222,7 @@ class TestDepthLimiting:
                 parent_ref=refs[i],
                 child_ref=refs[i + 1],
                 creating_event_id=uuid4(),
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
             link_graph.establish_link(link)
 
@@ -257,7 +256,7 @@ class TestBlockedArtifacts:
             parent_ref=po_ref,
             child_ref=receipt_ref,
             creating_event_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         link_graph.establish_link(link1)
 
@@ -267,7 +266,7 @@ class TestBlockedArtifacts:
             parent_ref=receipt_ref,
             child_ref=invoice_ref,
             creating_event_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         link_graph.establish_link(link2)
 
@@ -278,7 +277,7 @@ class TestBlockedArtifacts:
             parent_ref=receipt_ref,
             child_ref=ArtifactRef.journal_entry(uuid4()),
             creating_event_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         link_graph.establish_link(correction_link)
 
@@ -315,7 +314,7 @@ class TestCorrectionExecution:
             parent_ref=po_ref,
             child_ref=receipt_ref,
             creating_event_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         link_graph.establish_link(link)
 
@@ -392,7 +391,7 @@ class TestCorrectionChain:
             parent_ref=doc_ref,
             child_ref=correction1_ref,
             creating_event_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         link_graph.establish_link(link1)
 
@@ -402,7 +401,7 @@ class TestCorrectionChain:
             parent_ref=correction1_ref,
             child_ref=correction2_ref,
             creating_event_id=uuid4(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         link_graph.establish_link(link2)
 

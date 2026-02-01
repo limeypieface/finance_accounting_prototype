@@ -37,7 +37,6 @@ from finance_modules.cash.models import (
 from finance_modules.cash.service import CashService
 from tests.modules.conftest import TEST_BANK_ACCOUNT_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

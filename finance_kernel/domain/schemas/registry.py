@@ -1,9 +1,4 @@
-"""
-Event schema registry.
-
-Provides registration and lookup of event schemas by event type and version.
-This is part of the functional core - no I/O, no ORM.
-"""
+"""Event schema registry."""
 
 from typing import ClassVar
 
@@ -41,45 +36,14 @@ class SchemaAlreadyRegisteredError(Exception):
 
 
 class EventSchemaRegistry:
-    """
-    Registry for event schemas.
-
-    Provides:
-    - Schema registration by event type and version
-    - Schema lookup by event type and version
-    - Version management (latest, all versions)
-
-    This is a pure domain component - no I/O, no ORM.
-
-    Usage:
-        # Register a schema
-        EventSchemaRegistry.register(my_schema)
-
-        # Get specific version
-        schema = EventSchemaRegistry.get("inventory.receipt", version=1)
-
-        # Get latest version
-        schema = EventSchemaRegistry.get("inventory.receipt")
-
-        # Check if schema exists
-        if EventSchemaRegistry.has_schema("inventory.receipt"):
-            ...
-    """
+    """Registry for event schemas with version management."""
 
     # Class-level registry: event_type -> {version -> schema}
     _schemas: ClassVar[dict[str, dict[int, EventSchema]]] = {}
 
     @classmethod
     def register(cls, schema: EventSchema) -> None:
-        """
-        Register an event schema.
-
-        Args:
-            schema: The schema to register.
-
-        Raises:
-            SchemaAlreadyRegisteredError: If schema is already registered.
-        """
+        """Register an event schema."""
         if schema.event_type not in cls._schemas:
             cls._schemas[schema.event_type] = {}
 
@@ -109,19 +73,7 @@ class EventSchemaRegistry:
         event_type: str,
         version: int | None = None,
     ) -> EventSchema:
-        """
-        Get schema for event type.
-
-        Args:
-            event_type: The event type.
-            version: Specific version, or None for latest.
-
-        Returns:
-            The EventSchema.
-
-        Raises:
-            SchemaNotFoundError: If not found.
-        """
+        """Get schema by event type and optional version."""
         if event_type not in cls._schemas:
             logger.warning(
                 "schema_not_found",
@@ -178,16 +130,7 @@ class EventSchemaRegistry:
 
     @classmethod
     def has_schema(cls, event_type: str, version: int | None = None) -> bool:
-        """
-        Check if schema exists.
-
-        Args:
-            event_type: The event type.
-            version: Specific version, or None for any version.
-
-        Returns:
-            True if schema exists.
-        """
+        """Check if schema exists."""
         if event_type not in cls._schemas:
             return False
 
@@ -198,18 +141,7 @@ class EventSchemaRegistry:
 
     @classmethod
     def get_latest_version(cls, event_type: str) -> int:
-        """
-        Get latest schema version for event type.
-
-        Args:
-            event_type: The event type.
-
-        Returns:
-            The latest version number.
-
-        Raises:
-            SchemaNotFoundError: If no schemas registered.
-        """
+        """Get latest schema version for event type."""
         if event_type not in cls._schemas or not cls._schemas[event_type]:
             raise SchemaNotFoundError(event_type)
 
@@ -217,15 +149,7 @@ class EventSchemaRegistry:
 
     @classmethod
     def get_all_versions(cls, event_type: str) -> list[int]:
-        """
-        Get all registered versions for event type.
-
-        Args:
-            event_type: The event type.
-
-        Returns:
-            List of version numbers (sorted ascending).
-        """
+        """Get all registered versions for event type."""
         if event_type not in cls._schemas:
             return []
 
@@ -233,34 +157,17 @@ class EventSchemaRegistry:
 
     @classmethod
     def list_event_types(cls) -> list[str]:
-        """
-        List all registered event types.
-
-        Returns:
-            List of event type names (sorted).
-        """
+        """List all registered event types."""
         return sorted(cls._schemas.keys())
 
     @classmethod
     def clear(cls) -> None:
-        """
-        Clear all registered schemas.
-
-        WARNING: This should only be used in tests.
-        """
+        """Clear all registered schemas. For testing only."""
         cls._schemas.clear()
 
     @classmethod
     def unregister(cls, event_type: str, version: int | None = None) -> None:
-        """
-        Unregister a schema.
-
-        WARNING: This should only be used in tests.
-
-        Args:
-            event_type: The event type.
-            version: Specific version, or None to remove all versions.
-        """
+        """Unregister a schema. For testing only."""
         if event_type not in cls._schemas:
             return
 

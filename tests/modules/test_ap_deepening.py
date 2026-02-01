@@ -15,8 +15,8 @@ from uuid import uuid4
 
 import pytest
 
-from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_engines.matching import MatchStatus
+from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.ap.models import (
     HoldStatus,
     PaymentRun,
@@ -26,7 +26,6 @@ from finance_modules.ap.models import (
 )
 from finance_modules.ap.service import APService
 from tests.modules.conftest import TEST_VENDOR_ID
-
 
 # =============================================================================
 # Fixtures

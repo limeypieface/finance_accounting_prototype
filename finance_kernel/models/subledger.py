@@ -43,6 +43,7 @@ from enum import Enum
 from uuid import UUID
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -53,7 +54,6 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
-from sqlalchemy import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from finance_kernel.db.base import TrackedBase, UUIDString

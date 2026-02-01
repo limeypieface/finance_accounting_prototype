@@ -44,10 +44,15 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
-from finance_config.compiler import CompiledPolicy, CompiledPolicyPack, FrozenEngineParams
+from finance_config.compiler import (
+    CompiledPolicy,
+    CompiledPolicyPack,
+    FrozenEngineParams,
+)
 from finance_engines.tracer import compute_input_fingerprint
 
 # Import pure DTOs from kernel/domain (re-export for backwards compatibility)

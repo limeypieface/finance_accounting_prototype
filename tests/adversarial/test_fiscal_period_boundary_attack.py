@@ -18,25 +18,33 @@ Financial Impact:
 - SOX/regulatory compliance violations
 """
 
-import pytest
 from datetime import date, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 
-from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
-from finance_kernel.services.period_service import PeriodService
-from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
 from finance_kernel.domain.accounting_intent import (
     AccountingIntent,
     AccountingIntentSnapshot,
     IntentLine,
     LedgerIntent,
 )
-from finance_kernel.domain.meaning_builder import EconomicEventData, MeaningBuilderResult
+from finance_kernel.domain.meaning_builder import (
+    EconomicEventData,
+    MeaningBuilderResult,
+)
 from finance_kernel.exceptions import ImmutabilityViolationError
+from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
+from finance_kernel.models.journal import (
+    JournalEntry,
+    JournalEntryStatus,
+    JournalLine,
+    LineSide,
+)
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
+from finance_kernel.services.period_service import PeriodService
 from tests.conftest import make_source_event
 
 

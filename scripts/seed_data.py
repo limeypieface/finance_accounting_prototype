@@ -12,7 +12,7 @@ Usage:
 import logging
 import sys
 import time
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -73,31 +73,33 @@ def main() -> int:
     logging.disable(logging.CRITICAL)
 
     from finance_kernel.db.engine import (
-        init_engine_from_url,
         drop_tables,
         get_session,
+        init_engine_from_url,
     )
-    from finance_modules._orm_registry import create_all_tables
     from finance_kernel.db.immutability import register_immutability_listeners
-    from finance_kernel.domain.clock import DeterministicClock
-    from finance_kernel.models.account import Account, AccountType, NormalBalance
-    from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-    from finance_kernel.models.event import Event
-    from finance_kernel.services.auditor_service import AuditorService
-    from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
-    from finance_kernel.services.outcome_recorder import OutcomeRecorder
-    from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
     from finance_kernel.domain.accounting_intent import (
         AccountingIntent,
         AccountingIntentSnapshot,
         IntentLine,
         LedgerIntent,
     )
+    from finance_kernel.domain.clock import DeterministicClock
     from finance_kernel.domain.meaning_builder import (
         EconomicEventData,
         MeaningBuilderResult,
     )
+    from finance_kernel.models.account import Account, AccountType, NormalBalance
+    from finance_kernel.models.event import Event
+    from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
+    from finance_kernel.services.auditor_service import AuditorService
+    from finance_kernel.services.interpretation_coordinator import (
+        InterpretationCoordinator,
+    )
+    from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
+    from finance_kernel.services.outcome_recorder import OutcomeRecorder
     from finance_kernel.utils.hashing import hash_payload
+    from finance_modules._orm_registry import create_all_tables
 
     # -----------------------------------------------------------------
     # 1. Connect + reset
@@ -128,7 +130,7 @@ def main() -> int:
     register_immutability_listeners()
 
     session = get_session()
-    clock = DeterministicClock(datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+    clock = DeterministicClock(datetime(2025, 6, 15, 12, 0, 0, tzinfo=UTC))
     actor_id = uuid4()
 
     # -----------------------------------------------------------------
@@ -306,8 +308,8 @@ def main() -> int:
         print("  Quick-start:")
         first_evt = posted_events[0][0]
         print(f"    python3 scripts/trace.py --event-id {first_evt}")
-        print(f"    python3 scripts/trace.py --list")
-        print(f"    python3 scripts/demo_trace.py")
+        print("    python3 scripts/trace.py --list")
+        print("    python3 scripts/demo_trace.py")
     print()
     return 0
 

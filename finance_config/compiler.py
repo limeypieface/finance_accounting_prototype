@@ -75,7 +75,6 @@ from finance_config.schema import (
 from finance_engines.contracts import ENGINE_CONTRACTS, EngineContract
 from finance_kernel.exceptions import FinanceKernelError
 
-
 # ---------------------------------------------------------------------------
 # Compiled types (frozen, runtime-ready)
 # ---------------------------------------------------------------------------

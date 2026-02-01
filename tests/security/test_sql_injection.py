@@ -16,13 +16,12 @@ NOTE: Some tests demonstrate vulnerabilities in isolation by mocking
 the vulnerable patterns. This allows testing without modifying production code.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import ProgrammingError, OperationalError
-
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 # =============================================================================
 # V1: String Interpolation in Trigger Queries (triggers.py)
@@ -689,7 +688,7 @@ class TestStaticCodeAnalysis:
                             violations.append(f"{rel_path}:{i}: {line.strip()}")
 
         assert len(violations) == 0, (
-            f"Found % formatted SQL patterns:\n" + "\n".join(violations)
+            "Found % formatted SQL patterns:\n" + "\n".join(violations)
         )
 
 

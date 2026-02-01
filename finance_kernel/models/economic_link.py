@@ -32,13 +32,13 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import (
+    JSON,
     DateTime,
     Index,
     String,
     UniqueConstraint,
     event,
 )
-from sqlalchemy import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from finance_kernel.db.base import Base, UUIDString

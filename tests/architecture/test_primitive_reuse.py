@@ -55,7 +55,7 @@ class TestNoDuplicatePrimitives:
                     if name_lower in ("money", "amount", "currency", "quantity"):
                         violations.append(f"{path}: class {node.name}")
 
-        assert not violations, f"Duplicate primitives found:\n" + "\n".join(violations)
+        assert not violations, "Duplicate primitives found:\n" + "\n".join(violations)
 
     def test_no_raw_decimal_amount_fields_outside_kernel(self):
         """Amount dataclass fields outside kernel should use Money, not raw Decimal.
@@ -152,7 +152,7 @@ class TestNoDuplicatePrimitives:
                         elif isinstance(ann, ast.Attribute) and ann.attr == "Decimal":
                             violations.append(f"{path}:{item.lineno}: {field_name}: Decimal")
 
-        assert not violations, f"Use Money not Decimal for dataclass amount fields:\n" + "\n".join(violations)
+        assert not violations, "Use Money not Decimal for dataclass amount fields:\n" + "\n".join(violations)
 
     def test_posting_strategies_extend_base(self):
         """All posting strategies must extend BasePostingStrategy."""
@@ -191,7 +191,7 @@ class TestNoDuplicatePrimitives:
                     if not any("BasePostingStrategy" in b or "PostingStrategy" in b for b in bases):
                         violations.append(f"{path}: {node.name} doesn't extend BasePostingStrategy")
 
-        assert not violations, f"Strategy classes must extend BasePostingStrategy:\n" + "\n".join(violations)
+        assert not violations, "Strategy classes must extend BasePostingStrategy:\n" + "\n".join(violations)
 
     def _get_base_name(self, node) -> str:
         if isinstance(node, ast.Name):
@@ -226,7 +226,7 @@ class TestEngineDependencies:
             if "from finance_engines" in content or "import finance_engines" in content:
                 violations.append(path)
 
-        assert not violations, f"Kernel imports engines (wrong direction):\n" + "\n".join(violations)
+        assert not violations, "Kernel imports engines (wrong direction):\n" + "\n".join(violations)
 
 
 class TestNoParallelHierarchies:
@@ -255,7 +255,7 @@ class TestNoParallelHierarchies:
                             "Use FinanceKernelError or a subclass."
                         )
 
-        assert not violations, f"Use kernel exception hierarchy:\n" + "\n".join(violations)
+        assert not violations, "Use kernel exception hierarchy:\n" + "\n".join(violations)
 
     def _get_base_name(self, node) -> str:
         if isinstance(node, ast.Name):

@@ -6,14 +6,13 @@ and canonical ordering.
 """
 
 from dataclasses import asdict
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
 
 from finance_kernel.utils.hashing import hash_trace_bundle
-
 
 # ============================================================================
 # Helpers
@@ -25,7 +24,7 @@ def _fixed_uuid() -> UUID:
 
 
 def _fixed_timestamp() -> datetime:
-    return datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    return datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def _make_bundle_dict(**overrides) -> dict:

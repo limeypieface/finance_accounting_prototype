@@ -30,7 +30,6 @@ from finance_modules.intercompany.models import (
 from finance_modules.intercompany.service import IntercompanyService
 from tests.modules.conftest import TEST_IC_AGREEMENT_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

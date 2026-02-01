@@ -11,17 +11,17 @@ These tests verify that:
 3. Raw SQL UPDATE of producer is blocked by trigger
 """
 
-import pytest
-from uuid import uuid4
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
+from uuid import uuid4
 
+import pytest
 from sqlalchemy import select, text
 
-from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
+from finance_kernel.domain.clock import DeterministicClock
 from finance_kernel.models.event import Event
 from finance_kernel.models.journal import JournalEntry
-from finance_kernel.domain.clock import DeterministicClock
+from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
 
 
 class TestProducerRecording:
@@ -56,7 +56,7 @@ class TestProducerRecording:
         ).scalar_one()
 
         assert event.producer is not None, (
-            f"Event should have a producer, got None"
+            "Event should have a producer, got None"
         )
 
 

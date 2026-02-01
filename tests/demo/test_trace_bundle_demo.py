@@ -21,7 +21,6 @@ import pytest
 from finance_kernel.models.economic_link import EconomicLinkModel
 from finance_kernel.selectors.trace_selector import TraceSelector
 
-
 # =============================================================================
 # PRETTY PRINTING HELPERS
 # =============================================================================
@@ -98,7 +97,7 @@ class TestTraceBundleDemo:
         assert result.success
         print(f"  Posted event: {short_id(source_event_id)}")
         print(f"  Pipeline result: success={result.success}")
-        print(f"  Decision journal persisted on outcome automatically")
+        print("  Decision journal persisted on outcome automatically")
 
         # =====================================================================
         # STEP 2: Create an economic link (receipt -> journal_entry)
@@ -106,6 +105,7 @@ class TestTraceBundleDemo:
         section("Step 2: Create economic link")
 
         from sqlalchemy import select
+
         from finance_kernel.models.journal import JournalEntry
 
         entry = session.execute(
@@ -141,7 +141,7 @@ class TestTraceBundleDemo:
             clock=deterministic_clock,
         )
         bundle = selector.trace_by_event_id(source_event_id)
-        print(f"  Bundle assembled successfully (no LogCapture needed).")
+        print("  Bundle assembled successfully (no LogCapture needed).")
 
         # =====================================================================
         # STEP 4: Print the auditor-readable narrative
@@ -191,7 +191,7 @@ class TestTraceBundleDemo:
                 print(f"      {line.line_seq:>4}  {line.side:<7} {line.amount:>12}  {line.currency:<4}  "
                       f"{line.account_code:<12}  {line.is_rounding}")
             print()
-            print(f"      R21 snapshot:")
+            print("      R21 snapshot:")
             field("coa_version", je.coa_version, indent=8)
             field("dimension_schema_version", je.dimension_schema_version, indent=8)
             field("rounding_policy_version", je.rounding_policy_version, indent=8)

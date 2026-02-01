@@ -36,6 +36,7 @@ reporting (ANSI/EIA-748).  All project postings produce immutable journal
 entries with full provenance through the kernel audit chain (R11).
 """
 
+from finance_modules.project.config import ProjectConfig
 from finance_modules.project.models import (
     EVMSnapshot,
     Milestone,
@@ -43,7 +44,6 @@ from finance_modules.project.models import (
     ProjectBudget,
     WBSElement,
 )
-from finance_modules.project.config import ProjectConfig
 
 __all__ = [
     "EVMSnapshot",

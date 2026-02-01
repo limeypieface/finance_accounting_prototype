@@ -19,18 +19,18 @@ Skip with: pytest -m "not slow_locks"
 """
 
 
-import pytest
-import re
 import ast
 import inspect
+import re
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 
-from finance_kernel.services.sequence_service import SequenceService, SequenceCounter
 from finance_kernel.models.journal import JournalEntry
+from finance_kernel.services.sequence_service import SequenceCounter, SequenceService
 
 pytestmark = pytest.mark.slow_locks
 

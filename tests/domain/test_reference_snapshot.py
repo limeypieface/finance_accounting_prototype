@@ -5,10 +5,11 @@ Tests the foundational reference snapshot system that captures
 frozen versions of economic reality for deterministic replay.
 """
 
-import pytest
 from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
+
+import pytest
 
 from finance_kernel.domain.reference_snapshot import (
     ComponentVersion,

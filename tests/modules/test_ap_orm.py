@@ -23,7 +23,6 @@ from finance_modules.ap.orm import (
 )
 from tests.modules.conftest import TEST_VENDOR_ID
 
-
 # ---------------------------------------------------------------------------
 # 1. VendorProfileModel
 # ---------------------------------------------------------------------------

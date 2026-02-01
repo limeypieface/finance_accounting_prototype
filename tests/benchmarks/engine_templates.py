@@ -14,7 +14,6 @@ import copy
 from decimal import Decimal
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Templates keyed by engine name
 # ---------------------------------------------------------------------------

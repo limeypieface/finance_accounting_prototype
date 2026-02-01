@@ -24,7 +24,6 @@ from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.procurement.service import ProcurementService
 from tests.modules.conftest import TEST_EMPLOYEE_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

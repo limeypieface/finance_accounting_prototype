@@ -37,18 +37,18 @@ Total: ~180 lines of module-specific code.
 Depreciation calculations come from pure helpers in ``helpers.py``.
 """
 
+from finance_modules.assets.config import AssetConfig
 from finance_modules.assets.models import (
     Asset,
     AssetCategory,
-    DepreciationSchedule,
     AssetDisposal,
-    AssetTransfer,
     AssetRevaluation,
+    AssetTransfer,
     DepreciationComponent,
+    DepreciationSchedule,
 )
 from finance_modules.assets.profiles import ASSET_PROFILES
 from finance_modules.assets.workflows import ASSET_WORKFLOW
-from finance_modules.assets.config import AssetConfig
 
 __all__ = [
     "Asset",

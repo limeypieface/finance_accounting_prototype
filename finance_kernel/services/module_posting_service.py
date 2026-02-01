@@ -1,56 +1,4 @@
-"""
-ModulePostingService — canonical posting entry point for all modules.
-
-Responsibility:
-    Orchestrates the complete posting pipeline from raw economic event
-    through profile lookup, meaning extraction, intent construction,
-    and atomic journal posting.  Every ERP module (AP, AR, Inventory,
-    Payroll, etc.) enters the kernel through this single service.
-
-Architecture position:
-    Kernel > Services — imperative shell, owns transaction boundaries.
-    Sits at the top of the posting pipeline; delegates pure logic to
-    domain layer and I/O operations to peer kernel services.
-
-Posting flow:
-    post_event(event_type, payload, effective_date, actor_id, ...)
-      1. Validate actor authorization (G14)
-      2. Validate period is open (PeriodService — R12/R13)
-      3. Ingest event record (IngestorService — R1/R2)
-      4. Find profile (PolicySelector.find_for_event — P1)
-      5. Build meaning (MeaningBuilder.build)
-      6. Build intent (profile_bridge.build_accounting_intent — L1)
-      7. Post atomically (InterpretationCoordinator.interpret_and_post — L5/P11)
-      8. Post subledger entries (SL-G1: same transaction)
-      9. Commit or rollback
-
-Invariants enforced:
-    R1  — Event immutability (via IngestorService)
-    R2  — Payload hash verification (via IngestorService)
-    R3  — Idempotency key uniqueness (via JournalWriter)
-    R7  — Transaction boundaries (commit/rollback managed here)
-    R12 — Closed period enforcement (via PeriodService)
-    R13 — Adjustment policy enforcement (via PeriodService)
-    P1  — Exactly one profile matches any event (via PolicySelector)
-    P15 — Exactly one InterpretationOutcome per event (via OutcomeRecorder)
-    L5  — Atomic journal + outcome (via InterpretationCoordinator)
-
-Failure modes:
-    - PERIOD_CLOSED / ADJUSTMENTS_NOT_ALLOWED: Period validation rejected.
-    - INGESTION_FAILED: Payload hash mismatch or validation failure.
-    - PROFILE_NOT_FOUND: No matching EconomicProfile for event_type.
-    - MEANING_FAILED: MeaningBuilder could not extract economic event.
-    - GUARD_REJECTED / GUARD_BLOCKED: Policy guard denied posting.
-    - INTENT_FAILED: AccountingIntent construction error.
-    - POSTING_FAILED: JournalWriter or OutcomeRecorder failure.
-    - INVALID_ACTOR / ACTOR_FROZEN: Actor authorization failure (G14).
-
-Audit relevance:
-    Every invocation is logged with correlation_id, event_id, actor_id,
-    and timing metrics.  The IngestorService records an audit event on
-    ingestion.  The InterpretationCoordinator captures the full decision
-    journal for POSTED and REJECTED outcomes.
-"""
+"""Canonical posting entry point for all modules."""
 
 from __future__ import annotations
 
@@ -71,7 +19,7 @@ from finance_kernel.domain.meaning_builder import MeaningBuilder, MeaningBuilder
 from finance_kernel.domain.policy_bridge import build_accounting_intent
 from finance_kernel.domain.policy_selector import PolicyNotFoundError, PolicySelector
 from finance_kernel.exceptions import PartyNotFoundError
-from finance_kernel.logging_config import get_logger, LogContext
+from finance_kernel.logging_config import LogContext, get_logger
 from finance_kernel.services.auditor_service import AuditorService
 from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
 from finance_kernel.services.interpretation_coordinator import (
@@ -124,39 +72,7 @@ class ModulePostingResult:
 
 
 class ModulePostingService:
-    """
-    Orchestrates profile-driven posting from modules.
-
-    Contract:
-        Accepts a raw economic event described by (event_type, payload,
-        effective_date, actor_id, amount, currency) and drives it through
-        the full posting pipeline, returning a ``ModulePostingResult``
-        that is either successful or contains a machine-readable status
-        code explaining why posting was refused.
-
-    Guarantees:
-        - Exactly-once semantics: duplicate event_id yields ALREADY_POSTED.
-        - R7 transaction safety: commit on success, rollback on failure
-          (when auto_commit=True).
-        - All invariants from R1 through P15 are enforced by delegating
-          to purpose-built kernel services (IngestorService, PeriodService,
-          JournalWriter, OutcomeRecorder, InterpretationCoordinator).
-
-    Non-goals:
-        - Does NOT manage schema migrations or COA maintenance.
-        - Does NOT handle reversal entries (see CorrectionService).
-        - Does NOT own the subledger posting logic (delegated via callable).
-
-    Preferred usage (via PostingOrchestrator):
-        service = ModulePostingService.from_orchestrator(orchestrator)
-
-    Legacy usage (deprecated — creates services internally):
-        service = ModulePostingService(
-            session=session,
-            role_resolver=resolver,
-            clock=clock,
-        )
-    """
+    """Orchestrates profile-driven posting from modules."""
 
     def __init__(
         self,
@@ -165,10 +81,7 @@ class ModulePostingService:
         clock: Clock | None = None,
         auto_commit: bool = True,
     ):
-        """Legacy constructor — creates services internally.
-
-        Prefer ``from_orchestrator`` for new code.
-        """
+        """Legacy constructor. Prefer ``from_orchestrator`` for new code."""
         self._session = session
         self._clock = clock or SystemClock()
         self._auto_commit = auto_commit
@@ -196,11 +109,7 @@ class ModulePostingService:
         orchestrator: PostingOrchestrator,
         auto_commit: bool = True,
     ) -> ModulePostingService:
-        """Create from a PostingOrchestrator (preferred).
-
-        Services are shared singletons from the orchestrator — no
-        duplicate instances, full engine dispatch and policy authority support.
-        """
+        """Create from a PostingOrchestrator (preferred)."""
         instance = cls.__new__(cls)
         instance._session = orchestrator.session
         instance._clock = orchestrator.clock
@@ -235,43 +144,7 @@ class ModulePostingService:
         coa_version: int = 1,
         dimension_schema_version: int = 1,
     ) -> ModulePostingResult:
-        """
-        Post an economic event through the posting pipeline.
-
-        Preconditions:
-            - ``event_type`` is a non-empty namespaced string (e.g., "inventory.receipt").
-            - ``amount`` is a ``Decimal`` (never float).
-            - ``currency`` is a valid ISO 4217 code.
-
-        Postconditions:
-            - On success (POSTED/ALREADY_POSTED) the session is committed
-              (when auto_commit=True) and all journal entries, outcomes,
-              and subledger rows are persisted.
-            - On failure, the session is rolled back (when auto_commit=True)
-              and no partial state is visible.
-
-        Raises:
-            Exception: Re-raises any unexpected exception after rollback.
-
-        Args:
-            event_type: Namespaced event type (e.g., "inventory.receipt").
-            payload: Event payload with domain-specific data.
-            effective_date: Accounting effective date.
-            actor_id: Who caused the event.
-            amount: Primary monetary amount for the entry.
-            currency: Currency code (default: "USD").
-            producer: System that produced the event (defaults to event_type prefix).
-            event_id: Optional event ID (generated if not provided).
-            occurred_at: When the event happened (defaults to clock.now()).
-            schema_version: Schema version for the event.
-            is_adjustment: Whether this is an adjusting entry.
-            description: Optional entry description.
-            coa_version: COA version for snapshot.
-            dimension_schema_version: Dimension schema version for snapshot.
-
-        Returns:
-            ModulePostingResult with status and artifacts.
-        """
+        """Post an economic event through the posting pipeline."""
         resolved_event_id = event_id or _uuid4()
         resolved_occurred_at = occurred_at or self._clock.now()
         resolved_producer = producer or event_type.split(".")[0]
@@ -561,4 +434,3 @@ class ModulePostingService:
             profile_name=profile.name,
             message="Event posted successfully",
         )
-

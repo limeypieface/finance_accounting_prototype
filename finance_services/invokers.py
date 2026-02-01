@@ -48,15 +48,23 @@ from decimal import Decimal
 from typing import Any
 
 from finance_config.compiler import FrozenEngineParams
-from finance_engines.allocation import AllocationEngine, AllocationMethod, AllocationTarget
+from finance_engines.allocation import (
+    AllocationEngine,
+    AllocationMethod,
+    AllocationTarget,
+)
 from finance_engines.allocation_cascade import AllocationStep, execute_cascade
 from finance_engines.billing import BillingInput, calculate_billing
 from finance_engines.ice import ICEInput, compile_ice_submission
-from finance_engines.matching import MatchCandidate, MatchingEngine, MatchTolerance, MatchType
+from finance_engines.matching import (
+    MatchCandidate,
+    MatchingEngine,
+    MatchTolerance,
+    MatchType,
+)
 from finance_engines.tax import TaxCalculator, TaxRate
 from finance_engines.variance import VarianceCalculator
 from finance_services.engine_dispatcher import EngineDispatcher, EngineInvoker
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -288,8 +296,11 @@ def _invoke_allocation_cascade(payload: dict, params: FrozenEngineParams) -> Any
 def _coerce_billing_input(raw: dict) -> BillingInput:
     """Coerce a dict into BillingInput with proper nested types."""
     from finance_engines.billing import (
-        BillingContractType, CostBreakdown, IndirectRates,
-        LaborRateEntry, MilestoneEntry,
+        BillingContractType,
+        CostBreakdown,
+        IndirectRates,
+        LaborRateEntry,
+        MilestoneEntry,
     )
 
     kwargs = dict(raw)

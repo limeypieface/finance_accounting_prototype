@@ -9,18 +9,19 @@ Covers:
 - Edge cases and error handling
 """
 
-import pytest
 from decimal import Decimal
 
-from finance_kernel.domain.values import Money
+import pytest
+
 from finance_engines.allocation_cascade import (
     AllocationBase,
     AllocationStep,
     AllocationStepResult,
-    execute_cascade,
     build_dcaa_cascade,
     calculate_contract_total,
+    execute_cascade,
 )
+from finance_kernel.domain.values import Money
 
 
 class TestAllocationStep:

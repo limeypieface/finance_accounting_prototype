@@ -32,19 +32,19 @@ FY_END = date(2025, 12, 31)
 def main() -> int:
     logging.disable(logging.CRITICAL)
 
-    from finance_kernel.db.engine import init_engine_from_url, get_session
+    from finance_kernel.db.engine import get_session, init_engine_from_url
     from finance_kernel.domain.clock import SystemClock
-    from finance_modules.reporting.service import ReportingService
-    from finance_modules.reporting.models import IncomeStatementFormat
     from finance_modules.reporting.config import ReportingConfig
+    from finance_modules.reporting.models import IncomeStatementFormat
+    from finance_modules.reporting.service import ReportingService
 
     # Import pretty-print helpers from demo_reports
     from scripts.demo_reports import (
-        print_trial_balance,
         print_balance_sheet,
-        print_income_statement,
-        print_equity_changes,
         print_cash_flow,
+        print_equity_changes,
+        print_income_statement,
+        print_trial_balance,
     )
 
     # -----------------------------------------------------------------

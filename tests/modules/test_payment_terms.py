@@ -10,14 +10,14 @@ Tests validate FIFO/proportional allocation, early payment discounts (2/10 Net 3
 schedule validation, due date calculation, and rounding correctness.
 """
 
-import pytest
-from decimal import Decimal
-from datetime import date, timedelta
-from uuid import uuid4
 from dataclasses import dataclass, field
-from typing import List, Optional
+from datetime import date, timedelta
+from decimal import Decimal
 from enum import Enum
+from typing import List, Optional
+from uuid import uuid4
 
+import pytest
 
 # =============================================================================
 # Domain Models for Payment Terms
@@ -56,7 +56,7 @@ class PaymentTerm:
 class PaymentSchedule:
     """Collection of payment terms for an invoice."""
     schedule_id: str
-    terms: List[PaymentTerm]
+    terms: list[PaymentTerm]
 
     def __post_init__(self):
         total_percentage = sum(t.percentage for t in self.terms)
@@ -91,7 +91,7 @@ class InvoiceTerm:
     due_date: date
     amount_due: Decimal
     amount_paid: Decimal = Decimal("0")
-    discount_date: Optional[date] = None
+    discount_date: date | None = None
     discount_amount: Decimal = Decimal("0")
 
     @property
@@ -123,7 +123,7 @@ class PaymentAllocation:
 class PaymentTermCalculator:
     """Calculate payment term amounts and due dates."""
 
-    def calculate_terms(self, invoice: Invoice) -> List[InvoiceTerm]:
+    def calculate_terms(self, invoice: Invoice) -> list[InvoiceTerm]:
         """Calculate term amounts and due dates for invoice."""
         terms = []
         for term in invoice.schedule.terms:
@@ -183,9 +183,9 @@ class PaymentAllocator:
     def allocate_fifo(
         self,
         payment_amount: Decimal,
-        terms: List[InvoiceTerm],
+        terms: list[InvoiceTerm],
         payment_date: date,
-    ) -> List[PaymentAllocation]:
+    ) -> list[PaymentAllocation]:
         """
         Allocate payment to oldest term first (FIFO).
 
@@ -236,8 +236,8 @@ class PaymentAllocator:
     def allocate_proportional(
         self,
         payment_amount: Decimal,
-        terms: List[InvoiceTerm],
-    ) -> List[PaymentAllocation]:
+        terms: list[InvoiceTerm],
+    ) -> list[PaymentAllocation]:
         """Allocate payment proportionally across all outstanding terms."""
         allocations = []
 
@@ -263,8 +263,8 @@ class PaymentAllocator:
 
     def validate_allocation(
         self,
-        allocations: List[PaymentAllocation],
-        terms: List[InvoiceTerm],
+        allocations: list[PaymentAllocation],
+        terms: list[InvoiceTerm],
     ) -> None:
         """Validate that allocation doesn't exceed outstanding."""
         term_map = {t.term_id: t for t in terms}

@@ -33,7 +33,6 @@ from finance_kernel.selectors.trace_selector import (
 )
 from finance_kernel.utils.hashing import hash_payload
 
-
 # ============================================================================
 # Stub LogQueryPort
 # ============================================================================

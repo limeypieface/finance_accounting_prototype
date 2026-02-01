@@ -57,10 +57,26 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from typing import Any
-from uuid import UUID, uuid4, uuid5, NAMESPACE_DNS
+from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
 
 from sqlalchemy.orm import Session
 
+from finance_engines.allocation_cascade import (
+    AllocationStep,
+    AllocationStepResult,
+    build_dcaa_cascade,
+    execute_cascade,
+)
+from finance_engines.billing import (
+    BillingInput,
+    BillingResult,
+    calculate_billing,
+)
+from finance_engines.ice import (
+    ICEInput,
+    ICESubmission,
+    compile_ice_submission,
+)
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
@@ -68,22 +84,6 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
-)
-from finance_engines.billing import (
-    BillingInput,
-    BillingResult,
-    calculate_billing,
-)
-from finance_engines.allocation_cascade import (
-    AllocationStep,
-    AllocationStepResult,
-    build_dcaa_cascade,
-    execute_cascade,
-)
-from finance_engines.ice import (
-    ICEInput,
-    ICESubmission,
-    compile_ice_submission,
 )
 from finance_modules.contracts.models import (
     AuditFinding,
@@ -776,6 +776,7 @@ class GovernmentContractsService:
         Uses ICEEngine to compile submission and checks for completeness.
         """
         from datetime import date as date_cls
+
         from finance_engines.ice import ContractCostInput
         from finance_kernel.domain.values import Money
 

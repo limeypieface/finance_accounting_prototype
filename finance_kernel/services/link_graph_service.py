@@ -1,57 +1,25 @@
-"""
-LinkGraphService -- graph operations on EconomicLinks.
-
-Responsibility:
-    Persists economic links (the "why pointer" between artifacts),
-    enforces acyclicity for directed link types, provides recursive
-    graph traversal for audit and correction, and computes unconsumed
-    value for AP/Inventory reconciliation.
-
-Architecture position:
-    Kernel > Services -- imperative shell.
-    Called by module services (AP, AR, Inventory, etc.) when establishing
-    fulfillment, payment, reversal, or allocation relationships.
-
-Invariants enforced:
-    R4-LINK -- Link legality: link types follow ``LINK_TYPE_SPECS`` for
-               allowed parent/child artifact types and max children.
-    L3  -- Acyclic enforcement: directed link types (FULFILLED_BY,
-           SOURCED_FROM, DERIVED_FROM, CONSUMED_BY, CORRECTED_BY) are
-           checked for cycles before persistence via DFS traversal.
-    R1  -- EconomicLink rows are immutable (append-only, protected by
-           ORM listeners and DB triggers on EconomicLinkModel).
-
-Failure modes:
-    - LinkCycleError: Adding the link would create a cycle (L3 violation).
-    - DuplicateLinkError: Link already exists (unless allow_duplicate=True).
-    - MaxChildrenExceededError: Parent has reached max children per spec.
-    - IntegrityError: Concurrent insert race (handled as duplicate).
-
-Audit relevance:
-    Link creation is logged with link_id, link_type, source_ref, and
-    target_ref.  Cycle detection failures are logged at ERROR level.
-"""
+"""Graph operations on EconomicLinks with L3 acyclicity enforcement."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Sequence
 from uuid import UUID
 
-from sqlalchemy import and_, literal, literal_column, select, func, union_all
+from sqlalchemy import and_, func, literal, literal_column, select, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from finance_kernel.domain.economic_link import (
+    LINK_TYPE_SPECS,
     ArtifactRef,
     ArtifactType,
     EconomicLink,
     LinkPath,
     LinkQuery,
     LinkType,
-    LINK_TYPE_SPECS,
 )
 from finance_kernel.domain.values import Money
 from finance_kernel.exceptions import (
@@ -67,14 +35,10 @@ logger = get_logger("services.link_graph")
 
 @dataclass(frozen=True)
 class LinkEstablishResult:
-    """
-    Result of establishing a link.
-
-    Includes the persisted link and any warnings.
-    """
+    """Result of establishing a link."""
 
     link: EconomicLink
-    was_duplicate: bool = False  # True if link already existed
+    was_duplicate: bool = False
 
     @classmethod
     def success(cls, link: EconomicLink) -> LinkEstablishResult:
@@ -87,11 +51,7 @@ class LinkEstablishResult:
 
 @dataclass(frozen=True)
 class UnconsumedValue:
-    """
-    Remaining value after child allocations.
-
-    Used for AP (invoice balance) and Inventory (lot balance).
-    """
+    """Remaining value after child allocations."""
 
     artifact_ref: ArtifactRef
     original_amount: Money
@@ -111,25 +71,7 @@ class UnconsumedValue:
 
 
 class LinkGraphService:
-    """
-    Executes graph operations on EconomicLinks.
-
-    Contract:
-        Accepts ``EconomicLink`` domain objects and persists them after
-        validating acyclicity, duplicate detection, and max-children
-        constraints.  Provides graph traversal and unconsumed-value
-        calculations.
-
-    Guarantees:
-        - L3: No cycle is introduced for acyclic link types.
-        - R1: Links are immutable once persisted (append-only).
-        - Duplicate detection: same (parent, child, link_type) triple
-          is detected either pre-flush or on IntegrityError.
-
-    Non-goals:
-        - Does NOT call ``session.commit()`` -- caller controls boundaries.
-        - Does NOT create audit events (caller's responsibility).
-    """
+    """Persists economic links and enforces L3 acyclicity."""
 
     # Link types that must be acyclic (prevent infinite loops)
     ACYCLIC_LINK_TYPES: frozenset[LinkType] = frozenset({
@@ -141,12 +83,6 @@ class LinkGraphService:
     })
 
     def __init__(self, session: Session):
-        """
-        Initialize the service.
-
-        Args:
-            session: SQLAlchemy session for database operations.
-        """
         self.session = session
 
     # =========================================================================
@@ -158,28 +94,7 @@ class LinkGraphService:
         link: EconomicLink,
         allow_duplicate: bool = False,
     ) -> LinkEstablishResult:
-        """
-        Persist a link after validating all invariants.
-
-        Validates:
-        - L2: No self-links (validated by EconomicLink constructor)
-        - L3: Acyclic for relevant link types
-        - L5: Type compatibility (validated by EconomicLink constructor)
-        - Duplicate detection
-        - Max children constraint
-
-        Args:
-            link: The EconomicLink to persist.
-            allow_duplicate: If True, silently return existing link instead of error.
-
-        Returns:
-            LinkEstablishResult with the persisted link.
-
-        Raises:
-            LinkCycleError: If link would create a cycle (L3 violation).
-            DuplicateLinkError: If link already exists (and allow_duplicate=False).
-            MaxChildrenExceededError: If parent has reached max children.
-        """
+        """Persist a link after validating acyclicity, duplicates, and max-children."""
         # Check for existing link (duplicate)
         existing = self._find_existing_link(link)
         if existing:
@@ -251,19 +166,7 @@ class LinkGraphService:
         links: Sequence[EconomicLink],
         allow_duplicates: bool = False,
     ) -> list[LinkEstablishResult]:
-        """
-        Establish multiple links in a single operation.
-
-        Validates each link and persists them together.
-        If any link fails validation, no links are persisted.
-
-        Args:
-            links: The EconomicLinks to persist.
-            allow_duplicates: If True, skip duplicates instead of raising.
-
-        Returns:
-            List of LinkEstablishResult for each link.
-        """
+        """Establish multiple links atomically."""
         results: list[LinkEstablishResult] = []
         for link in links:
             result = self.establish_link(link, allow_duplicate=allow_duplicates)
@@ -275,35 +178,8 @@ class LinkGraphService:
     # =========================================================================
 
     def walk_path(self, query: LinkQuery) -> list[LinkPath]:
-        """
-        Recursively traverse the graph based on the query.
-
-        Answers questions like:
-        - "Show me the full history of this $10,000 variance."
-        - "What invoices were fulfilled by this PO?"
-        - "What was the source of this inventory cost?"
-
-        Uses a Recursive Common Table Expression (CTE) for efficient
-        single-trip database access.
-
-        Preconditions:
-            - ``query.starting_ref`` is a valid ``ArtifactRef``.
-            - ``query.max_depth`` >= 0.
-
-        Postconditions:
-            - Returns a non-empty list (at minimum, a single-node path
-              containing only the starting artifact).
-            - Every ``LinkPath`` starts with ``query.starting_ref``.
-            - Path depth does not exceed ``query.max_depth``.
-
-        Args:
-            query: Specifies starting point, direction, depth, and filters.
-
-        Returns:
-            List of LinkPath objects representing traversal results.
-        """
+        """Recursively traverse the graph based on the query using CTE."""
         if query.max_depth < 1:
-            # Just the starting artifact, no traversal
             return [LinkPath(artifacts=(query.starting_ref,), links=())]
 
         # Fetch all reachable links using recursive CTE
@@ -322,22 +198,7 @@ class LinkGraphService:
         parent_ref: ArtifactRef,
         link_types: frozenset[LinkType] | None = None,
     ) -> list[EconomicLink]:
-        """
-        Get all direct children of an artifact.
-
-        Postconditions:
-            - Every returned ``EconomicLink`` has ``parent_ref`` matching
-              the input ``parent_ref``.
-            - If ``link_types`` is provided, every returned link's
-              ``link_type`` is in the specified set.
-
-        Args:
-            parent_ref: The parent artifact.
-            link_types: Optional filter for specific link types.
-
-        Returns:
-            List of links where parent_ref is the parent.
-        """
+        """Get all direct children of an artifact."""
         query = (
             select(EconomicLinkModel)
             .where(
@@ -361,22 +222,7 @@ class LinkGraphService:
         child_ref: ArtifactRef,
         link_types: frozenset[LinkType] | None = None,
     ) -> list[EconomicLink]:
-        """
-        Get all direct parents of an artifact.
-
-        Postconditions:
-            - Every returned ``EconomicLink`` has ``child_ref`` matching
-              the input ``child_ref``.
-            - If ``link_types`` is provided, every returned link's
-              ``link_type`` is in the specified set.
-
-        Args:
-            child_ref: The child artifact.
-            link_types: Optional filter for specific link types.
-
-        Returns:
-            List of links where child_ref is the child.
-        """
+        """Get all direct parents of an artifact."""
         query = (
             select(EconomicLinkModel)
             .where(
@@ -401,17 +247,7 @@ class LinkGraphService:
         child_ref: ArtifactRef,
         link_type: LinkType,
     ) -> EconomicLink | None:
-        """
-        Get a specific link by its relationship.
-
-        Args:
-            parent_ref: The parent artifact.
-            child_ref: The child artifact.
-            link_type: The type of link.
-
-        Returns:
-            The EconomicLink if found, None otherwise.
-        """
+        """Get a specific link by its relationship."""
         result = self._find_existing_link_by_refs(parent_ref, child_ref, link_type)
         return result.to_domain() if result else None
 
@@ -426,27 +262,7 @@ class LinkGraphService:
         link_types: frozenset[LinkType] | None = None,
         amount_metadata_key: str = "amount_applied",
     ) -> UnconsumedValue:
-        """
-        Calculate remaining value after child allocations.
-
-        Essential for AP/Inventory:
-        - AP: Invoice balance = Invoice amount - SUM(payments applied)
-        - Inventory: Lot balance = Lot value - SUM(consumptions)
-
-        Postconditions:
-            - ``result.remaining_amount == original_amount - consumed_amount``.
-            - ``result.child_count`` equals the number of child links found.
-            - ``result.consumed_amount.currency == original_amount.currency``.
-
-        Args:
-            parent_ref: The parent artifact (invoice, lot, etc.).
-            original_amount: The original amount of the parent.
-            link_types: Link types to consider (default: PAID_BY, ALLOCATED_TO, CONSUMED_BY).
-            amount_metadata_key: Key in link metadata containing the applied amount.
-
-        Returns:
-            UnconsumedValue with remaining balance.
-        """
+        """Calculate remaining value after child allocations."""
         if link_types is None:
             link_types = frozenset({
                 LinkType.PAID_BY,
@@ -491,21 +307,7 @@ class LinkGraphService:
         link_types: frozenset[LinkType] | None = None,
         amount_metadata_key: str = "amount_applied",
     ) -> Decimal:
-        """
-        Calculate total amount allocated TO a child from all parents.
-
-        Useful for:
-        - Payment: How much of this payment has been applied to invoices?
-        - Receipt: How much of this receipt is fulfilled by POs?
-
-        Args:
-            child_ref: The child artifact.
-            link_types: Link types to consider.
-            amount_metadata_key: Key in link metadata containing the amount.
-
-        Returns:
-            Total allocated amount as Decimal.
-        """
+        """Calculate total amount allocated TO a child from all parents."""
         if link_types is None:
             link_types = frozenset({
                 LinkType.ALLOCATED_TO,
@@ -537,17 +339,7 @@ class LinkGraphService:
     # =========================================================================
 
     def find_reversal(self, artifact_ref: ArtifactRef) -> EconomicLink | None:
-        """
-        Find the reversal link for an artifact.
-
-        If an artifact has been reversed, returns the REVERSED_BY link.
-
-        Args:
-            artifact_ref: The potentially reversed artifact.
-
-        Returns:
-            The reversal link if exists, None otherwise.
-        """
+        """Find the REVERSED_BY link for an artifact, if any."""
         children = self.get_children(artifact_ref, frozenset({LinkType.REVERSED_BY}))
         return children[0] if children else None
 
@@ -556,17 +348,7 @@ class LinkGraphService:
         return self.find_reversal(artifact_ref) is not None
 
     def find_correction(self, artifact_ref: ArtifactRef) -> EconomicLink | None:
-        """
-        Find the correction link for an artifact.
-
-        If an artifact has been corrected, returns the CORRECTED_BY link.
-
-        Args:
-            artifact_ref: The potentially corrected artifact.
-
-        Returns:
-            The correction link if exists, None otherwise.
-        """
+        """Find the CORRECTED_BY link for an artifact, if any."""
         children = self.get_children(artifact_ref, frozenset({LinkType.CORRECTED_BY}))
         return children[0] if children else None
 
@@ -620,18 +402,7 @@ class LinkGraphService:
         return result.scalar() or 0
 
     def _detect_cycle(self, new_link: EconomicLink) -> list[ArtifactRef] | None:
-        """
-        Detect if adding a link would create a cycle.
-
-        Uses recursive traversal from the child back to check if we can
-        reach the parent, which would indicate a cycle.
-
-        Returns:
-            List of artifacts forming the cycle path, or None if no cycle.
-        """
-        # If adding a link from A -> B, check if B can reach A
-        # This would create a cycle A -> B -> ... -> A
-
+        """Detect if adding a link would create a cycle via DFS."""
         visited: set[str] = set()
         path: list[ArtifactRef] = []
 
@@ -660,18 +431,13 @@ class LinkGraphService:
 
         # Check if child can reach parent (would create cycle)
         if can_reach(new_link.child_ref, new_link.parent_ref):
-            # Include the new link's parent to complete the cycle
             path.append(new_link.parent_ref)
             return path
 
         return None
 
     def _fetch_reachable_links(self, query: LinkQuery) -> list[EconomicLinkModel]:
-        """
-        Fetch all links reachable from starting point using recursive CTE.
-
-        For large graphs, this is much more efficient than multiple queries.
-        """
+        """Fetch all links reachable from starting point using recursive CTE."""
         starting_ref = query.starting_ref
         direction = query.direction
         max_depth = query.max_depth
@@ -755,16 +521,11 @@ class LinkGraphService:
             )
             return list(result.scalars().all())
 
-        # For deeper traversal, we'd use a recursive CTE
-        # For now, use iterative approach (simpler)
+        # For deeper traversal, use iterative approach
         return self._iterative_traversal(query)
 
     def _iterative_traversal(self, query: LinkQuery) -> list[EconomicLinkModel]:
-        """
-        Iterative graph traversal for depth > 1.
-
-        Simpler than recursive CTE and works with all databases.
-        """
+        """Iterative graph traversal for depth > 1."""
         visited_ids: set[UUID] = set()
         all_links: list[EconomicLinkModel] = []
         current_refs: set[str] = {str(query.starting_ref)}
@@ -838,17 +599,7 @@ class LinkGraphService:
         max_depth: int,
         direction: str = "children",
     ) -> list[LinkPath]:
-        """
-        Build LinkPath objects from traversal results.
-
-        Creates paths from starting_ref to each reachable endpoint.
-
-        Args:
-            starting_ref: The starting artifact.
-            links: The links discovered during traversal.
-            max_depth: Maximum depth to traverse.
-            direction: "children", "parents", or "both".
-        """
+        """Build LinkPath objects from traversal results."""
         if not links:
             return [LinkPath(artifacts=(starting_ref,), links=())]
 
@@ -857,13 +608,11 @@ class LinkGraphService:
         parents_map: dict[str, list[EconomicLinkModel]] = {}
 
         for link in links:
-            # Children direction: key is parent, follow to child
             parent_key = link.parent_ref_str
             if parent_key not in children_map:
                 children_map[parent_key] = []
             children_map[parent_key].append(link)
 
-            # Parents direction: key is child, follow to parent
             child_key = link.child_ref_str
             if child_key not in parents_map:
                 parents_map[child_key] = []
@@ -880,19 +629,17 @@ class LinkGraphService:
         ) -> None:
             current_str = str(current)
 
-            # Determine which map to use based on direction
             if direction == "children":
                 adjacency_map = children_map
                 get_next = lambda link: link.child_ref
             elif direction == "parents":
                 adjacency_map = parents_map
                 get_next = lambda link: link.parent_ref
-            else:  # "both" - use children map but could be extended
+            else:  # "both"
                 adjacency_map = children_map
                 get_next = lambda link: link.child_ref
 
             if depth >= max_depth or current_str not in adjacency_map:
-                # End of path
                 paths.append(LinkPath(
                     artifacts=tuple(path_artifacts),
                     links=tuple(path_links),

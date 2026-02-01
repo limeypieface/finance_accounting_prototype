@@ -26,7 +26,6 @@ from finance_modules.gl.service import GeneralLedgerService
 from finance_modules.reporting.models import MultiCurrencyTrialBalance
 from finance_modules.reporting.service import ReportingService
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

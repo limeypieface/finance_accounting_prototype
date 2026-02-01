@@ -49,13 +49,20 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Sequence
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from finance_engines.allocation import (
+    AllocationEngine,
+    AllocationMethod,
+    AllocationResult,
+    AllocationTarget,
+)
+from finance_engines.variance import VarianceCalculator, VarianceResult
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
@@ -65,14 +72,7 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingService,
     ModulePostingStatus,
 )
-from finance_engines.allocation import (
-    AllocationEngine,
-    AllocationMethod,
-    AllocationResult,
-    AllocationTarget,
-)
-from finance_engines.variance import VarianceCalculator, VarianceResult
-from finance_modules.assets.models import AssetTransfer, AssetRevaluation
+from finance_modules.assets.models import AssetRevaluation, AssetTransfer
 from finance_modules.assets.orm import (
     AssetDisposalModel,
     AssetModel,

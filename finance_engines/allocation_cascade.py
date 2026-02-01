@@ -60,13 +60,13 @@ Usage:
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Sequence
+from decimal import ROUND_HALF_UP, Decimal
 
+from finance_engines.tracer import traced_engine
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
-from finance_engines.tracer import traced_engine
 
 logger = get_logger("engines.allocation_cascade")
 

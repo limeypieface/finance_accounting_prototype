@@ -33,10 +33,10 @@ from finance_kernel.domain.accounting_policy import (
     GuardCondition,
     GuardType,
     LedgerEffect,
-    PrecedenceMode,
     PolicyMeaning,
     PolicyPrecedence,
     PolicyTrigger,
+    PrecedenceMode,
 )
 from finance_kernel.domain.meaning_builder import (
     EconomicEventData,
@@ -51,7 +51,6 @@ from finance_kernel.domain.policy_selector import (
     PolicyNotFoundError,
     PolicySelector,
 )
-
 
 # =============================================================================
 # FIXTURES

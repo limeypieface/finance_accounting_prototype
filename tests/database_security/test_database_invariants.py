@@ -14,14 +14,14 @@ against:
 These tests require PostgreSQL with appropriate isolation levels configured.
 """
 
-import pytest
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 from decimal import Decimal
 from uuid import uuid4
-from datetime import date
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 

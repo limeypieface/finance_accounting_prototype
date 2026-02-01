@@ -23,7 +23,6 @@ from finance_kernel.domain.accounting_intent import (
 )
 from finance_kernel.domain.values import Money
 
-
 # ============================================================================
 # AccountingIntent Tests
 # ============================================================================

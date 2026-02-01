@@ -1,53 +1,17 @@
-"""
-EconomicLink -- The "Why" Pointer for Economic Ancestry.
-
-Responsibility:
-    Defines the immutable link graph that connects economic artifacts.
-    Instead of storing ``po_id`` columns scattered across tables, links
-    create an explicit, traversable graph of economic relationships.
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    L1 -- Links are immutable once created (ORM listener + DB trigger)
-    L2 -- No self-links (parent_ref != child_ref, validated in __post_init__)
-    L3 -- Acyclic per link_type (cycle detection at application level)
-    L4 -- Event provenance (creating_event_id is required / NOT NULL)
-    L5 -- Type compatibility (LinkTypeSpec validates parent/child types)
-
-Failure modes:
-    - ValueError on self-link (L2)
-    - ValueError on invalid parent/child type combination (L5)
-    - ValueError on malformed ArtifactRef string in ``parse()``
-
-Audit relevance:
-    EconomicLink is the auditable "why pointer" that enables full economic
-    history reconstruction.  Auditors traverse REVERSED_BY, PAID_BY,
-    FULFILLED_BY, and CONSUMED_BY chains to verify economic ancestry.
-
-Design decisions:
-    1. ArtifactRef (type + UUID) instead of bare UUID -- self-describing.
-    2. No polymorphic foreign keys -- flexibility over referential integrity.
-    3. Frozen dataclass + ORM model -- pure domain + persistence separation.
-    4. LinkType enum -- exhaustive matching, static analysis, documented semantics.
-"""
+"""EconomicLink -- The 'Why' Pointer for Economic Ancestry."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Mapping, Any
+from typing import Any
 from uuid import UUID
 
 
 class ArtifactType(str, Enum):
-    """
-    Types of artifacts that can participate in economic links.
-
-    Each type corresponds to a specific domain entity.
-    """
+    """Types of artifacts that can participate in economic links."""
 
     # Core kernel artifacts
     EVENT = "event"  # EconomicEvent or Event
@@ -81,16 +45,7 @@ class ArtifactType(str, Enum):
 
 
 class LinkType(str, Enum):
-    """
-    Semantic relationship types between artifacts.
-
-    Each link type defines:
-    - The direction of the relationship (parent → child)
-    - Valid artifact type combinations
-    - Whether the relationship is 1:1, 1:N, or N:M
-
-    Naming convention: VERB_BY (child VERB_BY parent)
-    """
+    """Semantic relationship types between artifacts."""
 
     # Fulfillment chain (PO → Receipt → Invoice)
     FULFILLED_BY = "fulfilled_by"  # Receipt fulfills PO, Invoice fulfills Receipt
@@ -123,21 +78,7 @@ class LinkType(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ArtifactRef:
-    """
-    Immutable reference to any economic artifact.
-
-    Self-describing pointer that includes both the type and identifier,
-    enabling heterogeneous artifact graphs without polymorphic foreign keys.
-
-    Contract:
-        ``artifact_type`` must be a valid ``ArtifactType`` enum member.
-        ``artifact_id`` must be a ``UUID``.
-
-    Guarantees:
-        - Frozen and slotted -- immutable after construction.
-        - ``__str__`` produces ``"type:uuid"`` for serialisation.
-        - ``parse()`` round-trips from string representation.
-    """
+    """Immutable reference to any economic artifact."""
 
     artifact_type: ArtifactType
     artifact_id: UUID
@@ -153,11 +94,7 @@ class ArtifactRef:
 
     @classmethod
     def parse(cls, ref_string: str) -> ArtifactRef:
-        """
-        Parse a string representation back to ArtifactRef.
-
-        Format: "artifact_type:uuid"
-        """
+        """Parse a string representation back to ArtifactRef."""
         try:
             type_str, id_str = ref_string.split(":", 1)
             return cls(
@@ -220,11 +157,7 @@ class ArtifactRef:
 
 @dataclass(frozen=True, slots=True)
 class LinkTypeSpec:
-    """
-    Specification of valid artifact types for a link type.
-
-    Defines which parent/child combinations are semantically valid.
-    """
+    """Specification of valid artifact types for a link type."""
 
     link_type: LinkType
     valid_parent_types: frozenset[ArtifactType]
@@ -233,11 +166,7 @@ class LinkTypeSpec:
     max_children: int | None = None  # None = unlimited, 1 = one-to-one
 
     def validate(self, parent: ArtifactRef, child: ArtifactRef) -> list[str]:
-        """
-        Validate that parent/child types are valid for this link type.
-
-        Returns list of validation errors (empty if valid).
-        """
+        """Validate that parent/child types are valid for this link type."""
         errors: list[str] = []
 
         if parent.artifact_type not in self.valid_parent_types:
@@ -386,22 +315,7 @@ LINK_TYPE_SPECS: Mapping[LinkType, LinkTypeSpec] = {
 
 @dataclass(frozen=True, slots=True)
 class EconomicLink:
-    """
-    Immutable record of an economic relationship between artifacts.
-
-    EconomicLink is the "why pointer" that enables traversal of economic
-    ancestry. It answers questions like:
-    - "Where did this cost come from?" (SOURCED_FROM)
-    - "What paid this invoice?" (PAID_BY)
-    - "What reversed this entry?" (REVERSED_BY)
-
-    Invariants:
-        L1: Immutable once created
-        L2: parent_ref != child_ref (no self-links)
-        L3: Link graph must be acyclic per link_type
-        L4: creating_event_id is required
-        L5: parent/child types must be valid for link_type
-    """
+    """Immutable record of an economic relationship between artifacts (L1-L5)."""
 
     link_id: UUID
     link_type: LinkType
@@ -442,11 +356,7 @@ class EconomicLink:
         created_at: datetime,
         metadata: Mapping[str, Any] | None = None,
     ) -> EconomicLink:
-        """
-        Factory method to create a new EconomicLink.
-
-        Validates all invariants before construction.
-        """
+        """Factory method to create a new EconomicLink."""
         return cls(
             link_id=link_id,
             link_type=link_type,
@@ -476,11 +386,7 @@ class EconomicLink:
 
 @dataclass(frozen=True, slots=True)
 class LinkQuery:
-    """
-    Query specification for traversing the link graph.
-
-    Pure data object that describes a traversal without executing it.
-    """
+    """Query specification for traversing the link graph."""
 
     starting_ref: ArtifactRef
     link_types: frozenset[LinkType] | None = None  # None = all types
@@ -491,11 +397,7 @@ class LinkQuery:
 
 @dataclass(frozen=True, slots=True)
 class LinkPath:
-    """
-    A path through the link graph.
-
-    Represents a chain of artifacts connected by links.
-    """
+    """A path through the link graph."""
 
     artifacts: tuple[ArtifactRef, ...]
     links: tuple[EconomicLink, ...]

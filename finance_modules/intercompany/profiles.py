@@ -36,6 +36,7 @@ Profiles:
 """
 
 from datetime import date
+
 from finance_kernel.domain.accounting_policy import (
     AccountingPolicy,
     GuardCondition,
@@ -48,7 +49,6 @@ from finance_kernel.domain.policy_bridge import (
     ModuleLineMapping,
     register_rich_profile,
 )
-
 
 MODULE_NAME = "intercompany"
 

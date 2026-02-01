@@ -23,7 +23,6 @@ from uuid import UUID
 
 from finance_kernel.models.account import AccountType, NormalBalance
 from finance_kernel.selectors.ledger_selector import TrialBalanceRow
-
 from finance_modules.reporting.config import ReportingConfig
 from finance_modules.reporting.models import (
     BalanceSheetFormat,
@@ -43,7 +42,6 @@ from finance_modules.reporting.models import (
     TrialBalanceLineItem,
     TrialBalanceReport,
 )
-
 
 # =========================================================================
 # Bridge type: account metadata for pure functions

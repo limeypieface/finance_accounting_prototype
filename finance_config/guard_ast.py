@@ -52,7 +52,6 @@ guard conditions are reviewable by auditors.
 import ast
 from dataclasses import dataclass
 
-
 # Functions allowed in guard expressions
 ALLOWED_FUNCTIONS: frozenset[str] = frozenset({"abs", "len", "check_credit_limit"})
 

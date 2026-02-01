@@ -23,7 +23,6 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
-from tests.modules.conftest import TEST_LESSEE_ID, TEST_LEASE_ID
 from finance_modules.lease.calculations import (
     build_amortization_schedule,
     calculate_rou_adjustment,
@@ -41,7 +40,7 @@ from finance_modules.lease.models import (
     ROUAsset,
 )
 from finance_modules.lease.service import LeaseAccountingService
-
+from tests.modules.conftest import TEST_LEASE_ID, TEST_LESSEE_ID
 
 # =============================================================================
 # Fixtures

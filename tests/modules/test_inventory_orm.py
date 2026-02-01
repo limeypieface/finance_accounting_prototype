@@ -6,15 +6,14 @@ from uuid import uuid4
 import pytest
 
 from finance_modules.inventory.orm import (
-    InventoryReceiptModel,
-    InventoryIssueModel,
-    InventoryAdjustmentModel,
-    StockTransferModel,
-    CycleCountModel,
     ABCClassificationModel,
+    CycleCountModel,
+    InventoryAdjustmentModel,
+    InventoryIssueModel,
+    InventoryReceiptModel,
     ReorderPointModel,
+    StockTransferModel,
 )
-
 
 # ===================================================================
 # InventoryReceiptModel

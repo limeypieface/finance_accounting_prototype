@@ -53,22 +53,14 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
-from finance_kernel.domain.clock import Clock, SystemClock
-from finance_kernel.domain.values import Money
-from finance_kernel.logging_config import get_logger
-from finance_kernel.services.journal_writer import RoleResolver
-from finance_kernel.services.module_posting_service import (
-    ModulePostingResult,
-    ModulePostingService,
-    ModulePostingStatus,
-)
 from finance_engines.allocation import (
     AllocationEngine,
     AllocationMethod,
@@ -87,9 +79,22 @@ from finance_engines.tax import (
     TaxCalculator,
     TaxRate,
 )
+from finance_kernel.domain.clock import Clock, SystemClock
+from finance_kernel.domain.values import Money
+from finance_kernel.logging_config import get_logger
+from finance_kernel.services.journal_writer import RoleResolver
+from finance_kernel.services.module_posting_service import (
+    ModulePostingResult,
+    ModulePostingService,
+    ModulePostingStatus,
+)
 from finance_modules.expense.helpers import (
     calculate_mileage as _calculate_mileage,
+)
+from finance_modules.expense.helpers import (
     calculate_per_diem as _calculate_per_diem,
+)
+from finance_modules.expense.helpers import (
     validate_expense_against_policy,
 )
 from finance_modules.expense.models import (

@@ -57,10 +57,11 @@ Usage:
 from __future__ import annotations
 
 import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
-from typing import Mapping, Any, Callable, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
@@ -69,34 +70,32 @@ from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 
 logger = get_logger("services.correction")
-from finance_kernel.domain.economic_link import (
-    ArtifactRef,
-    ArtifactType,
-    EconomicLink,
-    LinkType,
-    LinkQuery,
-)
-from finance_kernel.exceptions import (
-    AlreadyCorrectedError,
-    ClosedPeriodError,
-    CorrectionCascadeBlockedError,
-    PeriodNotFoundError,
-    UnwindDepthExceededError,
-    NoGLImpactError,
-)
-from finance_kernel.services.link_graph_service import LinkGraphService
-from finance_kernel.services.period_service import PeriodService
-
 from finance_engines.correction.unwind import (
-    UnwindPlan,
     AffectedArtifact,
     CompensatingEntry,
     CompensatingLine,
     CorrectionResult,
     CorrectionType,
+    UnwindPlan,
     UnwindStrategy,
 )
-
+from finance_kernel.domain.economic_link import (
+    ArtifactRef,
+    ArtifactType,
+    EconomicLink,
+    LinkQuery,
+    LinkType,
+)
+from finance_kernel.exceptions import (
+    AlreadyCorrectedError,
+    ClosedPeriodError,
+    CorrectionCascadeBlockedError,
+    NoGLImpactError,
+    PeriodNotFoundError,
+    UnwindDepthExceededError,
+)
+from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_kernel.services.period_service import PeriodService
 
 # Type alias for GL entry lookup function
 GLEntryLookup = Callable[[ArtifactRef], list[tuple[UUID, list[tuple[str, Money, bool, UUID]]]]]
@@ -300,7 +299,7 @@ class CorrectionEngine:
             correction_type=correction_type,
             affected=affected,
             entries=entries,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             warnings=warnings,
         )
 
@@ -629,7 +628,7 @@ class CorrectionEngine:
                 parent_ref=artifact.ref,
                 child_ref=correction_doc_ref,
                 creating_event_id=creating_event_id,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
                 metadata={
                     "correction_type": plan.correction_type.value,
                     "depth": artifact.depth,
@@ -656,7 +655,7 @@ class CorrectionEngine:
             links=links,
             actor_id=actor_id,
             execution_event_id=creating_event_id,
-            executed_at=datetime.now(timezone.utc),
+            executed_at=datetime.now(UTC),
         )
 
     def void_document(
@@ -748,7 +747,7 @@ class CorrectionEngine:
             correction_type=CorrectionType.ADJUST,
             affected=[AffectedArtifact.root(document_ref, ())],
             entries=list(adjustment_entries),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
         return self.execute_correction(

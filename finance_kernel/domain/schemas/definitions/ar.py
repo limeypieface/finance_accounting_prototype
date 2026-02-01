@@ -13,7 +13,6 @@ from finance_kernel.domain.schemas.base import (
 )
 from finance_kernel.domain.schemas.registry import EventSchemaRegistry
 
-
 # ============================================================================
 # ar.invoice_issued - Customer invoice issued
 # ============================================================================

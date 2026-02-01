@@ -39,22 +39,22 @@ Total: ~200 lines of module-specific code.
 Three-way match and approval routing use shared engines.
 """
 
+from finance_modules.procurement.config import ProcurementConfig
 from finance_modules.procurement.models import (
-    Requisition,
-    RequisitionLine,
     PurchaseOrder,
     PurchaseOrderLine,
-    Receipt,
     PurchaseOrderVersion,
+    Receipt,
     ReceiptMatch,
+    Requisition,
+    RequisitionLine,
     SupplierScore,
 )
 from finance_modules.procurement.profiles import PROCUREMENT_PROFILES
 from finance_modules.procurement.workflows import (
-    REQUISITION_WORKFLOW,
     PURCHASE_ORDER_WORKFLOW,
+    REQUISITION_WORKFLOW,
 )
-from finance_modules.procurement.config import ProcurementConfig
 
 __all__ = [
     "Requisition",

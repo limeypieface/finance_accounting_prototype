@@ -19,7 +19,7 @@ the ENTIRE event surface area for each tier.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -27,10 +27,14 @@ from sqlalchemy import text
 
 from finance_kernel.db.base import Base
 from tests.benchmarks.conftest import (
-    FY_START,
-    FY_END,
     EFFECTIVE,
+    FY_END,
+    FY_START,
     create_accounts_from_config,
+)
+from tests.benchmarks.event_catalog import (
+    TestEvent,
+    build_event_catalog,
 )
 from tests.benchmarks.helpers import (
     BenchTimer,
@@ -41,10 +45,6 @@ from tests.benchmarks.tier_config import (
     TIERS,
     load_tier_config,
     register_tier_modules,
-)
-from tests.benchmarks.event_catalog import (
-    build_event_catalog,
-    TestEvent,
 )
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.postgres]
@@ -116,7 +116,7 @@ class TestFullEventCoverage:
         from finance_kernel.db.engine import get_session
         from finance_kernel.domain.clock import DeterministicClock
         from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-        from finance_kernel.models.party import Party, PartyType, PartyStatus
+        from finance_kernel.models.party import Party, PartyStatus, PartyType
         from finance_kernel.services.module_posting_service import ModulePostingService
         from finance_services.invokers import register_standard_engines
         from finance_services.posting_orchestrator import PostingOrchestrator
@@ -146,7 +146,7 @@ class TestFullEventCoverage:
 
         # 5. Wire pipeline
         session = get_session()
-        clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+        clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC))
         actor_id = uuid4()
 
         create_accounts_from_config(session, tier_config, actor_id)
@@ -235,7 +235,7 @@ class TestFullEventCoverage:
                 mean_ms = sum(all_times) / n
                 p50_idx = int(n * 0.5)
                 p95_idx = min(int(n * 0.95), n - 1)
-                print(f"  Timing (successful postings):")
+                print("  Timing (successful postings):")
                 print(f"    count={n}  mean={mean_ms:.1f}ms  "
                       f"p50={all_times[p50_idx]:.1f}ms  "
                       f"p95={all_times[p95_idx]:.1f}ms  "
@@ -256,7 +256,7 @@ class TestFullEventCoverage:
         for event, _ in failures:
             module_stats[event.module]["failed"] += 1
 
-        print(f"  Per-module breakdown:")
+        print("  Per-module breakdown:")
         print(f"  {'Module':<20s}  {'Total':>5s}  {'Pass':>5s}  {'Fail':>5s}")
         print(f"  {'-'*20}  {'-'*5}  {'-'*5}  {'-'*5}")
         for mod in sorted(module_stats):
@@ -369,7 +369,7 @@ class TestFullEventCoverage:
         for r in results.values():
             all_modules.update(r["module_stats"].keys())
 
-        print(f"  Module coverage by tier:")
+        print("  Module coverage by tier:")
         print(f"  {'Module':<20s}  {'SIMPLE':>8s}  {'MEDIUM':>8s}  {'FULL':>8s}")
         print(f"  {'-'*20}  {'-'*8}  {'-'*8}  {'-'*8}")
         for mod in sorted(all_modules):

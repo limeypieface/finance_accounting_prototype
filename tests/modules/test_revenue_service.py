@@ -22,7 +22,6 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
-from tests.modules.conftest import TEST_CUSTOMER_ID, TEST_REVENUE_CONTRACT_ID
 from finance_modules.revenue.helpers import (
     assess_modification_type,
     calculate_ssp,
@@ -42,7 +41,7 @@ from finance_modules.revenue.models import (
     TransactionPrice,
 )
 from finance_modules.revenue.service import RevenueRecognitionService
-
+from tests.modules.conftest import TEST_CUSTOMER_ID, TEST_REVENUE_CONTRACT_ID
 
 # =============================================================================
 # Fixtures

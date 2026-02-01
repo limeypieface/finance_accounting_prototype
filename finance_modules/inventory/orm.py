@@ -27,11 +27,10 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import String, Index, Text, Boolean, Date
+from sqlalchemy import Boolean, Date, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from finance_kernel.db.base import TrackedBase
-
 
 # =============================================================================
 # InventoryReceiptModel

@@ -34,8 +34,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Date, DateTime, Index, Numeric, String
-from sqlalchemy import JSON
+from sqlalchemy import JSON, Date, DateTime, Index, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from finance_kernel.db.base import Base, UUIDString

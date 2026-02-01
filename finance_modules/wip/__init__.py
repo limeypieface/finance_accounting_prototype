@@ -40,19 +40,19 @@ Total: ~200 lines of module-specific code.
 Cost rollup and variance engines come from shared engines.
 """
 
+from finance_modules.wip.config import WIPConfig
 from finance_modules.wip.models import (
-    WorkOrder,
-    WorkOrderLine,
-    Operation,
+    ByproductRecord,
     LaborEntry,
+    Operation,
     OverheadApplication,
     ProductionCostSummary,
-    ByproductRecord,
     UnitCostBreakdown,
+    WorkOrder,
+    WorkOrderLine,
 )
 from finance_modules.wip.profiles import WIP_PROFILES
 from finance_modules.wip.workflows import WORK_ORDER_WORKFLOW
-from finance_modules.wip.config import WIPConfig
 
 __all__ = [
     "WorkOrder",

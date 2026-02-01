@@ -18,9 +18,10 @@ Uses real architecture:
 CRITICAL: Party holds ensure blocked suppliers/customers cannot transact.
 """
 
-import pytest
 from decimal import Decimal
 from uuid import uuid4
+
+import pytest
 
 from finance_kernel.exceptions import (
     PartyFrozenError,
@@ -29,7 +30,6 @@ from finance_kernel.exceptions import (
 )
 from finance_kernel.models.party import PartyStatus, PartyType
 from finance_kernel.services.party_service import PartyInfo, PartyService
-
 
 # =============================================================================
 # Helpers

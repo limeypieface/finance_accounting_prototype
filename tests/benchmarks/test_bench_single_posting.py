@@ -17,8 +17,9 @@ Regression thresholds (generous — catches broken code, not slow machines):
 
 from __future__ import annotations
 
-import pytest
 from uuid import uuid4
+
+import pytest
 
 from tests.benchmarks.conftest import EFFECTIVE, SCENARIO_FACTORIES
 from tests.benchmarks.helpers import (

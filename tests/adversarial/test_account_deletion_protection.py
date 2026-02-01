@@ -12,16 +12,16 @@ These tests verify that:
 4. Error messages are clear and actionable
 """
 
-import pytest
-from uuid import uuid4
 from decimal import Decimal
+from uuid import uuid4
 
-from sqlalchemy import select, delete
+import pytest
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
+from finance_kernel.exceptions import AccountReferencedError
 from finance_kernel.models.account import Account, AccountType, NormalBalance
 from finance_kernel.models.journal import JournalEntry, JournalLine
-from finance_kernel.exceptions import AccountReferencedError
 
 
 class TestAccountDeletionProtection:

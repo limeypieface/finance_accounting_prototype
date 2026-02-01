@@ -9,28 +9,37 @@ Test edge cases and boundary values for domain models:
 5. UUID handling
 """
 
-import pytest
-from datetime import date, timedelta
-from decimal import Decimal, InvalidOperation, Overflow, DivisionByZero
-from uuid import UUID, uuid4
 from dataclasses import FrozenInstanceError
+from datetime import date, timedelta
+from decimal import Decimal, DivisionByZero, InvalidOperation, Overflow
+from uuid import UUID, uuid4
 
-from finance_modules.ap.models import Vendor, Invoice, InvoiceLine
-from finance_modules.ar.models import Customer, Invoice as ARInvoice, Receipt
-from finance_modules.inventory.models import Item, ItemType, InventoryReceipt
-from finance_modules.wip.models import WorkOrder, Operation
-from finance_modules.assets.models import Asset, AssetStatus, DepreciationMethod
-from finance_modules.expense.models import ExpenseReport, ExpenseLine, ExpenseCategory, PaymentMethod
-from finance_modules.tax.models import TaxJurisdiction, TaxType, TaxRate
-from finance_modules.procurement.models import PurchaseOrder, PurchaseOrderLine, Requisition
-from finance_modules.payroll.models import Employee, PayType, PayFrequency
-from finance_modules.gl.models import Account, AccountType, FiscalPeriod
-from finance_modules.cash.models import BankAccount, BankTransaction
+import pytest
 
 from finance_modules.ap.config import APConfig
+from finance_modules.ap.models import Invoice, InvoiceLine, Vendor
 from finance_modules.ar.config import ARConfig
+from finance_modules.ar.models import Customer, Receipt
+from finance_modules.ar.models import Invoice as ARInvoice
+from finance_modules.assets.models import Asset, AssetStatus, DepreciationMethod
+from finance_modules.cash.models import BankAccount, BankTransaction
+from finance_modules.expense.models import (
+    ExpenseCategory,
+    ExpenseLine,
+    ExpenseReport,
+    PaymentMethod,
+)
 from finance_modules.gl.config import GLConfig
-
+from finance_modules.gl.models import Account, AccountType, FiscalPeriod
+from finance_modules.inventory.models import InventoryReceipt, Item, ItemType
+from finance_modules.payroll.models import Employee, PayFrequency, PayType
+from finance_modules.procurement.models import (
+    PurchaseOrder,
+    PurchaseOrderLine,
+    Requisition,
+)
+from finance_modules.tax.models import TaxJurisdiction, TaxRate, TaxType
+from finance_modules.wip.models import Operation, WorkOrder
 
 # =============================================================================
 # Decimal Precision Boundaries

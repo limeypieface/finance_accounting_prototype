@@ -19,7 +19,6 @@ from typing import Any
 
 from tests.benchmarks.event_shape import FieldConstraint
 
-
 # Operator inversion: if guard rejects when `X op Y`, then to AVOID rejection
 # the payload must satisfy the INVERSE.
 _INVERT_OP = {

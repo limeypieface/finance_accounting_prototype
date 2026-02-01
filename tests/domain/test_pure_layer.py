@@ -9,11 +9,20 @@ These tests verify:
 - Bookkeeper transforms events correctly
 """
 
-import pytest
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
+
+from finance_kernel.domain.bookkeeper import Bookkeeper, BookkeeperResult
+from finance_kernel.domain.clock import (
+    Clock,
+    DeterministicClock,
+    SequentialClock,
+    SystemClock,
+)
+from finance_kernel.domain.currency import CurrencyInfo, CurrencyRegistry
 from finance_kernel.domain.dtos import (
     EventEnvelope,
     LineSide,
@@ -24,20 +33,12 @@ from finance_kernel.domain.dtos import (
     ValidationError,
     ValidationResult,
 )
-from finance_kernel.domain.clock import (
-    Clock,
-    DeterministicClock,
-    SequentialClock,
-    SystemClock,
-)
-from finance_kernel.domain.currency import CurrencyInfo, CurrencyRegistry
-from finance_kernel.domain.values import Currency, Money
 from finance_kernel.domain.strategy import BasePostingStrategy, StrategyResult
 from finance_kernel.domain.strategy_registry import (
     StrategyNotFoundError,
     StrategyRegistry,
 )
-from finance_kernel.domain.bookkeeper import Bookkeeper, BookkeeperResult
+from finance_kernel.domain.values import Currency, Money
 
 
 class TestDTOImmutability:
@@ -59,7 +60,7 @@ class TestDTOImmutability:
         envelope = EventEnvelope(
             event_id=uuid4(),
             event_type="test.event",
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
             effective_date=date.today(),
             actor_id=uuid4(),
             producer="test",
@@ -83,7 +84,7 @@ class TestDeterministicClock:
 
     def test_deterministic_clock_returns_fixed_time(self):
         """DeterministicClock should return the same time."""
-        fixed_time = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        fixed_time = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
         clock = DeterministicClock(fixed_time)
 
         assert clock.now() == fixed_time
@@ -91,15 +92,15 @@ class TestDeterministicClock:
 
     def test_deterministic_clock_can_advance(self):
         """DeterministicClock should advance when requested."""
-        fixed_time = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        fixed_time = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
         clock = DeterministicClock(fixed_time)
 
         clock.advance(60)  # Advance 60 seconds
-        assert clock.now() == datetime(2024, 6, 15, 12, 1, 0, tzinfo=timezone.utc)
+        assert clock.now() == datetime(2024, 6, 15, 12, 1, 0, tzinfo=UTC)
 
     def test_deterministic_clock_tick(self):
         """DeterministicClock.tick() should advance by 1 second."""
-        fixed_time = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        fixed_time = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
         clock = DeterministicClock(fixed_time)
 
         time1 = clock.tick()
@@ -111,9 +112,9 @@ class TestDeterministicClock:
     def test_sequential_clock(self):
         """SequentialClock should return times in sequence."""
         times = [
-            datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
-            datetime(2024, 6, 15, 12, 1, 0, tzinfo=timezone.utc),
-            datetime(2024, 6, 15, 12, 2, 0, tzinfo=timezone.utc),
+            datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC),
+            datetime(2024, 6, 15, 12, 1, 0, tzinfo=UTC),
+            datetime(2024, 6, 15, 12, 2, 0, tzinfo=UTC),
         ]
         clock = SequentialClock(times)
 
@@ -222,7 +223,7 @@ class TestProposedJournalEntry:
         event = EventEnvelope(
             event_id=uuid4(),
             event_type="test.event",
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
             effective_date=date.today(),
             actor_id=uuid4(),
             producer="test",
@@ -260,7 +261,7 @@ class TestProposedJournalEntry:
         event = EventEnvelope(
             event_id=uuid4(),
             event_type="test.event",
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
             effective_date=date.today(),
             actor_id=uuid4(),
             producer="test",
@@ -303,6 +304,7 @@ class TestStrategyRegistry:
         """Re-register the generic strategy after each test."""
         # Re-import to re-register the generic.posting strategy
         import importlib
+
         import finance_kernel.domain.strategies.generic_strategy as gs
         importlib.reload(gs)
 
@@ -383,6 +385,7 @@ class TestBookkeeper:
         """Re-register the generic strategy after each test."""
         # Re-import to re-register the generic.posting strategy
         import importlib
+
         import finance_kernel.domain.strategies.generic_strategy as gs
         importlib.reload(gs)
 
@@ -393,7 +396,7 @@ class TestBookkeeper:
         event = EventEnvelope(
             event_id=uuid4(),
             event_type="unknown.event",
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
             effective_date=date.today(),
             actor_id=uuid4(),
             producer="test",

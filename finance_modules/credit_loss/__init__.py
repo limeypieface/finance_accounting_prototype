@@ -36,6 +36,7 @@ full provenance through the kernel audit chain (R11).  Forward-looking
 adjustments must be documented with methodology and assumptions.
 """
 
+from finance_modules.credit_loss.config import CreditLossConfig
 from finance_modules.credit_loss.models import (
     CreditPortfolio,
     ECLEstimate,
@@ -43,7 +44,6 @@ from finance_modules.credit_loss.models import (
     LossRate,
     VintageAnalysis,
 )
-from finance_modules.credit_loss.config import CreditLossConfig
 
 __all__ = [
     "CreditLossConfig",

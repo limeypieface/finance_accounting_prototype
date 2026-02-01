@@ -11,19 +11,19 @@ These tests verify that:
 3. All successful postings have valid actor_id recorded
 """
 
-import pytest
 from datetime import date, timedelta
 from decimal import Decimal
-from uuid import uuid4, UUID
+from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy import select
 
-from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
-from finance_kernel.services.auditor_service import AuditorService
-from finance_kernel.models.journal import JournalEntry, JournalLine
-from finance_kernel.models.event import Event
-from finance_kernel.models.audit_event import AuditEvent
 from finance_kernel.domain.clock import DeterministicClock
+from finance_kernel.models.audit_event import AuditEvent
+from finance_kernel.models.event import Event
+from finance_kernel.models.journal import JournalEntry, JournalLine
+from finance_kernel.services.auditor_service import AuditorService
+from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
 
 
 class TestActorIdValidation:
@@ -75,10 +75,17 @@ class TestActorIdValidation:
         The database NOT NULL constraint enforces this as a safety net.
         """
         from sqlalchemy.exc import IntegrityError
+
         from finance_kernel.domain.accounting_intent import (
-            AccountingIntent, LedgerIntent, IntentLine, AccountingIntentSnapshot,
+            AccountingIntent,
+            AccountingIntentSnapshot,
+            IntentLine,
+            LedgerIntent,
         )
-        from finance_kernel.domain.meaning_builder import MeaningBuilderResult, EconomicEventData
+        from finance_kernel.domain.meaning_builder import (
+            EconomicEventData,
+            MeaningBuilderResult,
+        )
 
         source_event_id = uuid4()
         econ_event_id = uuid4()
@@ -145,9 +152,15 @@ class TestActorIdValidation:
         R7: actor_id must be a valid UUID.
         """
         from finance_kernel.domain.accounting_intent import (
-            AccountingIntent, LedgerIntent, IntentLine, AccountingIntentSnapshot,
+            AccountingIntent,
+            AccountingIntentSnapshot,
+            IntentLine,
+            LedgerIntent,
         )
-        from finance_kernel.domain.meaning_builder import MeaningBuilderResult, EconomicEventData
+        from finance_kernel.domain.meaning_builder import (
+            EconomicEventData,
+            MeaningBuilderResult,
+        )
 
         source_event_id = uuid4()
         econ_event_id = uuid4()

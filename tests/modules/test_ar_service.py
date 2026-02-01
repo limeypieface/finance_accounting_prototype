@@ -19,7 +19,6 @@ from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.ar.service import ARService
 from tests.modules.conftest import TEST_CUSTOMER_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

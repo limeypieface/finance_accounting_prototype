@@ -17,8 +17,7 @@ import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.wip.service import WipService
-from tests.modules.conftest import TEST_WORK_ORDER_ID, TEST_OPERATION_ID
-
+from tests.modules.conftest import TEST_OPERATION_ID, TEST_WORK_ORDER_ID
 
 # =============================================================================
 # Fixtures

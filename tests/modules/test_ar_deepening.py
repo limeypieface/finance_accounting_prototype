@@ -25,7 +25,6 @@ from finance_modules.ar.models import (
 )
 from finance_modules.ar.service import ARService
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

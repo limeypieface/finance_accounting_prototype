@@ -9,14 +9,17 @@ Separated from test_immutability.py because these tests use the module-scoped
 pytest module with function-scoped ``engine``/``tables`` fixtures.
 """
 
-import pytest
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 
-from finance_kernel.models.journal import JournalEntry, JournalEntryStatus
+from finance_kernel.db.immutability import (
+    register_immutability_listeners,
+    unregister_immutability_listeners,
+)
 from finance_kernel.exceptions import ImmutabilityViolationError
-from finance_kernel.db.immutability import unregister_immutability_listeners, register_immutability_listeners
+from finance_kernel.models.journal import JournalEntry, JournalEntryStatus
 
 
 class TestR10DatabaseTriggers:
@@ -30,8 +33,8 @@ class TestR10DatabaseTriggers:
     @pytest.fixture
     def posted_entry_via_raw_sql(self, pg_session_factory, pg_session):
         """Create a posted journal entry using raw SQL for trigger testing."""
-        from finance_kernel.db.triggers import triggers_installed
         from finance_kernel.db.engine import get_engine
+        from finance_kernel.db.triggers import triggers_installed
 
         # Skip if triggers not installed
         engine = get_engine()
@@ -119,8 +122,9 @@ class TestR10DatabaseTriggers:
     def test_audit_event_update_blocked_by_trigger(self, pg_session_factory, pg_session):
         """Test that audit events cannot be modified via raw SQL."""
         from sqlalchemy.exc import IntegrityError, ProgrammingError
-        from finance_kernel.db.triggers import triggers_installed
+
         from finance_kernel.db.engine import get_engine
+        from finance_kernel.db.triggers import triggers_installed
 
         engine = get_engine()
         if not triggers_installed(engine):
@@ -155,8 +159,9 @@ class TestR10DatabaseTriggers:
     def test_audit_event_delete_blocked_by_trigger(self, pg_session_factory, pg_session):
         """Test that audit events cannot be deleted via raw SQL."""
         from sqlalchemy.exc import IntegrityError, ProgrammingError
-        from finance_kernel.db.triggers import triggers_installed
+
         from finance_kernel.db.engine import get_engine
+        from finance_kernel.db.triggers import triggers_installed
 
         engine = get_engine()
         if not triggers_installed(engine):
@@ -188,8 +193,8 @@ class TestR10DatabaseTriggers:
 
     def test_posting_transition_allowed_by_trigger(self, pg_session_factory, pg_session):
         """Test that the initial posting transition (draft -> posted) IS allowed."""
-        from finance_kernel.db.triggers import triggers_installed
         from finance_kernel.db.engine import get_engine
+        from finance_kernel.db.triggers import triggers_installed
 
         engine = get_engine()
         if not triggers_installed(engine):
@@ -356,8 +361,9 @@ class TestR10TriggerDeleteProtection:
     ):
         """Raw SQL DELETE on journal_lines of a posted entry blocked by trigger."""
         from sqlalchemy.exc import IntegrityError, ProgrammingError
-        from finance_kernel.db.triggers import triggers_installed
+
         from finance_kernel.db.engine import get_engine
+        from finance_kernel.db.triggers import triggers_installed
 
         engine = get_engine()
         if not triggers_installed(engine):
@@ -489,8 +495,9 @@ class TestR10CrossSessionImmutability:
         Session B opens, reads the same row, attempts UPDATE -> blocked by trigger.
         """
         from sqlalchemy.exc import IntegrityError, ProgrammingError
-        from finance_kernel.db.triggers import triggers_installed
+
         from finance_kernel.db.engine import get_engine
+        from finance_kernel.db.triggers import triggers_installed
 
         engine = get_engine()
         if not triggers_installed(engine):
@@ -555,8 +562,9 @@ class TestR10CrossSessionImmutability:
         Session B attempts DELETE -> blocked by trigger.
         """
         from sqlalchemy.exc import IntegrityError, ProgrammingError
-        from finance_kernel.db.triggers import triggers_installed
+
         from finance_kernel.db.engine import get_engine
+        from finance_kernel.db.triggers import triggers_installed
 
         engine = get_engine()
         if not triggers_installed(engine):
@@ -622,8 +630,9 @@ class TestR10TriggerSequenceIntegrity:
     ):
         """Raw SQL UPDATE of seq on posted entry blocked by database trigger."""
         from sqlalchemy.exc import IntegrityError, ProgrammingError
-        from finance_kernel.db.triggers import triggers_installed
+
         from finance_kernel.db.engine import get_engine
+        from finance_kernel.db.triggers import triggers_installed
 
         engine = get_engine()
         if not triggers_installed(engine):

@@ -19,7 +19,6 @@ from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.cash.service import CashService
 from tests.modules.conftest import TEST_BANK_ACCOUNT_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

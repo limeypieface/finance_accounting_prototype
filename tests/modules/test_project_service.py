@@ -46,7 +46,6 @@ from finance_modules.project.models import (
 from finance_modules.project.service import ProjectService
 from tests.modules.conftest import TEST_PROJECT_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

@@ -8,13 +8,15 @@ Property-based tests that verify:
 4. Invalid values are rejected gracefully
 """
 
-import pytest
-from decimal import Decimal
 from dataclasses import fields, is_dataclass
-from typing import get_type_hints, get_origin, get_args
+from decimal import Decimal
+from typing import get_args, get_origin, get_type_hints
+
+import pytest
 
 try:
-    from hypothesis import given, strategies as st, settings, assume, HealthCheck
+    from hypothesis import HealthCheck, assume, given, settings
+    from hypothesis import strategies as st
     from hypothesis.strategies import composite
 
     HYPOTHESIS_AVAILABLE = True
@@ -22,18 +24,17 @@ except ImportError:
     HYPOTHESIS_AVAILABLE = False
     pytest.skip("hypothesis not installed", allow_module_level=True)
 
-from finance_modules.ap.config import APConfig, MatchTolerance, ApprovalLevel
+from finance_modules.ap.config import APConfig, ApprovalLevel, MatchTolerance
 from finance_modules.ar.config import ARConfig, DunningLevel
-from finance_modules.inventory.config import InventoryConfig
-from finance_modules.wip.config import WIPConfig
 from finance_modules.assets.config import AssetConfig
-from finance_modules.expense.config import ExpenseConfig, CategoryLimit
-from finance_modules.tax.config import TaxConfig, NexusState
-from finance_modules.procurement.config import ProcurementConfig
-from finance_modules.payroll.config import PayrollConfig, OvertimeRule
-from finance_modules.gl.config import GLConfig
 from finance_modules.cash.config import CashConfig
-
+from finance_modules.expense.config import CategoryLimit, ExpenseConfig
+from finance_modules.gl.config import GLConfig
+from finance_modules.inventory.config import InventoryConfig
+from finance_modules.payroll.config import OvertimeRule, PayrollConfig
+from finance_modules.procurement.config import ProcurementConfig
+from finance_modules.tax.config import NexusState, TaxConfig
+from finance_modules.wip.config import WIPConfig
 
 # =============================================================================
 # Strategies for generating config values

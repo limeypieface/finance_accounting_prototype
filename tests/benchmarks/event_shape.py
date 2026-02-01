@@ -21,7 +21,6 @@ from typing import Any
 
 from finance_config.compiler import CompiledPolicy
 
-
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------

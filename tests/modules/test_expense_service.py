@@ -19,7 +19,6 @@ from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.expense.service import ExpenseService
 from tests.modules.conftest import TEST_EMPLOYEE_ID, TEST_EXPENSE_REPORT_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -260,10 +259,14 @@ class TestExpenseServiceNonPosting:
 
     def test_validate_against_policy_detects_over_limit(self, expense_service):
         """Policy validation detects over-limit expenses."""
-        from finance_modules.expense.models import (
-            ExpenseCategory, ExpenseLine, ExpensePolicy, PaymentMethod,
-        )
         from datetime import date
+
+        from finance_modules.expense.models import (
+            ExpenseCategory,
+            ExpenseLine,
+            ExpensePolicy,
+            PaymentMethod,
+        )
 
         line = ExpenseLine(
             id=uuid4(), report_id=uuid4(), line_number=1,
@@ -286,10 +289,14 @@ class TestExpenseServiceNonPosting:
 
     def test_validate_against_policy_detects_missing_receipt(self, expense_service):
         """Policy validation detects missing receipts."""
-        from finance_modules.expense.models import (
-            ExpenseCategory, ExpenseLine, ExpensePolicy, PaymentMethod,
-        )
         from datetime import date
+
+        from finance_modules.expense.models import (
+            ExpenseCategory,
+            ExpenseLine,
+            ExpensePolicy,
+            PaymentMethod,
+        )
 
         line = ExpenseLine(
             id=uuid4(), report_id=uuid4(), line_number=1,
@@ -313,8 +320,9 @@ class TestExpenseServiceNonPosting:
 
     def test_calculate_mileage_returns_correct_amount(self, expense_service):
         """Mileage calculation returns expected reimbursement."""
-        from finance_modules.expense.models import MileageRate
         from datetime import date
+
+        from finance_modules.expense.models import MileageRate
 
         rate = MileageRate(
             effective_date=date(2026, 1, 1),

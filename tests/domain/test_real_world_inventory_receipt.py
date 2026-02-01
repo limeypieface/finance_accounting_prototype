@@ -41,6 +41,9 @@ from finance_kernel.domain.accounting_policy import (
     PolicyPrecedence,
     PolicyTrigger,
 )
+from finance_kernel.domain.event_validator import (
+    validate_payload_against_schema,
+)
 from finance_kernel.domain.meaning_builder import (
     EconomicEventData,
     GuardEvaluationResult,
@@ -56,10 +59,6 @@ from finance_kernel.domain.schemas.base import (
 from finance_kernel.domain.schemas.registry import (
     EventSchemaRegistry,
 )
-from finance_kernel.domain.event_validator import (
-    validate_payload_against_schema,
-)
-
 
 # =============================================================================
 # SCHEMA DEFINITION

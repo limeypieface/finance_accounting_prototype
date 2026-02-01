@@ -51,7 +51,6 @@ from finance_services.period_close_orchestrator import (
     PeriodCloseOrchestrator,
 )
 
-
 # =========================================================================
 # Fixtures
 # =========================================================================
@@ -263,6 +262,7 @@ class TestBeginClose:
         run = orchestrator.begin_close(PERIOD_CODE, TEST_ACTOR)
 
         from sqlalchemy import select
+
         from finance_kernel.models.audit_event import AuditEvent
         events = session.execute(
             select(AuditEvent).where(
@@ -598,6 +598,7 @@ class TestCancelClose:
         orchestrator.cancel_close(PERIOD_CODE, TEST_ACTOR, reason="Reverting")
 
         from sqlalchemy import select
+
         from finance_kernel.models.audit_event import AuditEvent
         events = session.execute(
             select(AuditEvent).where(
@@ -714,6 +715,7 @@ class TestCloseCertificate:
         )
 
         from sqlalchemy import select
+
         from finance_kernel.models.audit_event import AuditEvent
         events = session.execute(
             select(AuditEvent).where(

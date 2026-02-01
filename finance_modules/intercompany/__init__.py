@@ -36,6 +36,7 @@ full provenance through the kernel audit chain (R11).  Transfer pricing
 adjustments support tax compliance across jurisdictions.
 """
 
+from finance_modules.intercompany.config import IntercompanyConfig
 from finance_modules.intercompany.models import (
     ConsolidationResult,
     EliminationRule,
@@ -44,7 +45,6 @@ from finance_modules.intercompany.models import (
     IntercompanyAgreement,
 )
 from finance_modules.intercompany.profiles import INTERCOMPANY_PROFILES
-from finance_modules.intercompany.config import IntercompanyConfig
 
 __all__ = [
     "ConsolidationResult",

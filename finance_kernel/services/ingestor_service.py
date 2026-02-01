@@ -49,9 +49,9 @@ from sqlalchemy.orm import Session
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.dtos import EventEnvelope, ValidationResult
 from finance_kernel.domain.event_validator import validate_event
+from finance_kernel.logging_config import get_logger
 from finance_kernel.models.event import Event
 from finance_kernel.services.auditor_service import AuditorService
-from finance_kernel.logging_config import get_logger
 from finance_kernel.utils.hashing import hash_payload
 
 logger = get_logger("services.ingestor")

@@ -10,11 +10,11 @@ Pytest enforces ordering -- dependency order is visible, reviewable, and
 caught at test collection time instead of runtime FK crashes.
 """
 
-import pytest
 from datetime import date
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Deterministic parent entity IDs
@@ -85,7 +85,7 @@ def random_uuid():
 @pytest.fixture
 def test_vendor_party(session, test_actor_id):
     """Create a SUPPLIER Party (vendor) for AP/Procurement FK constraints."""
-    from finance_kernel.models.party import Party, PartyType, PartyStatus
+    from finance_kernel.models.party import Party, PartyStatus, PartyType
     existing = session.get(Party, TEST_VENDOR_ID)
     if existing is not None:
         return existing
@@ -106,7 +106,7 @@ def test_vendor_party(session, test_actor_id):
 @pytest.fixture
 def test_customer_party(session, test_actor_id):
     """Create a CUSTOMER Party for AR/Revenue/Contracts FK constraints."""
-    from finance_kernel.models.party import Party, PartyType, PartyStatus
+    from finance_kernel.models.party import Party, PartyStatus, PartyType
     existing = session.get(Party, TEST_CUSTOMER_ID)
     if existing is not None:
         return existing
@@ -127,7 +127,7 @@ def test_customer_party(session, test_actor_id):
 @pytest.fixture
 def test_employee_party(session, test_actor_id):
     """Create an EMPLOYEE Party for Payroll/Expense FK constraints."""
-    from finance_kernel.models.party import Party, PartyType, PartyStatus
+    from finance_kernel.models.party import Party, PartyStatus, PartyType
     existing = session.get(Party, TEST_EMPLOYEE_ID)
     if existing is not None:
         return existing
@@ -148,7 +148,7 @@ def test_employee_party(session, test_actor_id):
 @pytest.fixture
 def test_lessee_party(session, test_actor_id):
     """Create a CUSTOMER Party (lessee) for Lease FK constraints."""
-    from finance_kernel.models.party import Party, PartyType, PartyStatus
+    from finance_kernel.models.party import Party, PartyStatus, PartyType
     existing = session.get(Party, TEST_LESSEE_ID)
     if existing is not None:
         return existing
@@ -467,7 +467,7 @@ def test_contract(session, test_actor_id, test_customer_party):
 
     Depends on: test_customer_party (FK to parties via customer_id).
     """
-    from finance_kernel.models.contract import Contract, ContractType, ContractStatus
+    from finance_kernel.models.contract import Contract, ContractStatus, ContractType
     existing = session.get(Contract, TEST_CONTRACT_ID)
     if existing is not None:
         return existing

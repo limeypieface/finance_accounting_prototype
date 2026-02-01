@@ -8,10 +8,11 @@ Tests the graph operations for EconomicLinks including:
 - Reversal and correction detection
 """
 
-import pytest
 from datetime import datetime
 from decimal import Decimal
 from uuid import uuid4
+
+import pytest
 
 from finance_kernel.domain.economic_link import (
     ArtifactRef,
@@ -27,8 +28,8 @@ from finance_kernel.exceptions import (
     MaxChildrenExceededError,
 )
 from finance_kernel.services.link_graph_service import (
-    LinkGraphService,
     LinkEstablishResult,
+    LinkGraphService,
     UnconsumedValue,
 )
 

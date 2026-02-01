@@ -24,7 +24,6 @@ from finance_modules.wip.models import (
 from finance_modules.wip.service import WipService
 from tests.modules.conftest import TEST_WORK_ORDER_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

@@ -35,6 +35,7 @@ chain (R11).  Budget-vs-actual variance reports support management
 oversight and regulatory compliance.
 """
 
+from finance_modules.budget.config import BudgetConfig
 from finance_modules.budget.models import (
     BudgetEntry,
     BudgetLock,
@@ -45,7 +46,6 @@ from finance_modules.budget.models import (
     ForecastEntry,
 )
 from finance_modules.budget.profiles import BUDGET_PROFILES
-from finance_modules.budget.config import BudgetConfig
 
 __all__ = [
     "BudgetEntry",

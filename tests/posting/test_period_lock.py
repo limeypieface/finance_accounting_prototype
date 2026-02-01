@@ -14,10 +14,11 @@ tests exercise the full pipeline including MeaningBuilder guard
 evaluation and InterpretationCoordinator result handling.
 """
 
-import pytest
 from datetime import date, timedelta
 from decimal import Decimal
 from uuid import uuid4
+
+import pytest
 
 from finance_kernel.domain.accounting_intent import (
     AccountingIntent,
@@ -31,13 +32,12 @@ from finance_kernel.domain.accounting_policy import (
 )
 from finance_kernel.domain.meaning_builder import (
     EconomicEventData,
-    MeaningBuilderResult,
     GuardEvaluationResult,
+    MeaningBuilderResult,
 )
 from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
 from finance_kernel.services.period_service import PeriodService
 from tests.conftest import make_source_event
-
 
 # =============================================================================
 # Helpers

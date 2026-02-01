@@ -19,7 +19,6 @@ import ast
 import glob
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -257,7 +256,7 @@ class TestKernelInvariantsDeclaration:
 
     def test_invariants_module_exists(self):
         """finance_kernel.invariants must be importable."""
-        from finance_kernel.invariants import KernelInvariant, ALL_KERNEL_INVARIANTS
+        from finance_kernel.invariants import ALL_KERNEL_INVARIANTS, KernelInvariant
         assert len(ALL_KERNEL_INVARIANTS) > 0
 
     def test_required_invariants_declared(self):

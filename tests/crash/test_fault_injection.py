@@ -10,23 +10,23 @@ These tests verify that:
 4. Transaction isolation is maintained
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-from uuid import uuid4
-from datetime import date, datetime
-from decimal import Decimal
 import threading
 import time
+from datetime import date, datetime
+from decimal import Decimal
+from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
-from sqlalchemy import select, event
+import pytest
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
-from finance_kernel.services.journal_writer import JournalWriter
-from finance_kernel.services.auditor_service import AuditorService
-from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus
-from finance_kernel.models.event import Event
-from finance_kernel.models.audit_event import AuditEvent
 from finance_kernel.domain.clock import DeterministicClock
+from finance_kernel.models.audit_event import AuditEvent
+from finance_kernel.models.event import Event
+from finance_kernel.models.journal import JournalEntry, JournalEntryStatus, JournalLine
+from finance_kernel.services.auditor_service import AuditorService
+from finance_kernel.services.journal_writer import JournalWriter
 
 
 class SimulatedCrash(Exception):
@@ -54,9 +54,15 @@ class TestAtomicityGuarantees:
         Verify that a crash during journal write doesn't leave orphaned records.
         """
         from finance_kernel.domain.accounting_intent import (
-            AccountingIntent, LedgerIntent, IntentLine, AccountingIntentSnapshot,
+            AccountingIntent,
+            AccountingIntentSnapshot,
+            IntentLine,
+            LedgerIntent,
         )
-        from finance_kernel.domain.meaning_builder import MeaningBuilderResult, EconomicEventData
+        from finance_kernel.domain.meaning_builder import (
+            EconomicEventData,
+            MeaningBuilderResult,
+        )
         from tests.conftest import make_source_event
 
         # Count records before
@@ -145,9 +151,15 @@ class TestRecoveryScenarios:
         Verify system is in consistent state after crash and restart.
         """
         from finance_kernel.domain.accounting_intent import (
-            AccountingIntent, LedgerIntent, IntentLine, AccountingIntentSnapshot,
+            AccountingIntent,
+            AccountingIntentSnapshot,
+            IntentLine,
+            LedgerIntent,
         )
-        from finance_kernel.domain.meaning_builder import MeaningBuilderResult, EconomicEventData
+        from finance_kernel.domain.meaning_builder import (
+            EconomicEventData,
+            MeaningBuilderResult,
+        )
         from tests.conftest import make_source_event
 
         # Post a successful entry first
@@ -279,10 +291,17 @@ class TestGracefulDegradation:
         Verify system handles connection loss gracefully.
         """
         from sqlalchemy.exc import OperationalError
+
         from finance_kernel.domain.accounting_intent import (
-            AccountingIntent, LedgerIntent, IntentLine, AccountingIntentSnapshot,
+            AccountingIntent,
+            AccountingIntentSnapshot,
+            IntentLine,
+            LedgerIntent,
         )
-        from finance_kernel.domain.meaning_builder import MeaningBuilderResult, EconomicEventData
+        from finance_kernel.domain.meaning_builder import (
+            EconomicEventData,
+            MeaningBuilderResult,
+        )
         from tests.conftest import make_source_event
 
         source_event_id = uuid4()

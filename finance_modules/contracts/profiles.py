@@ -77,10 +77,10 @@ from finance_kernel.domain.accounting_policy import (
     GuardCondition,
     GuardType,
     LedgerEffect,
-    PrecedenceMode,
     PolicyMeaning,
     PolicyPrecedence,
     PolicyTrigger,
+    PrecedenceMode,
 )
 from finance_kernel.domain.policy_bridge import (
     ModuleLineMapping,

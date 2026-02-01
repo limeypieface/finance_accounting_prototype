@@ -11,14 +11,14 @@ Integration tests at bottom exercise InventoryService.receive_inventory()
 and adjust_inventory() through the real posting pipeline.
 """
 
-import pytest
-from decimal import Decimal
-from datetime import date
-from uuid import uuid4
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from datetime import date
+from decimal import Decimal
 from enum import Enum
+from typing import Dict, List, Optional
+from uuid import uuid4
 
+import pytest
 
 # =============================================================================
 # Domain Models for Landed Cost
@@ -51,8 +51,8 @@ class ReceiptItem:
     description: str
     quantity: Decimal
     unit_cost: Decimal
-    weight: Optional[Decimal] = None
-    volume: Optional[Decimal] = None
+    weight: Decimal | None = None
+    volume: Decimal | None = None
 
     @property
     def total_value(self) -> Decimal:
@@ -77,7 +77,7 @@ class PurchaseReceipt:
     receipt_id: str
     supplier_id: str
     receipt_date: date
-    items: List[ReceiptItem]
+    items: list[ReceiptItem]
 
     @property
     def total_value(self) -> Decimal:
@@ -111,7 +111,7 @@ class LandedCostVoucher:
     """Voucher to allocate landed costs to receipt."""
     voucher_id: str
     receipt_id: str
-    charges: List[LandedCostCharge]
+    charges: list[LandedCostCharge]
     posting_date: date
 
     @property
@@ -148,14 +148,14 @@ class LandedCostAllocator:
         self,
         receipt: PurchaseReceipt,
         voucher: LandedCostVoucher,
-    ) -> List[AllocationResult]:
+    ) -> list[AllocationResult]:
         """
         Allocate all landed costs to receipt items.
 
         Returns new valuation rate for each item.
         """
         # Initialize per-item allocations
-        allocations: Dict[str, Decimal] = {item.item_id: Decimal("0") for item in receipt.items}
+        allocations: dict[str, Decimal] = {item.item_id: Decimal("0") for item in receipt.items}
 
         # Allocate each charge
         for charge in voucher.charges:
@@ -184,7 +184,7 @@ class LandedCostAllocator:
         self,
         receipt: PurchaseReceipt,
         charge: LandedCostCharge,
-    ) -> Dict[str, Decimal]:
+    ) -> dict[str, Decimal]:
         """Allocate a single charge based on its method."""
         allocations = {}
 
@@ -205,7 +205,7 @@ class LandedCostAllocator:
         self,
         receipt: PurchaseReceipt,
         amount: Decimal,
-    ) -> Dict[str, Decimal]:
+    ) -> dict[str, Decimal]:
         """Allocate proportional to item value."""
         total_value = receipt.total_value
         if total_value == 0:
@@ -230,7 +230,7 @@ class LandedCostAllocator:
         self,
         receipt: PurchaseReceipt,
         amount: Decimal,
-    ) -> Dict[str, Decimal]:
+    ) -> dict[str, Decimal]:
         """Allocate proportional to quantity."""
         total_qty = receipt.total_quantity
         if total_qty == 0:
@@ -254,7 +254,7 @@ class LandedCostAllocator:
         self,
         receipt: PurchaseReceipt,
         amount: Decimal,
-    ) -> Dict[str, Decimal]:
+    ) -> dict[str, Decimal]:
         """Allocate proportional to weight."""
         total_weight = receipt.total_weight
         if total_weight == 0:
@@ -278,7 +278,7 @@ class LandedCostAllocator:
         self,
         receipt: PurchaseReceipt,
         amount: Decimal,
-    ) -> Dict[str, Decimal]:
+    ) -> dict[str, Decimal]:
         """Allocate equally across all items."""
         item_count = len(receipt.items)
         if item_count == 0:
@@ -310,8 +310,8 @@ class LandedCostGLGenerator:
     def generate_entries(
         self,
         voucher: LandedCostVoucher,
-        allocations: List[AllocationResult],
-    ) -> List[GLEntry]:
+        allocations: list[AllocationResult],
+    ) -> list[GLEntry]:
         """
         Generate GL entries for landed cost voucher.
 

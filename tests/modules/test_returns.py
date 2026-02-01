@@ -10,14 +10,14 @@ Tests validate correct return GL generation, inventory quantity tracking,
 price variance handling, tax reversal, and duplicate prevention.
 """
 
-import pytest
-from decimal import Decimal
-from datetime import date, timedelta
-from uuid import uuid4
 from dataclasses import dataclass, field
-from typing import List, Optional
+from datetime import date, timedelta
+from decimal import Decimal
 from enum import Enum
+from typing import List, Optional
+from uuid import uuid4
 
+import pytest
 
 # =============================================================================
 # Domain Models for Returns
@@ -46,8 +46,8 @@ class GLEntry:
     account: str
     debit: Decimal = Decimal("0")
     credit: Decimal = Decimal("0")
-    cost_center: Optional[str] = None
-    dimension: Optional[str] = None
+    cost_center: str | None = None
+    dimension: str | None = None
 
     def __post_init__(self):
         if self.debit < 0 or self.credit < 0:
@@ -64,7 +64,7 @@ class InvoiceLine:
     quantity: Decimal
     unit_price: Decimal
     tax_rate: Decimal = Decimal("0")
-    cost_center: Optional[str] = None
+    cost_center: str | None = None
 
     @property
     def line_total(self) -> Decimal:
@@ -86,7 +86,7 @@ class OriginalInvoice:
     invoice_type: str  # "purchase" or "sales"
     party_id: str
     invoice_date: date
-    lines: List[InvoiceLine]
+    lines: list[InvoiceLine]
     currency: str = "USD"
     exchange_rate: Decimal = Decimal("1")
     is_perpetual_inventory: bool = True
@@ -109,7 +109,7 @@ class ReturnLine:
     """Line item being returned."""
     original_line_index: int
     return_quantity: Decimal
-    return_unit_price: Optional[Decimal] = None  # If None, use original price
+    return_unit_price: Decimal | None = None  # If None, use original price
     reason: ReturnReason = ReturnReason.DEFECTIVE
 
 
@@ -119,7 +119,7 @@ class ReturnDocument:
     return_id: str
     return_type: ReturnType
     original_invoice: OriginalInvoice
-    return_lines: List[ReturnLine]
+    return_lines: list[ReturnLine]
     return_date: date
     is_standalone: bool = False  # True if no original invoice
     restock_inventory: bool = True
@@ -160,7 +160,7 @@ class ReturnGLGenerator:
     def generate_purchase_return_entries(
         self,
         return_doc: ReturnDocument,
-    ) -> List[GLEntry]:
+    ) -> list[GLEntry]:
         """
         Generate GL entries for purchase return (debit note).
 
@@ -240,7 +240,7 @@ class ReturnGLGenerator:
         self,
         return_doc: ReturnDocument,
         original_cost_per_unit: Decimal,
-    ) -> List[GLEntry]:
+    ) -> list[GLEntry]:
         """
         Generate GL entries for sales return (credit note).
 

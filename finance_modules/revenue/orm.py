@@ -48,7 +48,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from finance_kernel.db.base import TrackedBase, UUIDString
 
-
 # =============================================================================
 # Revenue Contract (ASC 606 Step 1)
 # =============================================================================
@@ -127,7 +126,7 @@ class RevenueContractModel(TrackedBase):
     )
 
     def to_dto(self):
-        from finance_modules.revenue.models import RevenueContract, ContractStatus
+        from finance_modules.revenue.models import ContractStatus, RevenueContract
 
         return RevenueContract(
             id=self.id,

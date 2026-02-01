@@ -18,7 +18,6 @@ import pytest
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.gl.service import GeneralLedgerService
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

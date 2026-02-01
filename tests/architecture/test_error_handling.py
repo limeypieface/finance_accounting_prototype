@@ -10,56 +10,57 @@ R19. No silent correction
   with a traceable rounding or adjustment line
 """
 
-import pytest
 import inspect
-from decimal import Decimal
 from datetime import date, datetime
+from decimal import Decimal
 from uuid import uuid4
 
-from finance_kernel.exceptions import (
-    FinanceKernelError,
-    EventError,
-    EventNotFoundError,
-    EventAlreadyExistsError,
-    PayloadMismatchError,
-    UnsupportedSchemaVersionError,
-    PostingError,
-    AlreadyPostedError,
-    UnbalancedEntryError,
-    InvalidAccountError,
-    MissingDimensionError,
-    InvalidDimensionValueError,
-    PeriodError,
-    ClosedPeriodError,
-    PeriodNotFoundError,
-    PeriodAlreadyClosedError,
-    PeriodOverlapError,
-    PeriodImmutableError,
-    AdjustmentsNotAllowedError,
-    AccountError,
-    AccountNotFoundError,
-    AccountInactiveError,
-    AccountReferencedError,
-    RoundingAccountNotFoundError,
-    CurrencyError,
-    InvalidCurrencyError,
-    CurrencyMismatchError,
-    ExchangeRateNotFoundError,
-    AuditError,
-    AuditChainBrokenError,
-    ReversalError,
-    EntryNotPostedError,
-    EntryAlreadyReversedError,
-    ConcurrencyError,
-    OptimisticLockError,
-    ImmutabilityError,
-    ImmutabilityViolationError,
-)
+import pytest
+
+from finance_kernel.domain.dtos import ValidationError, ValidationResult
 from finance_kernel.domain.strategy_registry import (
     StrategyNotFoundError,
     StrategyVersionNotFoundError,
 )
-from finance_kernel.domain.dtos import ValidationError, ValidationResult
+from finance_kernel.exceptions import (
+    AccountError,
+    AccountInactiveError,
+    AccountNotFoundError,
+    AccountReferencedError,
+    AdjustmentsNotAllowedError,
+    AlreadyPostedError,
+    AuditChainBrokenError,
+    AuditError,
+    ClosedPeriodError,
+    ConcurrencyError,
+    CurrencyError,
+    CurrencyMismatchError,
+    EntryAlreadyReversedError,
+    EntryNotPostedError,
+    EventAlreadyExistsError,
+    EventError,
+    EventNotFoundError,
+    ExchangeRateNotFoundError,
+    FinanceKernelError,
+    ImmutabilityError,
+    ImmutabilityViolationError,
+    InvalidAccountError,
+    InvalidCurrencyError,
+    InvalidDimensionValueError,
+    MissingDimensionError,
+    OptimisticLockError,
+    PayloadMismatchError,
+    PeriodAlreadyClosedError,
+    PeriodError,
+    PeriodImmutableError,
+    PeriodNotFoundError,
+    PeriodOverlapError,
+    PostingError,
+    ReversalError,
+    RoundingAccountNotFoundError,
+    UnbalancedEntryError,
+    UnsupportedSchemaVersionError,
+)
 
 
 class TestR18DeterministicErrors:
@@ -270,7 +271,7 @@ class TestR19NoSilentCorrection:
 
     def test_rounding_lines_are_explicitly_marked(self):
         """Rounding lines must be explicitly marked with is_rounding=True."""
-        from finance_kernel.domain.dtos import LineSpec, ProposedLine, LineSide
+        from finance_kernel.domain.dtos import LineSide, LineSpec, ProposedLine
         from finance_kernel.domain.values import Money
 
         # LineSpec tracks rounding flag
@@ -295,10 +296,15 @@ class TestR19NoSilentCorrection:
 
     def test_unbalanced_entry_fails_not_silently_corrected(self):
         """Unbalanced entries must fail, not be silently corrected."""
-        from finance_kernel.domain.dtos import ProposedJournalEntry, EventEnvelope
+        from finance_kernel.domain.dtos import (
+            EventEnvelope,
+            LineSide,
+            LineSpec,
+            ProposedJournalEntry,
+            ReferenceData,
+        )
         from finance_kernel.domain.strategy import BasePostingStrategy, StrategyResult
-        from finance_kernel.domain.dtos import LineSpec, ReferenceData, LineSide
-        from finance_kernel.domain.values import Money, Currency
+        from finance_kernel.domain.values import Currency, Money
 
         # Create strategy that produces unbalanced lines
         class UnbalancedStrategy(BasePostingStrategy):
@@ -353,10 +359,14 @@ class TestR19NoSilentCorrection:
 
     def test_small_imbalance_creates_traceable_rounding_line(self):
         """Small imbalances within tolerance create explicit rounding lines."""
-        from finance_kernel.domain.dtos import EventEnvelope
+        from finance_kernel.domain.dtos import (
+            EventEnvelope,
+            LineSide,
+            LineSpec,
+            ReferenceData,
+        )
         from finance_kernel.domain.strategy import BasePostingStrategy
-        from finance_kernel.domain.dtos import LineSpec, ReferenceData, LineSide
-        from finance_kernel.domain.values import Money, Currency
+        from finance_kernel.domain.values import Currency, Money
 
         rounding_account_id = uuid4()
 
@@ -424,10 +434,14 @@ class TestR19NoSilentCorrection:
 
     def test_rounding_without_rounding_account_fails(self):
         """Rounding is impossible without a configured rounding account."""
-        from finance_kernel.domain.dtos import EventEnvelope
+        from finance_kernel.domain.dtos import (
+            EventEnvelope,
+            LineSide,
+            LineSpec,
+            ReferenceData,
+        )
         from finance_kernel.domain.strategy import BasePostingStrategy
-        from finance_kernel.domain.dtos import LineSpec, ReferenceData, LineSide
-        from finance_kernel.domain.values import Money, Currency
+        from finance_kernel.domain.values import Currency, Money
 
         # Create strategy with small imbalance
         class ImbalanceStrategy(BasePostingStrategy):
@@ -483,8 +497,9 @@ class TestR19NoSilentCorrection:
 
     def test_journal_lines_track_rounding_flag_in_database(self):
         """JournalLine model must have is_rounding field for traceability."""
-        from finance_kernel.models.journal import JournalLine
         from sqlalchemy import inspect
+
+        from finance_kernel.models.journal import JournalLine
 
         # Verify the model has the is_rounding field
         assert hasattr(JournalLine, "is_rounding")

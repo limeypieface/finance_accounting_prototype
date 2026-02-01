@@ -52,7 +52,6 @@ from finance_kernel.logging_config import get_logger
 from finance_kernel.models.account import Account, AccountType, NormalBalance
 from finance_kernel.selectors.journal_selector import JournalSelector
 from finance_kernel.selectors.ledger_selector import LedgerSelector, TrialBalanceRow
-
 from finance_modules.reporting.config import ReportingConfig
 from finance_modules.reporting.models import (
     BalanceSheetReport,

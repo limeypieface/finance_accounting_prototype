@@ -14,8 +14,9 @@ Regression threshold: warm-up/steady ratio < 5.0x
 
 from __future__ import annotations
 
-import pytest
 from uuid import uuid4
+
+import pytest
 
 from tests.benchmarks.conftest import EFFECTIVE, make_simple_event
 from tests.benchmarks.helpers import (

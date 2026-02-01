@@ -7,20 +7,23 @@ These tests attempt to bypass guards to verify they are actually enforced.
 CRITICAL: Without guard execution, the workflow is just documentation.
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
+
+import pytest
 
 from finance_modules.ap.workflows import INVOICE_WORKFLOW as AP_INVOICE_WORKFLOW
 from finance_modules.ap.workflows import PAYMENT_WORKFLOW as AP_PAYMENT_WORKFLOW
 from finance_modules.ar.workflows import INVOICE_WORKFLOW as AR_INVOICE_WORKFLOW
-from finance_modules.procurement.workflows import REQUISITION_WORKFLOW, PURCHASE_ORDER_WORKFLOW
-from finance_modules.inventory.workflows import RECEIPT_WORKFLOW as INV_RECEIPT_WORKFLOW
-from finance_modules.inventory.workflows import ISSUE_WORKFLOW as INV_ISSUE_WORKFLOW
-from finance_modules.payroll.workflows import PAYROLL_RUN_WORKFLOW
 from finance_modules.gl.workflows import PERIOD_CLOSE_WORKFLOW
-
+from finance_modules.inventory.workflows import ISSUE_WORKFLOW as INV_ISSUE_WORKFLOW
+from finance_modules.inventory.workflows import RECEIPT_WORKFLOW as INV_RECEIPT_WORKFLOW
+from finance_modules.payroll.workflows import PAYROLL_RUN_WORKFLOW
+from finance_modules.procurement.workflows import (
+    PURCHASE_ORDER_WORKFLOW,
+    REQUISITION_WORKFLOW,
+)
 
 # =============================================================================
 # Test Infrastructure - Mock Context for Guard Testing

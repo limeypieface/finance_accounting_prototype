@@ -1,31 +1,9 @@
-"""
-Valuation -- Versioned valuation models and resolver.
+"""Valuation -- Versioned valuation models and resolver."""
 
-Responsibility:
-    Provides versioned valuation models that compute monetary values from
-    event payloads.  Profiles reference models by ID only (P8 -- no inline
-    expressions).
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    P8 -- Profiles reference valuation models by ID only; no inline
-          expressions are permitted.
-
-Failure modes:
-    - ValuationModelNotFoundError (R18: VALUATION_MODEL_NOT_FOUND)
-    - ValuationResult.fail() when computation returns None or raises
-
-Audit relevance:
-    ValuationResult records model_id and model_version so auditors can
-    verify that the correct valuation logic was applied and replay it
-    deterministically.
-"""
-
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable, ClassVar
+from typing import Any, ClassVar
 
 from finance_kernel.logging_config import get_logger
 
@@ -34,17 +12,7 @@ logger = get_logger("domain.valuation")
 
 @dataclass(frozen=True)
 class ValuationResult:
-    """
-    Result of a valuation computation.
-
-    Attributes:
-        success: Whether valuation succeeded
-        value: The computed value (if success)
-        currency: The currency of the value
-        model_id: ID of the model used
-        model_version: Version of the model used
-        error: Error message if failed
-    """
+    """Result of a valuation computation."""
 
     success: bool
     value: Decimal | None = None
@@ -78,20 +46,7 @@ class ValuationResult:
 
 @dataclass(frozen=True)
 class ValuationModel:
-    """
-    Versioned valuation model definition.
-
-    Encapsulates the logic for computing value from event data.
-    Uses a callable for flexibility while maintaining determinism.
-
-    Attributes:
-        model_id: Unique model identifier
-        version: Model version
-        description: Human-readable description
-        currency_field: Field path to get currency from
-        uses_fields: Fields this model reads from
-        compute: Function to compute value from payload
-    """
+    """Versioned valuation model definition."""
 
     model_id: str
     version: int
@@ -121,24 +76,7 @@ class ValuationModelNotFoundError(Exception):
 
 
 class ValuationModelRegistry:
-    """
-    Registry for valuation models.
-
-    Contract:
-        Class-level singleton registry.  ``register()`` adds models;
-        ``get()`` returns the requested model or raises.
-
-    Guarantees:
-        - ``get()`` returns the latest version when ``version=None``.
-        - ``has_model()`` is a non-throwing membership test.
-
-    Non-goals:
-        - Does NOT persist to database (in-memory, populated at module load).
-        - Does NOT evaluate models (ValuationResolver does that).
-
-    Invariants enforced:
-        P8 -- Profiles reference models by ID only; no inline expressions.
-    """
+    """Registry for valuation models (P8)."""
 
     # Class-level registry: model_id -> {version -> model}
     _models: ClassVar[dict[str, dict[int, ValuationModel]]] = {}
@@ -165,19 +103,7 @@ class ValuationModelRegistry:
         model_id: str,
         version: int | None = None,
     ) -> ValuationModel:
-        """
-        Get a valuation model.
-
-        Args:
-            model_id: The model identifier.
-            version: Specific version, or None for latest.
-
-        Returns:
-            The ValuationModel.
-
-        Raises:
-            ValuationModelNotFoundError: If not found.
-        """
+        """Get a valuation model by ID, optionally by version."""
         if model_id not in cls._models:
             raise ValuationModelNotFoundError(model_id, version)
 
@@ -215,22 +141,7 @@ class ValuationModelRegistry:
 
 
 class ValuationResolver:
-    """
-    Resolves valuation using registered models.
-
-    Contract:
-        ``resolve()`` looks up a model by ID and applies its compute
-        function to the payload.  Returns ``ValuationResult`` (never raises
-        for business rule violations).
-
-    Guarantees:
-        - ``resolve()`` always returns a ``ValuationResult`` -- success or
-          failure, never an unhandled exception for model logic errors.
-
-    Non-goals:
-        - Does NOT manage model registration (ValuationModelRegistry does).
-        - Does NOT perform I/O.
-    """
+    """Resolves valuation using registered models."""
 
     def resolve(
         self,
@@ -238,17 +149,7 @@ class ValuationResolver:
         payload: dict[str, Any],
         model_version: int | None = None,
     ) -> ValuationResult:
-        """
-        Resolve valuation using a registered model.
-
-        Args:
-            model_id: The valuation model ID.
-            payload: The event payload.
-            model_version: Specific version, or None for latest.
-
-        Returns:
-            ValuationResult with value and currency.
-        """
+        """Resolve valuation using a registered model."""
         logger.debug(
             "valuation_resolve_started",
             extra={

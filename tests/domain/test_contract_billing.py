@@ -15,13 +15,13 @@ import finance_kernel.domain.schemas.definitions.contract  # noqa: F401
 
 # Contract profiles now live in finance_modules.contracts
 from finance_modules.contracts.profiles import register as register_contracts
+
 register_contracts()
 
 from finance_kernel.domain.accounting_policy import AccountingPolicy, LedgerEffect
-from finance_kernel.domain.schemas.registry import EventSchemaRegistry
-from finance_kernel.domain.policy_selector import PolicySelector
 from finance_kernel.domain.event_validator import validate_payload_against_schema
-
+from finance_kernel.domain.policy_selector import PolicySelector
+from finance_kernel.domain.schemas.registry import EventSchemaRegistry
 
 # ============================================================================
 # Helper Functions

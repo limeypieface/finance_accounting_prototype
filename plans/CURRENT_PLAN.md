@@ -1,161 +1,112 @@
-# Module ORM Persistence Layer Implementation
+# Active Plans
 
-**Date:** 2026-01-31
-**Last Update:** 2026-02-01
-**Status:** COMPLETE -- ready to commit
-**Reference plan:** `plans/MODULE_ORM_PERSISTENCE_PLAN.md`
-**Baseline:** 3,614+ tests passed before ORM work began
-**Current:** 4,052 pass / 0 fail / 0 errors
+**Date:** 2026-02-01
 
 ---
 
-## Objective
+## 1. Modular Approval Engine
 
-Persist all module-level business objects (invoices, payments, assets, leases,
-employees, etc.) to the database via SQLAlchemy ORM models. Currently, only
-kernel journal entries survive process restart -- the 147 frozen dataclasses
-across 19 modules are ephemeral in-memory objects.
+**Status:** NOT STARTED -- plan approved, awaiting implementation
+**Full plan:** `plans/APPROVAL_ENGINE_PLAN.md`
 
----
+Design and implement a fully modular, configuration-driven approval engine that
+governs all state transitions across the system -- both human approval gates and
+operational transitions. Approval policies are defined in YAML and compiled at
+config time.
 
-## Completed Phases
+| Phase | Description | Status | Depends On |
+|-------|------------|--------|------------|
+| 0 | Consolidate workflow types into `finance_kernel/domain/workflow.py` | pending | -- |
+| 1 | Domain types (`finance_kernel/domain/approval.py`) | pending | Phase 0 |
+| 2 | Pure engine (`finance_engines/approval.py`) | pending | Phase 1 |
+| 3 | ORM models (`finance_kernel/models/approval.py`) | pending | Phase 1 |
+| 4 | Exceptions + audit actions | pending | Phase 1 |
+| 5 | Services (ApprovalService + WorkflowExecutor) | pending | Phases 2,3,4 |
+| 6 | Config schema additions | pending | Phase 1 |
+| 7 | YAML configuration | pending | Phase 6 |
+| 8 | Integration with posting pipeline | pending | Phases 5,7 |
+| 9 | Tests (~180 across 7 files) | pending | All phases |
+| 10 | Module workflow migration (AP first) | pending | Phase 8 |
 
-### Phase 0: Architecture Boundary Fix -- DONE
-
-- Created `create_all_tables()` in `finance_modules/_orm_registry.py`
-- Removed illegal `import finance_modules` from `finance_kernel/db/engine.py`
-- Added `kernel_only` guard parameter to `create_tables()`
-- Updated `tests/conftest.py` to use production orchestration path
-- Removed unused `create_tables` import from `tests/conftest.py`
-- All 14 architecture tests pass
-
-### Phase 1: ORM Model Files -- DONE (106 models, 8,119 lines)
-
-All 18 `orm.py` files created:
-
-| Module | File | Models | Lines |
-|--------|------|--------|-------|
-| AP | `finance_modules/ap/orm.py` | 8 | 707 |
-| AR | `finance_modules/ar/orm.py` | 9 | 756 |
-| Assets | `finance_modules/assets/orm.py` | 7 | 564 |
-| Budget | `finance_modules/budget/orm.py` | 5 | 391 |
-| Cash | `finance_modules/cash/orm.py` | 6 | 462 |
-| Contracts | `finance_modules/contracts/orm.py` | 4 | 346 |
-| Expense | `finance_modules/expense/orm.py` | 4 | 345 |
-| GL | `finance_modules/gl/orm.py` | 7 | 546 |
-| Intercompany | `finance_modules/intercompany/orm.py` | 3 | 272 |
-| Inventory | `finance_modules/inventory/orm.py` | 7 | 586 |
-| Lease | `finance_modules/lease/orm.py` | 5 | 477 |
-| Payroll | `finance_modules/payroll/orm.py` | 9 | 736 |
-| Procurement | `finance_modules/procurement/orm.py` | 3 | 310 |
-| Project | `finance_modules/project/orm.py` | 3 | 283 |
-| Revenue | `finance_modules/revenue/orm.py` | 6 | 606 |
-| Tax | `finance_modules/tax/orm.py` | 10 | 733 |
-| WIP | `finance_modules/wip/orm.py` | 8 | 755 |
-| Period Close | `finance_services/orm.py` | 2 | 245 |
-| **TOTAL** | **18 files** | **106** | **8,119** |
-
-### Phase 2: Service Wiring -- DONE (17 modules, 75+ session.add() calls)
-
-All 17 module services wired with `session.add()` calls to persist ORM
-models atomically with journal entries.
-
-| Module | Service File | session.add() Calls | Status |
-|--------|-------------|---------------------|--------|
-| AP | `ap/service.py` | 5 | WIRED |
-| AR | `ar/service.py` | 7 | WIRED |
-| Cash | `cash/service.py` | 9 | WIRED |
-| Assets | `assets/service.py` | 6 | WIRED |
-| Inventory | `inventory/service.py` | 4 | WIRED |
-| WIP | `wip/service.py` | 4 | WIRED |
-| Tax | `tax/service.py` | 6 | WIRED |
-| Payroll | `payroll/service.py` | 2 | WIRED |
-| GL | `gl/service.py` | 2 | WIRED |
-| Revenue | `revenue/service.py` | 5 | WIRED |
-| Lease | `lease/service.py` | 5 | WIRED |
-| Budget | `budget/service.py` | 2 | WIRED |
-| Expense | `expense/service.py` | 2 | WIRED |
-| Project | `project/service.py` | 2 | WIRED |
-| Contracts | `contracts/service.py` | 2 | WIRED |
-| Intercompany | `intercompany/service.py` | 3 | WIRED |
-| Procurement | `procurement/service.py` | 3 | WIRED |
-| Reporting | `reporting/service.py` | 0 | N/A (read-only) |
-
-### Phase 2a: FK Parameter Fixes -- DONE (8 services, 19 methods)
-
-Service methods updated to require real parent entity IDs instead of
-placeholder UUIDs.
-
-### Phase 2b: Test Fixture Restructuring -- DONE
-
-- Removed autouse from `_module_parent_entities`
-- Split into individual fixtures: `test_vendor_party`, `test_customer_party`,
-  `test_employee_party`, `test_lessee_party`, `test_bank_account`,
-  `test_asset_category`, `test_asset`, `test_tax_jurisdiction`,
-  `test_work_order`, `test_operation`, `test_budget_version`,
-  `test_pay_period`, `test_payroll_employee`, `test_revenue_contract`,
-  `test_lease`, `test_contract`, `test_expense_report`, `test_project`,
-  `test_ic_agreement`, `test_gov_contract`
-- 18 deterministic UUIDs for test imports
-- 30+ test files updated with explicit fixture dependencies
-
-### Phase 2c: ORM Model / Fixture Alignment -- DONE
-
-Fixed 5 field name mismatches between ORM models and test fixtures:
-- `AssetCategoryModel`: `useful_life_months` -> `useful_life_years`, GL account names
-- `BudgetVersionModel` -> `BudgetModel`: fixture was creating wrong entity type
-- `PayPeriodModel`: `period_code`/`status` -> `period_number`/`year`/`pay_frequency`
-- `TaxJurisdictionModel`: removed non-existent `country` field
-- `WorkOrderModel`: removed non-existent `priority` field
-- `AssetModel`: `asset_tag` -> `asset_number`, `residual_value` -> `salvage_value`
-- `EmployeeModel`: fixed `party_id`/`status`/`pay_rate`/`department` column names
-
-### Phase 3: ORM Round-Trip Tests -- DONE (18 files, 423 tests)
-
-All 18 `test_{module}_orm.py` files created and passing:
-- `from_dto()` -> persist -> query -> `to_dto()` round-trip verification
-- FK constraint enforcement tests
-- Index existence tests
-- Unique constraint tests
-- Status transition tests
-
-### Phase 4: Full Regression Gate -- DONE
-
-**4,052 tests pass, 0 failures, 0 errors** (up from 3,614 baseline).
+**Invariants:** AL-1 through AL-11 (see full plan)
+**Key decisions:** 17 decisions documented (see full plan)
 
 ---
 
-## Decisions Made
+## 2. ERP Data Ingestion System
 
-1. **TrackedBase inheritance**: All module ORM models inherit from `TrackedBase` (UUID PK + audit timestamps)
-2. **FK strategy**: Within-module explicit FK, to kernel FK, to Sindri `String(100)` with NO FK
-3. **Enum storage**: `String(50)` columns storing `.value`, not native DB enums
-4. **Money precision**: `Numeric(38, 9)` via `type_annotation_map` (inherited from `Base`)
-5. **Conversion methods**: `to_dto()` instance method + `from_dto()` classmethod on every model
-6. **Table naming**: `{module}_{plural_entity}` (e.g., `ap_invoices`, `cash_bank_accounts`)
-7. **Sindri deconfliction**: No ORM models for Item, Location, StockLevel, PurchaseOrder, Company (Sindri owns these)
-8. **Reporting module**: Excluded from ORM (read-only derived data, no persistence needed)
-9. **Registry pattern**: `_orm_registry.py` with `create_all_tables()` as production entrypoint
-10. **Explicit test fixtures**: No autouse; every test declares parent entities it depends on
-11. **Architecture boundary**: `create_all_tables()` lives in `finance_modules/_orm_registry.py`, not kernel
-12. **Kernel guard**: `create_tables(kernel_only=False)` rejects incomplete schema unless `kernel_only=True`
+**Status:** NOT STARTED -- plan approved (v2), awaiting implementation
+**Full plan:** `plans/ERP_INGESTION_PLAN.md`
 
-## Key Files Created/Modified
+Design and implement a configuration-driven ERP data ingestion system with
+staging, per-record validation, and granular visibility into processing status.
+YAML-driven field mappings, pre-packaged validators, and pluggable entity
+promoters for migration from other ERPs. Full integration with structured
+logging (LogContext) and hash-chained audit trail (AuditorService).
 
-**New files (37):**
-- `finance_modules/*/orm.py` (17 files) -- ORM models for each module
-- `finance_services/orm.py` -- Period close ORM models
-- `finance_modules/_orm_registry.py` -- Registry + `create_all_tables()`
-- `tests/modules/test_*_orm.py` (18 files) -- ORM round-trip tests
+| Phase | Description | Status | Depends On |
+|-------|------------|--------|------------|
+| 0 | Domain types (`finance_ingestion/domain/types.py`) | pending | -- |
+| 1 | Staging ORM models + AuditAction additions | pending | Phase 0 |
+| 2 | Source adapters (CSV, JSON) | pending | -- |
+| 3 | Import mapping config (YAML schema) | pending | -- |
+| 4 | Mapping engine + test harness (pure) | pending | Phases 0, 3 |
+| 5 | Validation pipeline | pending | Phases 0, 4 |
+| 6 | Import service (with structured logging) | pending | Phases 1, 2, 4, 5 |
+| 7 | Promotion service (preflight graph, event stream, audit) | pending | Phases 1, 6 |
+| 8 | Entity promoters | pending | Phase 7 |
+| 9 | Tests (~240 across 13 files) | pending | All phases |
 
-**Modified files (30+):**
-- `finance_kernel/db/engine.py` -- kernel guard, removed illegal import
-- `finance_modules/*/service.py` (17 files) -- session.add() wiring
-- `tests/conftest.py` -- production orchestration path
-- `tests/modules/conftest.py` -- parent entity fixtures
-- `tests/modules/test_*_service.py` (20+ files) -- fixture dependencies
+**Invariants:** IM-1 through IM-14 (see full plan)
+**Key decisions:** 16 decisions documented (see full plan)
+
+---
+
+## 3. Reversal System -- Deferred Items & Improvements
+
+**Source:** `plans/archive/2026-02-01_reversal-implementation.md` (completed)
+**Status:** Open items from completed reversal implementation
+
+### Deferred Functionality
+
+| Item | Description | Priority |
+|------|-------------|----------|
+| Module-level void workflows | AP `void_invoice`, AR `void_payment`, etc. -- compose on top of `ReversalService` | Medium (per-module as needed) |
+| Partial reversals | Reverse some lines only -- requires line-level selection + balance validation | Low (full reversals sufficient for now) |
+| CorrectionEngine typed-plan refactor | Replace callback adapter with typed operations (`ReverseEntry`, `PostAdjustment`, `PostReplacement`) | Low (callback adapter works) |
+| Reversed-status projection table | Materialized view for `is_reversed` -- derived property via unique index is sufficient today | Low (optimize if query patterns demand) |
+
+### Deferred Tests
+
+| Item | Description |
+|------|-------------|
+| Concurrency tests | `test_concurrent_reversal_exactly_one_succeeds` (race two reversals, unique constraint ensures one wins), `test_atomicity_failure_after_entry_before_link` (force failure, assert nothing persisted) |
+| Selector consistency tests | `tests/selectors/test_reversal_queries.py` -- `is_reversed` derived from entry, trial balance correctness, reversal entry included in balances |
+| Integration E2E tests | `tests/integration/test_reversal_e2e.py` -- multi-ledger reversal, post-close-reverse flow |
+
+### Specific Improvements (Hardening Opportunities)
+
+1. **Reversal request idempotency at service layer** -- Add `SELECT ... FOR UPDATE` on original entry row in `_load_and_validate()` to serialize concurrent reversals before hitting the unique constraint.
+2. **Policy snapshot for reversals** -- Snapshot `posting_policy_version` and `posting_policy_hash` on the reversal entry (mirrors AL-2). Store in `entry_metadata`.
+3. **Event-chain integrity** -- Add `prev_event_id` to the reversal Event payload; validate it matches the original entry's source event. Enforce single-hop event chain in AuditorService.
+4. **Ledger boundary enforcement** -- Validate `ledger_id` on original entry matches the ledger resolved for the reversal. Reject cross-ledger reversals explicitly.
+5. **Dimension immutability check** -- Guard in `write_reversal()` that verifies `dimensions_schema_version` matches the original's snapshot (fail fast on schema drift).
+6. **Link graph uniqueness** -- DB unique constraint on `(parent_id, link_type)` for `REVERSED_BY` to mirror journal FK uniqueness at the graph layer.
+7. **Effective date monotonicity** -- Enforce `effective_date >= original.effective_date` for `reverse_in_current_period()` to prevent temporal inversion.
+8. **Audit hash chaining** -- Include both original and reversal entry hashes in `record_reversal()`: `hash = SHA256(prev_audit_hash || original_entry_hash || reversal_entry_hash || timestamp)`.
+9. **Reversal metadata contract** -- Formalize `entry_metadata` schema with a dataclass and validator; reject unknown keys.
+10. **Performance index for selectors** -- Covering index on `journal_entries`: `(reversal_of_id, effective_date, ledger_id)`.
+11. **Multi-currency invariant** -- Assert `original_entry.lines[*].currency` is uniform before reversal; fail on mixed-currency entries.
+12. **Failure-mode test** -- Test where `LinkGraphService.establish_link()` fails after `write_reversal()` and assert full rollback.
+13. **Deprecation cleanup** -- Lint/architecture test forbidding new reads/writes of `JournalEntryStatus.REVERSED` outside migration code.
+14. **API symmetry** -- Add `can_reverse(entry_id)` method to `ReversalService` for UI/agent preflight checks.
+15. **Replay harness** -- Deterministic replay test: replay original + reversal events against blank ledger, assert identical final balances and entry hashes.
+
+---
 
 ## Next Steps
 
-- **Phase 5:** Commit all uncommitted work in correct order
-- Archive this plan to `plans/archive/`
+When resuming, check which plan the user wants to work on:
+- **Approval Engine:** Read `plans/APPROVAL_ENGINE_PLAN.md`, start with Phase 0
+- **ERP Ingestion:** Read `plans/ERP_INGESTION_PLAN.md`, start with Phase 0
+- **Reversal Hardening:** Pick items from section 3 above

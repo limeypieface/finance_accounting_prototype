@@ -1,27 +1,4 @@
-"""
-EventValidator -- Pure event validation functions.
-
-Responsibility:
-    Validates events at the domain boundary: schema version, event type
-    format, currency codes (R16), payload required fields, amounts, and
-    full schema validation (P10).
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    R1  -- Event validation at boundary (schema version, event type)
-    R16 -- ISO 4217 currency enforcement via CurrencyRegistry
-    P10 -- Field reference validation against EventSchema
-
-Failure modes:
-    Returns ``ValidationResult.failure(...)`` or ``list[ValidationError]``
-    -- never raises exceptions for business rule violations.
-
-Audit relevance:
-    Validation errors carry machine-readable codes (R18) that auditors use
-    to classify rejection reasons.
-"""
+"""EventValidator -- Pure event validation functions."""
 
 import re
 from datetime import date, datetime
@@ -51,20 +28,7 @@ def validate_event(
     schema_version: int,
     supported_versions: frozenset[int] | None = None,
 ) -> ValidationResult:
-    """
-    Validate an event at the domain boundary.
-
-    Pure function - no I/O, no ORM, no time.
-
-    Args:
-        event_type: The event type string.
-        payload: The event payload.
-        schema_version: The schema version.
-        supported_versions: Optional set of supported versions.
-
-    Returns:
-        ValidationResult with success or failure.
-    """
+    """Validate an event at the domain boundary."""
     supported = supported_versions or SUPPORTED_SCHEMA_VERSIONS
     errors: list[ValidationError] = []
 
@@ -115,11 +79,7 @@ def validate_schema_version(
     schema_version: int,
     supported_versions: frozenset[int],
 ) -> list[ValidationError]:
-    """
-    Validate schema version is supported.
-
-    Pure function.
-    """
+    """Validate schema version is supported."""
     if schema_version not in supported_versions:
         logger.debug(
             "schema_version_unsupported",
@@ -139,12 +99,7 @@ def validate_schema_version(
 
 
 def validate_event_type(event_type: str) -> list[ValidationError]:
-    """
-    Validate event type format.
-
-    Event types must be namespaced (contain a dot).
-    Pure function.
-    """
+    """Validate event type format."""
     if not event_type:
         return [
             ValidationError(
@@ -170,19 +125,7 @@ def validate_currencies_in_payload(
     payload: dict[str, Any],
     path: str = "",
 ) -> list[ValidationError]:
-    """
-    Recursively validate any currency codes found in the payload.
-
-    Looks for keys like 'currency', 'from_currency', 'to_currency', etc.
-    Pure function - uses CurrencyRegistry which is also pure.
-
-    Args:
-        payload: The payload dictionary to validate.
-        path: Current path for error reporting.
-
-    Returns:
-        List of validation errors (empty if valid).
-    """
+    """Recursively validate any currency codes found in the payload (R16)."""
     errors: list[ValidationError] = []
     currency_keys = {"currency", "from_currency", "to_currency", "currency_code"}
 
@@ -216,18 +159,7 @@ def validate_payload_required_fields(
     payload: dict[str, Any],
     required_fields: frozenset[str],
 ) -> list[ValidationError]:
-    """
-    Validate that required fields are present in payload.
-
-    Pure function.
-
-    Args:
-        payload: The payload dictionary.
-        required_fields: Set of required field names.
-
-    Returns:
-        List of validation errors for missing fields.
-    """
+    """Validate that required fields are present in payload."""
     errors = []
     for field in required_fields:
         if field not in payload:
@@ -247,20 +179,7 @@ def validate_amount(
     allow_zero: bool = True,
     allow_negative: bool = False,
 ) -> list[ValidationError]:
-    """
-    Validate an amount value.
-
-    Pure function.
-
-    Args:
-        amount: The amount to validate.
-        field_name: Field name for error reporting.
-        allow_zero: Whether zero is allowed.
-        allow_negative: Whether negative amounts are allowed.
-
-    Returns:
-        List of validation errors.
-    """
+    """Validate an amount value."""
     from decimal import Decimal, InvalidOperation
 
     errors = []
@@ -315,18 +234,7 @@ def validate_payload_against_schema(
     payload: dict[str, Any],
     schema: "EventSchema",
 ) -> list[ValidationError]:
-    """
-    Validate event payload against a schema.
-
-    Pure function - no I/O, no ORM.
-
-    Args:
-        payload: The event payload to validate.
-        schema: The schema to validate against.
-
-    Returns:
-        List of validation errors (empty if valid).
-    """
+    """Validate event payload against a schema."""
     from finance_kernel.domain.schemas.base import EventFieldType
 
     errors: list[ValidationError] = []
@@ -441,11 +349,7 @@ def validate_field_type(
     field_type: "EventFieldType",
     path: str,
 ) -> ValidationError | None:
-    """
-    Validate that a value matches the expected type.
-
-    Pure function.
-    """
+    """Validate that a value matches the expected type."""
     from finance_kernel.domain.schemas.base import EventFieldType
 
     if field_type == EventFieldType.STRING:
@@ -573,11 +477,7 @@ def validate_field_constraints(
     field: "EventFieldSchema",
     path: str,
 ) -> list[ValidationError]:
-    """
-    Validate field constraints (min/max, length, pattern, allowed_values).
-
-    Pure function.
-    """
+    """Validate field constraints (min/max, length, pattern, allowed_values)."""
     from finance_kernel.domain.schemas.base import EventFieldType
 
     errors: list[ValidationError] = []
@@ -659,19 +559,7 @@ def validate_field_references(
     field_paths: "Iterable[str]",
     schema: "EventSchema",
 ) -> list[ValidationError]:
-    """
-    Validate that field paths exist in schema.
-
-    Used by PolicyCompiler for P10 compliance.
-    Pure function.
-
-    Args:
-        field_paths: Field paths to validate (e.g., ["quantity", "items[*].sku"])
-        schema: The schema to validate against.
-
-    Returns:
-        List of validation errors for invalid paths.
-    """
+    """Validate that field paths exist in schema (P10)."""
     errors: list[ValidationError] = []
     valid_paths = schema.all_field_paths()
 

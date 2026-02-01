@@ -11,15 +11,25 @@ This test documents the "referenced check" behavior:
 - After first JournalLine: structural fields (account_type, normal_balance) are locked
 """
 
-import pytest
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 
-from finance_kernel.models.account import Account, AccountType, NormalBalance, AccountTag
-from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
 from finance_kernel.exceptions import ImmutabilityViolationError
+from finance_kernel.models.account import (
+    Account,
+    AccountTag,
+    AccountType,
+    NormalBalance,
+)
+from finance_kernel.models.journal import (
+    JournalEntry,
+    JournalEntryStatus,
+    JournalLine,
+    LineSide,
+)
 
 
 class TestAccountEditableBeforeReference:

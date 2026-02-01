@@ -22,7 +22,6 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingStatus,
 )
 
-
 # =============================================================================
 # Test 1: Inventory Receipt — Happy Path
 # =============================================================================

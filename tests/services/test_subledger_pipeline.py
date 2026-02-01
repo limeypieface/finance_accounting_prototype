@@ -12,11 +12,12 @@ Tests the end-to-end subledger system including:
 SL-G7: All architecture tests + at least one atomicity test must pass.
 """
 
-import pytest
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
+
+import pytest
 
 from finance_kernel.domain.subledger_control import (
     ControlAccountBinding,
@@ -30,7 +31,6 @@ from finance_kernel.domain.subledger_control import (
 )
 from finance_kernel.domain.values import Money
 from finance_kernel.exceptions import FinanceKernelError
-
 
 # ============================================================================
 # Config Bridge Tests
@@ -181,6 +181,7 @@ class TestFullConfigPipeline:
 
     def test_assemble_and_compile_subledger_contracts(self):
         from pathlib import Path
+
         from finance_config.assembler import assemble_from_directory
         from finance_config.compiler import compile_policy_pack
 
@@ -196,11 +197,13 @@ class TestFullConfigPipeline:
 
     def test_bridge_builds_full_registry(self):
         from pathlib import Path
+
         from finance_config.assembler import assemble_from_directory
-        from finance_config.compiler import compile_policy_pack
         from finance_config.bridges import (
-            build_role_resolver, build_subledger_registry_from_defs,
+            build_role_resolver,
+            build_subledger_registry_from_defs,
         )
+        from finance_config.compiler import compile_policy_pack
 
         fragment_dir = Path("finance_config/sets/US-GAAP-2026-v1")
         config = assemble_from_directory(fragment_dir)
@@ -302,6 +305,7 @@ class TestSubledgerArchitecture:
     def test_kernel_domain_does_not_import_engines(self):
         """finance_kernel/domain/subledger_control.py must not import finance_engines."""
         import inspect
+
         import finance_kernel.domain.subledger_control as mod
         source = inspect.getsource(mod)
         assert "from finance_engines" not in source
@@ -310,13 +314,15 @@ class TestSubledgerArchitecture:
     def test_engine_subledger_imports_from_kernel_domain(self):
         """finance_engines/subledger.py must import SubledgerType from kernel domain."""
         import inspect
+
         import finance_engines.subledger as mod
         source = inspect.getsource(mod)
-        assert "from finance_kernel.domain.subledger_control import SubledgerType" in source
+        assert "finance_kernel.domain.subledger_control" in source and "SubledgerType" in source
 
     def test_posting_bridge_can_import_engines(self):
         """finance_services/subledger_posting.py is allowed to import from finance_engines."""
         import inspect
+
         import finance_services.subledger_posting as mod
         source = inspect.getsource(mod)
         assert "from finance_engines.subledger import SubledgerEntry" in source
@@ -416,7 +422,7 @@ class TestReconcilerValidatePost:
             control_balance_before=Money.of(Decimal("100"), "USD"),
             control_balance_after=Money.of(Decimal("200"), "USD"),
             as_of_date=date(2026, 1, 15),
-            checked_at=datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc),
+            checked_at=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
         )
         assert len(violations) == 0
 
@@ -430,7 +436,7 @@ class TestReconcilerValidatePost:
             control_balance_before=Money.of(Decimal("100"), "USD"),
             control_balance_after=Money.of(Decimal("200"), "USD"),
             as_of_date=date(2026, 1, 15),
-            checked_at=datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc),
+            checked_at=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
         )
         blocking = [v for v in violations if v.blocking]
         assert len(blocking) == 0
@@ -445,7 +451,7 @@ class TestReconcilerValidatePost:
             control_balance_before=Money.of(Decimal("100"), "USD"),
             control_balance_after=Money.of(Decimal("200"), "USD"),
             as_of_date=date(2026, 1, 15),
-            checked_at=datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc),
+            checked_at=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
         )
         assert len(violations) == 0
 
@@ -459,8 +465,9 @@ class TestSubledgerPeriodStatusModel:
     """Test SubledgerPeriodStatusModel definition."""
 
     def test_model_has_required_fields(self):
-        from finance_kernel.models.subledger import SubledgerPeriodStatusModel
         from sqlalchemy import inspect as sa_inspect
+
+        from finance_kernel.models.subledger import SubledgerPeriodStatusModel
 
         mapper = sa_inspect(SubledgerPeriodStatusModel)
         col_names = {c.key for c in mapper.columns}
@@ -501,6 +508,7 @@ class TestSignConventions:
     def test_config_contracts_match_domain_conventions(self):
         """Config-defined is_debit_normal matches domain expectations."""
         from pathlib import Path
+
         from finance_config.assembler import assemble_from_directory
         from finance_config.compiler import compile_policy_pack
 
@@ -525,6 +533,7 @@ class TestCompiledPolicyPackSubledger:
 
     def test_subledger_contracts_on_compiled_pack(self):
         from pathlib import Path
+
         from finance_config.assembler import assemble_from_directory
         from finance_config.compiler import compile_policy_pack
 

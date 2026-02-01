@@ -1,32 +1,4 @@
-"""
-PostingStrategy -- Pure event-to-journal transformation protocol.
-
-Responsibility:
-    Defines the abstract protocol and base implementation for posting
-    strategies.  A strategy transforms an EventEnvelope + ReferenceData
-    into a ProposedJournalEntry with zero side effects.
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O, zero database,
-    zero clock, zero external services.
-
-Invariants enforced:
-    R4  -- Balance per currency (checked in _balance_and_round)
-    R5  -- At most one rounding line per entry
-    R14 -- No central dispatch; one strategy per event_type
-    R15 -- Adding a new event type requires only a new strategy
-    R16 -- ISO 4217 currency validation
-    R22 -- Only Bookkeeper may create is_rounding=True lines
-    R23 -- Strategy lifecycle governance (version ranges + replay policy)
-
-Failure modes:
-    StrategyResult.failure() with ValidationError (R18 codes).
-    Never raises for business rule violations.
-
-Audit relevance:
-    Strategy version is recorded on every ProposedJournalEntry so that
-    auditors can replay postings deterministically (R23, L4).
-"""
+"""PostingStrategy -- Pure event-to-journal transformation protocol."""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -34,6 +6,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from finance_kernel.domain.currency import CurrencyRegistry
 from finance_kernel.domain.dtos import (
     EventEnvelope,
     LineSide,
@@ -44,7 +17,6 @@ from finance_kernel.domain.dtos import (
     ValidationError,
     ValidationResult,
 )
-from finance_kernel.domain.currency import CurrencyRegistry
 from finance_kernel.domain.values import Money
 
 if TYPE_CHECKING:
@@ -57,11 +29,7 @@ if TYPE_CHECKING:
 
 
 class ReplayPolicy(str, Enum):
-    """
-    Replay policy for a strategy (R23).
-
-    Determines how the replay system handles version mismatches.
-    """
+    """Replay policy for a strategy (R23)."""
 
     STRICT = "strict"  # Replay must use exact same version that was used originally
     PERMISSIVE = "permissive"  # Replay can use any compatible version
@@ -69,11 +37,7 @@ class ReplayPolicy(str, Enum):
 
 @dataclass(frozen=True)
 class StrategyResult:
-    """
-    Result of applying a posting strategy.
-
-    Either contains a proposed entry OR validation errors, never both.
-    """
+    """Result of applying a posting strategy."""
 
     proposed_entry: ProposedJournalEntry | None
     validation: ValidationResult
@@ -96,31 +60,7 @@ class StrategyResult:
 
 
 class PostingStrategy(ABC):
-    """
-    Abstract base for posting strategies.
-
-    Each event type has its own strategy that knows how to
-    transform that event into journal lines.
-
-    Contract:
-        Subclasses implement ``propose()`` to transform an event into a
-        ``StrategyResult``.  One strategy per event_type (R14).
-
-    Guarantees:
-        - Strategies MUST be pure, deterministic, and stateless.
-        - ``is_compatible_with_system_version()`` enforces R23 lifecycle.
-        - ``version`` is recorded for replay determinism.
-
-    Non-goals:
-        - Does NOT persist entries (services do that).
-        - Does NOT resolve account roles to COA (L1 / JournalWriter).
-        - Does NOT create rounding lines (R22 -- only Bookkeeper may).
-
-    Invariants enforced:
-        R14 -- One strategy per event_type (no if/switch on event_type).
-        R15 -- Open/closed: new event type = new strategy only.
-        R23 -- Lifecycle governance (version ranges + replay policy).
-    """
+    """Abstract base for posting strategies (R14, R15, R23)."""
 
     @property
     @abstractmethod
@@ -140,50 +80,21 @@ class PostingStrategy(ABC):
 
     @property
     def supported_from_version(self) -> int:
-        """
-        Minimum system version this strategy supports (R23).
-
-        For replay: if an event was originally posted when system version < this,
-        the replay system should use an older version of this strategy.
-
-        Default: 1 (supports all versions from the beginning)
-        """
+        """Minimum system version this strategy supports (R23)."""
         return 1
 
     @property
     def supported_to_version(self) -> int | None:
-        """
-        Maximum system version this strategy supports, or None for "current" (R23).
-
-        If not None, this strategy is deprecated and should not be used for
-        new postings when system version > this.
-
-        Default: None (still current, no deprecation)
-        """
+        """Maximum system version this strategy supports, or None for current (R23)."""
         return None
 
     @property
     def replay_policy(self) -> ReplayPolicy:
-        """
-        Replay policy for this strategy (R23).
-
-        - STRICT: Replay must use exact same strategy version
-        - PERMISSIVE: Replay can use any compatible version
-
-        Default: STRICT (safest for financial systems)
-        """
+        """Replay policy for this strategy (R23)."""
         return ReplayPolicy.STRICT
 
     def is_compatible_with_system_version(self, system_version: int) -> bool:
-        """
-        Check if this strategy is compatible with a given system version (R23).
-
-        Args:
-            system_version: The system version to check against.
-
-        Returns:
-            True if compatible, False otherwise.
-        """
+        """Check if this strategy is compatible with a given system version (R23)."""
         if system_version < self.supported_from_version:
             return False
         if self.supported_to_version is not None and system_version > self.supported_to_version:
@@ -196,43 +107,12 @@ class PostingStrategy(ABC):
         event: EventEnvelope,
         reference_data: ReferenceData,
     ) -> StrategyResult:
-        """
-        Transform an event into a proposed journal entry.
-
-        This is the core method. It:
-        1. Extracts amounts and accounts from the event payload
-        2. Creates LineSpecs for each journal line
-        3. Validates the proposed entry (balanced, valid accounts, etc.)
-        4. Returns either a ProposedJournalEntry or validation errors
-
-        Args:
-            event: The event to transform.
-            reference_data: Reference data for lookups (accounts, currencies, etc.)
-
-        Returns:
-            StrategyResult with either a proposed entry or errors.
-        """
+        """Transform an event into a proposed journal entry."""
         ...
 
 
 class BasePostingStrategy(PostingStrategy):
-    """
-    Base implementation with common validation and transformation logic.
-
-    Contract:
-        Subclasses implement ``_compute_line_specs()`` to define how the
-        event payload maps to journal lines.  All other validation
-        (currency, accounts, dimensions, balance, rounding) is handled here.
-
-    Guarantees:
-        - R22: ``_validate_no_rounding_lines()`` rejects strategy-created
-          rounding lines.
-        - R4: ``_balance_and_round()`` checks balance per currency.
-        - R5: ``_validate_rounding_invariants()`` enforces at-most-one
-          rounding line and threshold.
-        - R16: ``_validate_currencies()`` validates ISO 4217 codes.
-        - R21: ``ProposedJournalEntry`` records reference snapshot versions.
-    """
+    """Base implementation with common validation and transformation logic."""
 
     @abstractmethod
     def _compute_line_specs(
@@ -240,19 +120,7 @@ class BasePostingStrategy(PostingStrategy):
         event: EventEnvelope,
         reference_data: ReferenceData,
     ) -> list[LineSpec]:
-        """
-        Compute line specifications from the event.
-
-        Subclasses implement this to define the mapping from
-        event payload to journal lines.
-
-        Args:
-            event: The event to transform.
-            reference_data: Reference data for lookups.
-
-        Returns:
-            List of LineSpecs (account_code, side, amount, currency).
-        """
+        """Compute line specifications from the event."""
         ...
 
     def propose(
@@ -260,19 +128,7 @@ class BasePostingStrategy(PostingStrategy):
         event: EventEnvelope,
         reference_data: ReferenceData,
     ) -> StrategyResult:
-        """
-        Transform an event into a proposed journal entry.
-
-        Implements the full transformation pipeline:
-        1. Compute line specs from event
-        2. Validate currencies
-        3. Resolve account codes to IDs
-        4. Validate accounts are active
-        5. Validate dimensions
-        6. Check balance per currency
-        7. Apply rounding if needed
-        8. Create ProposedJournalEntry
-        """
+        """Transform an event into a proposed journal entry."""
         # 1. Compute line specs from event
         try:
             line_specs = self._compute_line_specs(event, reference_data)
@@ -353,19 +209,7 @@ class BasePostingStrategy(PostingStrategy):
         self,
         lines: list[LineSpec],
     ) -> ValidationError | None:
-        """
-        R22: Validate strategy did not create rounding lines.
-
-        Only the Bookkeeper may generate is_rounding=True JournalLines.
-        Strategies are prohibited from targeting rounding accounts directly.
-        This prevents strategies from injecting hidden amounts via fake rounding.
-
-        Args:
-            lines: The line specs computed by the strategy.
-
-        Returns:
-            ValidationError if violation detected, None otherwise.
-        """
+        """R22: Validate strategy did not create rounding lines."""
         for i, line in enumerate(lines):
             if line.is_rounding:
                 return ValidationError(
@@ -480,11 +324,7 @@ class BasePostingStrategy(PostingStrategy):
         lines: list[ProposedLine],
         reference_data: ReferenceData,
     ) -> tuple[list[ProposedLine], list[ValidationError]]:
-        """
-        Check balance per currency and apply rounding if needed.
-
-        Returns the lines (possibly with rounding lines added) and any errors.
-        """
+        """Check balance per currency and apply rounding if needed."""
         errors = []
         result_lines = list(lines)
 
@@ -558,23 +398,7 @@ class BasePostingStrategy(PostingStrategy):
         self,
         lines: list[ProposedLine],
     ) -> list[ValidationError]:
-        """
-        Validate rounding invariants to prevent fraud.
-
-        Enforces:
-        1. At most ONE line can have is_rounding=True per entry
-        2. Rounding amount must be < 0.01 per non-rounding line
-
-        These invariants prevent:
-        - Multiple hidden rounding lines (could inject extra amounts)
-        - Large "rounding" amounts (could hide embezzlement)
-
-        Args:
-            lines: The proposed lines to validate.
-
-        Returns:
-            List of validation errors (empty if valid).
-        """
+        """Validate rounding invariants to prevent fraud (R5)."""
         errors = []
 
         # Separate rounding and non-rounding lines

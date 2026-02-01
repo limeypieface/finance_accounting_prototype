@@ -60,51 +60,53 @@ Usage:
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
-from typing import Mapping, Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
-from finance_kernel.domain.values import Money
+from finance_engines.allocation import (
+    AllocationEngine,
+    AllocationMethod,
+    AllocationTarget,
+)
+from finance_engines.matching import (
+    MatchCandidate,
+    MatchingEngine,
+    MatchResult,
+    MatchTolerance,
+)
+from finance_engines.matching import (
+    MatchType as MatchingMatchType,
+)
+from finance_engines.reconciliation.domain import (
+    BankReconciliationLine,
+    BankReconciliationStatus,
+    DocumentMatch,
+    MatchType,
+    PaymentApplication,
+    ReconciliationState,
+    ReconciliationStatus,
+    ThreeWayMatchResult,
+)
 from finance_kernel.domain.economic_link import (
     ArtifactRef,
     EconomicLink,
     LinkType,
 )
+from finance_kernel.domain.values import Money
 from finance_kernel.exceptions import (
-    OverapplicationError,
+    BankReconciliationError,
     DocumentAlreadyMatchedError,
     MatchVarianceExceededError,
-    BankReconciliationError,
+    OverapplicationError,
 )
-from finance_kernel.services.link_graph_service import LinkGraphService
 from finance_kernel.logging_config import get_logger
-
-from finance_engines.allocation import (
-    AllocationEngine,
-    AllocationTarget,
-    AllocationMethod,
-)
-from finance_engines.matching import (
-    MatchingEngine,
-    MatchCandidate,
-    MatchTolerance,
-    MatchResult,
-    MatchType as MatchingMatchType,
-)
-from finance_engines.reconciliation.domain import (
-    ReconciliationState,
-    ReconciliationStatus,
-    DocumentMatch,
-    MatchType,
-    PaymentApplication,
-    ThreeWayMatchResult,
-    BankReconciliationLine,
-    BankReconciliationStatus,
-)
+from finance_kernel.services.link_graph_service import LinkGraphService
 
 logger = get_logger("services.reconciliation")
 
@@ -309,7 +311,7 @@ class ReconciliationManager:
             parent_ref=invoice_ref,
             child_ref=payment_ref,
             creating_event_id=creating_event_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             metadata={
                 "amount_applied": str(amount.amount),
                 "currency": amount.currency.code,
@@ -389,7 +391,7 @@ class ReconciliationManager:
 
         # Create applications for each allocated amount
         applications: list[PaymentApplication] = []
-        for line, (inv_ref, original, remaining) in zip(result.lines, invoices):
+        for line, (inv_ref, original, remaining) in zip(result.lines, invoices, strict=False):
             if line.allocated.is_zero:
                 continue
 
@@ -527,7 +529,7 @@ class ReconciliationManager:
             parent_ref=po_ref,
             child_ref=receipt_ref,
             creating_event_id=creating_event_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             metadata={
                 "match_type": "three_way",
                 "po_quantity": str(po_quantity),
@@ -545,7 +547,7 @@ class ReconciliationManager:
             parent_ref=receipt_ref,
             child_ref=invoice_ref,
             creating_event_id=creating_event_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             metadata={
                 "match_type": "three_way",
                 "receipt_quantity": str(receipt_quantity),
@@ -717,7 +719,7 @@ class ReconciliationManager:
                 parent_ref=statement_line.statement_ref,
                 child_ref=gl_ref,
                 creating_event_id=creating_event_id,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
                 metadata={
                     "statement_line_id": str(statement_line.line_id),
                     "amount": str(statement_line.amount.amount),

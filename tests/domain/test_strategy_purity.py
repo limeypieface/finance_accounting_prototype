@@ -8,11 +8,12 @@ R2.5 Verifies:
 """
 
 import copy
-import pytest
 from dataclasses import asdict
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
+
+import pytest
 
 from finance_kernel.domain.bookkeeper import Bookkeeper
 from finance_kernel.domain.dtos import (
@@ -36,6 +37,7 @@ class TestR25StrategyInputImmutability:
     def teardown_method(self):
         """Re-register the generic strategy after each test."""
         import importlib
+
         import finance_kernel.domain.strategies.generic_strategy as gs
         importlib.reload(gs)
 
@@ -44,7 +46,7 @@ class TestR25StrategyInputImmutability:
         return EventEnvelope(
             event_id=uuid4(),
             event_type="test.mutation.check",
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
             effective_date=date.today(),
             actor_id=uuid4(),
             producer="test",
@@ -223,7 +225,7 @@ class TestR25StrategyInputImmutability:
         event = EventEnvelope(
             event_id=uuid4(),
             event_type="test.mutation.refdata",
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
             effective_date=date.today(),
             actor_id=uuid4(),
             producer="test",
@@ -294,7 +296,7 @@ class TestR25StrategyInputImmutability:
         # Create fixed inputs
         fixed_event_id = uuid4()
         fixed_actor_id = uuid4()
-        fixed_time = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        fixed_time = datetime(2024, 6, 15, 12, 0, 0, tzinfo=UTC)
 
         def create_event():
             return EventEnvelope(
@@ -326,7 +328,7 @@ class TestR25StrategyInputImmutability:
 
             # Lines should be identical
             assert len(entry.lines) == len(first_entry.lines)
-            for j, (line1, line2) in enumerate(zip(first_entry.lines, entry.lines)):
+            for j, (line1, line2) in enumerate(zip(first_entry.lines, entry.lines, strict=False)):
                 assert line1.account_id == line2.account_id, f"Run {i}, line {j} account mismatch"
                 assert line1.side == line2.side, f"Run {i}, line {j} side mismatch"
                 assert line1.amount == line2.amount, f"Run {i}, line {j} amount mismatch"
@@ -394,7 +396,7 @@ class TestR25StrategyInputImmutability:
         event = EventEnvelope(
             event_id=uuid4(),
             event_type="test.leak.check",
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
             effective_date=date.today(),
             actor_id=uuid4(),
             producer="test",
@@ -431,6 +433,7 @@ class TestStrategyPurityWithEdgeCases:
 
     def teardown_method(self):
         import importlib
+
         import finance_kernel.domain.strategies.generic_strategy as gs
         importlib.reload(gs)
 
@@ -472,7 +475,7 @@ class TestStrategyPurityWithEdgeCases:
         event = EventEnvelope(
             event_id=uuid4(),
             event_type="test.crash",
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
             effective_date=date.today(),
             actor_id=uuid4(),
             producer="test",
@@ -559,7 +562,7 @@ class TestStrategyPurityWithEdgeCases:
                 event = EventEnvelope(
                     event_id=uuid4(),
                     event_type="test.concurrent",
-                    occurred_at=datetime.now(timezone.utc),
+                    occurred_at=datetime.now(UTC),
                     effective_date=date.today(),
                     actor_id=uuid4(),
                     producer="test",

@@ -12,7 +12,6 @@ import pytest
 
 from finance_kernel.selectors.trace_selector import LogQueryPort
 
-
 # ============================================================================
 # Stub Implementation
 # ============================================================================

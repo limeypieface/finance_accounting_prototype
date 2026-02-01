@@ -30,8 +30,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import DateTime, Index, String, BigInteger
-from sqlalchemy import JSON
+from sqlalchemy import JSON, BigInteger, DateTime, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from finance_kernel.db.base import Base, UUIDString

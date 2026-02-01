@@ -5,23 +5,30 @@ All domain models are frozen dataclasses.
 These tests ensure they cannot be mutated after creation.
 """
 
-import pytest
 from dataclasses import FrozenInstanceError
 from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
-from finance_modules.ap.models import Vendor, Invoice, InvoiceLine
-from finance_modules.ar.models import Customer, Invoice as ARInvoice, Receipt
-from finance_modules.inventory.models import Item, ItemType, InventoryReceipt
-from finance_modules.wip.models import WorkOrder, Operation
+import pytest
+
+from finance_modules.ap.models import Invoice, InvoiceLine, Vendor
+from finance_modules.ar.models import Customer, Receipt
+from finance_modules.ar.models import Invoice as ARInvoice
 from finance_modules.assets.models import Asset, AssetStatus
-from finance_modules.expense.models import ExpenseReport, ExpenseLine, ExpenseCategory, PaymentMethod
-from finance_modules.tax.models import TaxJurisdiction, TaxType
-from finance_modules.procurement.models import PurchaseOrder, Requisition
-from finance_modules.payroll.models import Employee, PayType, PayFrequency
-from finance_modules.gl.models import Account, AccountType
 from finance_modules.cash.models import BankAccount, BankTransaction
+from finance_modules.expense.models import (
+    ExpenseCategory,
+    ExpenseLine,
+    ExpenseReport,
+    PaymentMethod,
+)
+from finance_modules.gl.models import Account, AccountType
+from finance_modules.inventory.models import InventoryReceipt, Item, ItemType
+from finance_modules.payroll.models import Employee, PayFrequency, PayType
+from finance_modules.procurement.models import PurchaseOrder, Requisition
+from finance_modules.tax.models import TaxJurisdiction, TaxType
+from finance_modules.wip.models import Operation, WorkOrder
 
 
 class TestAPModelImmutability:

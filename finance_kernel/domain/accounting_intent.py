@@ -32,14 +32,16 @@ Audit relevance:
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from finance_kernel.domain.values import Money
 
 if TYPE_CHECKING:
-    from finance_kernel.domain.reference_snapshot import ReferenceSnapshot as FullSnapshot
-    from finance_kernel.domain.policy_authority import PolicyAuthority, ModuleType
+    from finance_kernel.domain.policy_authority import ModuleType, PolicyAuthority
+    from finance_kernel.domain.reference_snapshot import (
+        ReferenceSnapshot as FullSnapshot,
+    )
     from finance_kernel.domain.subledger_control import SubledgerControlRegistry
 
 

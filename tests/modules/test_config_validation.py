@@ -8,23 +8,23 @@ These tests verify that invalid configurations are properly rejected
 with ValueError exceptions.
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
-from finance_modules.ap.config import APConfig, MatchTolerance, ApprovalLevel
-from finance_modules.ar.config import ARConfig, DunningLevel
-from finance_modules.inventory.config import InventoryConfig
-from finance_modules.wip.config import WIPConfig
-from finance_modules.assets.config import AssetConfig
-from finance_modules.expense.config import ExpenseConfig, CategoryLimit
-from finance_modules.tax.config import TaxConfig, NexusState
-from finance_modules.procurement.config import ProcurementConfig
-from finance_modules.payroll.config import PayrollConfig, OvertimeRule
-from finance_modules.gl.config import GLConfig
-from finance_modules.cash.config import CashConfig
+import pytest
 
+from finance_modules.ap.config import APConfig, ApprovalLevel, MatchTolerance
+from finance_modules.ar.config import ARConfig, DunningLevel
+from finance_modules.assets.config import AssetConfig
+from finance_modules.cash.config import CashConfig
+from finance_modules.expense.config import CategoryLimit, ExpenseConfig
+from finance_modules.gl.config import GLConfig
+from finance_modules.inventory.config import InventoryConfig
+from finance_modules.payroll.config import OvertimeRule, PayrollConfig
+from finance_modules.procurement.config import ProcurementConfig
+from finance_modules.tax.config import NexusState, TaxConfig
+from finance_modules.wip.config import WIPConfig
 
 # =============================================================================
 # AP Config Interdependency Violations

@@ -18,10 +18,9 @@ from sqlalchemy.exc import IntegrityError
 
 from finance_modules.intercompany.orm import (
     IntercompanyAgreementModel,
-    IntercompanyTransactionModel,
     IntercompanySettlementModel,
+    IntercompanyTransactionModel,
 )
-
 
 # ---------------------------------------------------------------------------
 # IntercompanyAgreementModel

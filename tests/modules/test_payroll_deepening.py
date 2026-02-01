@@ -21,7 +21,6 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
-from tests.modules.conftest import TEST_PAYROLL_EMPLOYEE_ID
 from finance_modules.payroll.helpers import (
     calculate_federal_withholding,
     calculate_fica,
@@ -34,7 +33,7 @@ from finance_modules.payroll.models import (
     WithholdingResult,
 )
 from finance_modules.payroll.service import PayrollService
-
+from tests.modules.conftest import TEST_PAYROLL_EMPLOYEE_ID
 
 # =============================================================================
 # Fixtures

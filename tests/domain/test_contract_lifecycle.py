@@ -34,6 +34,7 @@ import pytest
 
 from finance_kernel.domain.event_validator import validate_payload_against_schema
 from finance_kernel.domain.meaning_builder import MeaningBuilder, MeaningBuilderResult
+from finance_kernel.domain.policy_selector import PolicySelector
 
 # Schemas
 from finance_kernel.domain.schemas.definitions.ap import (
@@ -44,6 +45,12 @@ from finance_kernel.domain.schemas.definitions.ar import (
     AR_INVOICE_ISSUED_V1,
     AR_PAYMENT_RECEIVED_V1,
 )
+from finance_kernel.domain.schemas.definitions.contract import (
+    CONTRACT_BILLING_PROVISIONAL_V1,
+    CONTRACT_COST_INCURRED_V1,
+    CONTRACT_FEE_ACCRUAL_V1,
+    CONTRACT_INDIRECT_ALLOCATION_V1,
+)
 from finance_kernel.domain.schemas.definitions.inventory import (
     INVENTORY_ISSUE_V1,
     INVENTORY_RECEIPT_V1,
@@ -52,12 +59,7 @@ from finance_kernel.domain.schemas.definitions.payroll import (
     PAYROLL_LABOR_DISTRIBUTION_V1,
     PAYROLL_TIMESHEET_V1,
 )
-from finance_kernel.domain.schemas.definitions.contract import (
-    CONTRACT_BILLING_PROVISIONAL_V1,
-    CONTRACT_COST_INCURRED_V1,
-    CONTRACT_FEE_ACCRUAL_V1,
-    CONTRACT_INDIRECT_ALLOCATION_V1,
-)
+from finance_kernel.domain.schemas.registry import EventSchemaRegistry
 
 # Profiles
 from finance_modules.ap.profiles import (
@@ -66,17 +68,9 @@ from finance_modules.ap.profiles import (
 )
 from finance_modules.ar.profiles import (
     AR_INVOICE,
+)
+from finance_modules.ar.profiles import (
     AR_PAYMENT_RECEIVED as AR_PAYMENT,
-)
-from finance_modules.inventory.profiles import (
-    INVENTORY_ISSUE_PRODUCTION,
-    INVENTORY_RECEIPT,
-)
-from finance_modules.payroll.profiles import (
-    LABOR_DISTRIBUTION_DIRECT,
-    LABOR_DISTRIBUTION_INDIRECT,
-    TIMESHEET_OVERTIME,
-    TIMESHEET_REGULAR,
 )
 from finance_modules.contracts.profiles import (
     CONTRACT_ALLOCATION_FRINGE,
@@ -88,9 +82,16 @@ from finance_modules.contracts.profiles import (
     CONTRACT_COST_TRAVEL,
     CONTRACT_FEE_FIXED,
 )
-from finance_kernel.domain.schemas.registry import EventSchemaRegistry
-from finance_kernel.domain.policy_selector import PolicySelector
-
+from finance_modules.inventory.profiles import (
+    INVENTORY_ISSUE_PRODUCTION,
+    INVENTORY_RECEIPT,
+)
+from finance_modules.payroll.profiles import (
+    LABOR_DISTRIBUTION_DIRECT,
+    LABOR_DISTRIBUTION_INDIRECT,
+    TIMESHEET_OVERTIME,
+    TIMESHEET_REGULAR,
+)
 
 # =============================================================================
 # STORY CONSTANTS
@@ -575,7 +576,7 @@ _MONEY_FIELDS = frozenset({
     "payment_amount", "total_amount", "hourly_rate", "amount",
     "base_amount", "allocated_amount", "direct_labor_cost", "material_cost",
     "travel_cost", "fringe_cost", "overhead_cost", "ga_cost", "odc_cost",
-    "subcontract_cost", "total_cost", "fee_amount", "total_billing",
+    "subcontract_cost", "fee_amount", "total_billing",
     "cost_base", "cumulative_fee", "amount_applied",
 })
 

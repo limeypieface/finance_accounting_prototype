@@ -48,7 +48,8 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -57,8 +58,6 @@ if TYPE_CHECKING:
     from finance_kernel.domain.accounting_intent import AccountingIntent
     from finance_kernel.services.journal_writer import JournalWriteResult
 
-from finance_services.subledger_posting import post_subledger_entries as _post_sl
-
 from finance_config.bridges import build_subledger_registry_from_defs
 from finance_config.compiler import CompiledPolicyPack
 from finance_kernel.domain.clock import Clock, SystemClock
@@ -66,7 +65,6 @@ from finance_kernel.domain.meaning_builder import MeaningBuilder
 from finance_kernel.domain.policy_authority import PolicyAuthority
 from finance_kernel.services.auditor_service import AuditorService
 from finance_kernel.services.contract_service import ContractService
-from finance_services.engine_dispatcher import EngineDispatcher
 from finance_kernel.services.ingestor_service import IngestorService
 from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
 from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
@@ -75,13 +73,16 @@ from finance_kernel.services.outcome_recorder import OutcomeRecorder
 from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.period_service import PeriodService
 from finance_kernel.services.reference_snapshot_service import ReferenceSnapshotService
-from finance_services.subledger_period_service import SubledgerPeriodService
-from finance_services.subledger_service import SubledgerService
+from finance_kernel.services.reversal_service import ReversalService
+from finance_services.engine_dispatcher import EngineDispatcher
 from finance_services.subledger_ap import APSubledgerService
 from finance_services.subledger_ar import ARSubledgerService
 from finance_services.subledger_bank import BankSubledgerService
 from finance_services.subledger_contract import ContractSubledgerService
 from finance_services.subledger_inventory import InventorySubledgerService
+from finance_services.subledger_period_service import SubledgerPeriodService
+from finance_services.subledger_posting import post_subledger_entries as _post_sl
+from finance_services.subledger_service import SubledgerService
 
 
 class PostingOrchestrator:
@@ -146,6 +147,16 @@ class PostingOrchestrator:
             session, role_resolver, self._clock, self.auditor,
             subledger_control_registry=sl_registry,
             snapshot_service=self.snapshot_service,
+        )
+
+        # Reversal service (depends on journal_writer, auditor, link_graph, period_service)
+        self.reversal_service = ReversalService(
+            session=session,
+            journal_writer=self.journal_writer,
+            auditor=self.auditor,
+            link_graph=self.link_graph,
+            period_service=self.period_service,
+            clock=self._clock,
         )
 
         # Outcome recording
@@ -246,3 +257,49 @@ class PostingOrchestrator:
             payload=payload,
             actor_id=actor_id,
         )
+
+    def make_correction_writer(
+        self,
+        actor_id: UUID,
+        creating_event_id: UUID,
+    ) -> Callable[..., UUID]:
+        """Create a journal_entry_writer callback for CorrectionEngine.
+
+        Routes CompensatingEntry instances through JournalWriter.write_reversal()
+        so that correction-generated reversals get proper reversal_of_id linkage,
+        idempotency keys, R9 sequences, and R21 snapshot versions.
+
+        The CorrectionEngine handles its own CORRECTED_BY links and audit
+        events, so this adapter delegates only the journal entry creation
+        portion -- it does NOT call ReversalService (which would duplicate
+        the link and audit overhead).
+
+        Args:
+            actor_id: Who is performing the correction.
+            creating_event_id: The correction event ID (used as source_event_id
+                for the reversal entries).
+
+        Returns:
+            A ``Callable[[CompensatingEntry], UUID]`` callback suitable for
+            ``CorrectionEngine.execute_correction()`` or
+            ``CorrectionEngine.void_document()``.
+        """
+        writer = self.journal_writer
+
+        def _write_reversal(comp_entry: Any) -> UUID:
+            original = writer.get_entry(comp_entry.original_entry_id)
+            if original is None:
+                raise ValueError(
+                    f"Original entry {comp_entry.original_entry_id} not found"
+                )
+
+            reversal_entry = writer.write_reversal(
+                original_entry=original,
+                source_event_id=creating_event_id,
+                actor_id=actor_id,
+                effective_date=comp_entry.effective_date,
+                reason=comp_entry.memo,
+            )
+            return reversal_entry.id
+
+        return _write_reversal

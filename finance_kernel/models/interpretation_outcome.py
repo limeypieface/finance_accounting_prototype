@@ -26,8 +26,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import DateTime, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy import JSON
+from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from finance_kernel.db.base import Base, UUIDString

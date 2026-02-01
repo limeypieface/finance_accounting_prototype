@@ -10,14 +10,14 @@ mirror entries, currency conversion, balance verification, and elimination.
 Integration tests at bottom exercise GeneralLedgerService.record_intercompany_transfer().
 """
 
-import pytest
-from decimal import Decimal
-from datetime import date
-from uuid import uuid4
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Tuple
+from datetime import date
+from decimal import Decimal
 from enum import Enum
+from typing import Dict, List, Optional, Tuple
+from uuid import uuid4
 
+import pytest
 
 # =============================================================================
 # Domain Models for Intercompany
@@ -51,7 +51,7 @@ class GLEntry:
     credit: Decimal = Decimal("0")
     currency: str = "USD"
     base_amount: Decimal = Decimal("0")  # In company's functional currency
-    reference: Optional[str] = None
+    reference: str | None = None
 
 
 @dataclass
@@ -64,8 +64,8 @@ class IntercompanyTransaction:
     currency: str
     description: str
     transaction_date: date
-    source_entries: List[GLEntry] = field(default_factory=list)
-    target_entries: List[GLEntry] = field(default_factory=list)
+    source_entries: list[GLEntry] = field(default_factory=list)
+    target_entries: list[GLEntry] = field(default_factory=list)
     status: str = "draft"  # draft, posted, cancelled
 
 
@@ -86,10 +86,10 @@ class IntercompanyService:
     """Manage intercompany transactions."""
 
     def __init__(self):
-        self.companies: Dict[str, Company] = {}
-        self.ic_accounts: Dict[str, IntercompanyAccount] = {}
-        self.transactions: List[IntercompanyTransaction] = []
-        self.exchange_rates: Dict[Tuple[str, str, date], Decimal] = {}
+        self.companies: dict[str, Company] = {}
+        self.ic_accounts: dict[str, IntercompanyAccount] = {}
+        self.transactions: list[IntercompanyTransaction] = []
+        self.exchange_rates: dict[tuple[str, str, date], Decimal] = {}
 
     def register_company(self, company: Company) -> None:
         """Register a company."""
@@ -114,7 +114,7 @@ class IntercompanyService:
         from_currency: str,
         to_currency: str,
         effective_date: date,
-    ) -> Optional[Decimal]:
+    ) -> Decimal | None:
         """Get exchange rate for currency pair."""
         if from_currency == to_currency:
             return Decimal("1")

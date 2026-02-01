@@ -40,6 +40,7 @@ Audit relevance:
       full audit trail (R1, R10, R11).
 """
 
+from finance_modules.revenue.config import RevenueConfig
 from finance_modules.revenue.models import (
     ContractModification,
     ContractStatus,
@@ -52,7 +53,6 @@ from finance_modules.revenue.models import (
     TransactionPrice,
 )
 from finance_modules.revenue.profiles import REVENUE_PROFILES
-from finance_modules.revenue.config import RevenueConfig
 
 __all__ = [
     "ContractModification",

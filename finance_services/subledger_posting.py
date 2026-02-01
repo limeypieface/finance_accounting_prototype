@@ -41,7 +41,7 @@ with declarative entity_id_field on LedgerEffect.
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from finance_engines.subledger import SubledgerEntry

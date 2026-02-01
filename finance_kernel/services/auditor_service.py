@@ -38,9 +38,9 @@ from sqlalchemy.orm import Session
 
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.exceptions import AuditChainBrokenError
+from finance_kernel.logging_config import get_logger
 from finance_kernel.models.audit_event import AuditAction, AuditEvent
 from finance_kernel.services.sequence_service import SequenceService
-from finance_kernel.logging_config import get_logger
 from finance_kernel.utils.hashing import hash_audit_event, hash_payload
 
 logger = get_logger("services.auditor")

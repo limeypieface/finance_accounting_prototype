@@ -9,17 +9,18 @@ Covers:
 - Query operations
 """
 
-import pytest
 from decimal import Decimal
 from uuid import uuid4
 
-from finance_kernel.models.party import Party, PartyType, PartyStatus
-from finance_kernel.services.party_service import PartyService, PartyInfo
+import pytest
+
 from finance_kernel.exceptions import (
-    PartyNotFoundError,
     PartyFrozenError,
     PartyInactiveError,
+    PartyNotFoundError,
 )
+from finance_kernel.models.party import Party, PartyStatus, PartyType
+from finance_kernel.services.party_service import PartyInfo, PartyService
 
 
 class TestPartyModel:

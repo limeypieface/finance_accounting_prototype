@@ -29,15 +29,13 @@ The invariant should be:
   (typically < 1 minor unit per line, e.g., $0.01 per line)
 """
 
-import pytest
 from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 
-from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
-from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
 from finance_kernel.domain.accounting_intent import (
     AccountingIntent,
     AccountingIntentSnapshot,
@@ -45,9 +43,22 @@ from finance_kernel.domain.accounting_intent import (
     IntentLineSide,
     LedgerIntent,
 )
-from finance_kernel.domain.meaning_builder import EconomicEventData, MeaningBuilderResult
+from finance_kernel.domain.meaning_builder import (
+    EconomicEventData,
+    MeaningBuilderResult,
+)
 from finance_kernel.domain.values import Money
-from finance_kernel.exceptions import MultipleRoundingLinesError, RoundingAmountExceededError
+from finance_kernel.exceptions import (
+    MultipleRoundingLinesError,
+    RoundingAmountExceededError,
+)
+from finance_kernel.models.journal import (
+    JournalEntry,
+    JournalEntryStatus,
+    JournalLine,
+    LineSide,
+)
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
 from tests.conftest import make_source_event
 
 
@@ -410,7 +421,7 @@ class TestRoundingThresholdDocumentation:
         print(f"EUR Exact: {eur_exact}")
         print(f"EUR Rounded: {eur_rounded}")
         print(f"Rounding Difference: {rounding_diff}")
-        print(f"")
+        print("")
         print("Expected threshold for is_rounding=True lines:")
         print("  - Maximum: $0.01 per non-rounding line in entry")
         print("  - Or: 0.01% of total entry amount")

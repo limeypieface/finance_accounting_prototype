@@ -8,11 +8,12 @@ Verifies the hard invariant from event.py docstring:
 This is distinct from duplicate detection (idempotent success).
 """
 
-import pytest
 from uuid import uuid4
 
-from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
+import pytest
+
 from finance_kernel.exceptions import PayloadMismatchError
+from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
 
 
 class TestEventProtocolViolation:
@@ -248,8 +249,9 @@ class TestEventProtocolViolation:
 
         # Verify the rejection was audited (if auditor records rejections)
         # The audit trail should contain evidence of the rejection attempt
-        from finance_kernel.models.audit_event import AuditEvent, AuditAction
         from sqlalchemy import select
+
+        from finance_kernel.models.audit_event import AuditAction, AuditEvent
 
         # Check if there's a rejection audit event for this event_id
         audit_events = session.execute(
@@ -427,8 +429,9 @@ class TestSameEventIdDifferentProducer:
         )
 
         # Verify only one event exists in the database
-        from finance_kernel.models.event import Event
         from sqlalchemy import select
+
+        from finance_kernel.models.event import Event
 
         events = session.execute(
             select(Event).where(Event.event_id == event_id)

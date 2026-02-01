@@ -17,17 +17,17 @@ and revaluation. Integration tests at bottom exercise FixedAssetService methods
 through the real posting pipeline.
 """
 
-import pytest
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from typing import List, Optional, Tuple
 from uuid import uuid4
 
+import pytest
+
 from finance_kernel.domain.values import Money
 from tests.modules.conftest import TEST_ASSET_CATEGORY_ID, TEST_ASSET_ID
-
 
 # =============================================================================
 # Domain Models for Fixed Assets
@@ -67,7 +67,7 @@ class DepreciationSchedule:
     """Full depreciation schedule for an asset."""
     asset_id: str
     method: DepreciationMethod
-    lines: List[DepreciationScheduleLine] = field(default_factory=list)
+    lines: list[DepreciationScheduleLine] = field(default_factory=list)
 
     @property
     def total_depreciation(self) -> Money:

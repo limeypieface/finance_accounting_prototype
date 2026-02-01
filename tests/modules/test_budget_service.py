@@ -23,19 +23,18 @@ from uuid import uuid4
 import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
-from tests.modules.conftest import TEST_BUDGET_VERSION_ID
 from finance_modules.budget.models import (
     BudgetEntry,
     BudgetLock,
+    BudgetStatus,
     BudgetVariance,
     BudgetVersion,
-    BudgetStatus,
     Encumbrance,
     EncumbranceStatus,
     ForecastEntry,
 )
 from finance_modules.budget.service import BudgetService
-
+from tests.modules.conftest import TEST_BUDGET_VERSION_ID
 
 # =============================================================================
 # Fixtures

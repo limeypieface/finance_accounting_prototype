@@ -10,14 +10,14 @@ Tests validate correct cost center propagation, hierarchy, validation,
 distribution, and reporting patterns.
 """
 
-import pytest
-from decimal import Decimal
-from datetime import date
-from uuid import uuid4
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from datetime import date
+from decimal import Decimal
 from enum import Enum
+from typing import Dict, List, Optional
+from uuid import uuid4
 
+import pytest
 
 # =============================================================================
 # Domain Models for Cost Centers
@@ -28,7 +28,7 @@ class CostCenter:
     """Cost center for expense/revenue allocation."""
     cost_center_id: str
     name: str
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
     is_group: bool = False
     is_active: bool = True
 
@@ -46,8 +46,8 @@ class GLEntry:
     account: str
     debit: Decimal = Decimal("0")
     credit: Decimal = Decimal("0")
-    cost_center: Optional[str] = None
-    project: Optional[str] = None
+    cost_center: str | None = None
+    project: str | None = None
 
 
 @dataclass
@@ -63,7 +63,7 @@ class Invoice:
     invoice_id: str
     party_id: str
     amount: Decimal
-    cost_center: Optional[str] = None
+    cost_center: str | None = None
 
 
 @dataclass
@@ -73,7 +73,7 @@ class InvoiceLine:
     invoice_id: str
     account: str
     amount: Decimal
-    cost_center: Optional[str] = None
+    cost_center: str | None = None
 
 
 @dataclass
@@ -82,7 +82,7 @@ class Payment:
     payment_id: str
     invoice_id: str
     amount: Decimal
-    cost_center: Optional[str] = None
+    cost_center: str | None = None
 
 
 # =============================================================================
@@ -93,8 +93,8 @@ class CostCenterService:
     """Manage cost center operations."""
 
     def __init__(self):
-        self.cost_centers: Dict[str, CostCenter] = {}
-        self.account_defaults: Dict[str, str] = {}
+        self.cost_centers: dict[str, CostCenter] = {}
+        self.account_defaults: dict[str, str] = {}
 
     def register_cost_center(self, cost_center: CostCenter) -> None:
         """Register a cost center."""
@@ -106,19 +106,19 @@ class CostCenterService:
             raise ValueError(f"Unknown cost center: {cost_center_id}")
         self.account_defaults[account] = cost_center_id
 
-    def get_cost_center(self, cost_center_id: str) -> Optional[CostCenter]:
+    def get_cost_center(self, cost_center_id: str) -> CostCenter | None:
         """Get cost center by ID."""
         return self.cost_centers.get(cost_center_id)
 
-    def get_default_for_account(self, account: str) -> Optional[str]:
+    def get_default_for_account(self, account: str) -> str | None:
         """Get default cost center for account."""
         return self.account_defaults.get(account)
 
     def resolve_cost_center(
         self,
-        explicit: Optional[str],
+        explicit: str | None,
         account: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Resolve cost center: explicit takes precedence, then account default.
         """
@@ -137,7 +137,7 @@ class CostCenterService:
             return False  # Cannot post to group cost centers
         return True
 
-    def get_hierarchy(self, cost_center_id: str) -> List[str]:
+    def get_hierarchy(self, cost_center_id: str) -> list[str]:
         """Get cost center hierarchy (child to parent)."""
         hierarchy = []
         current_id = cost_center_id
@@ -165,9 +165,9 @@ class GLEntryGenerator:
     def generate_invoice_entries(
         self,
         invoice: Invoice,
-        lines: List[InvoiceLine],
+        lines: list[InvoiceLine],
         payable_account: str = "2100-AP",
-    ) -> List[GLEntry]:
+    ) -> list[GLEntry]:
         """
         Generate GL entries for invoice with cost center.
 
@@ -208,7 +208,7 @@ class GLEntryGenerator:
         payment: Payment,
         bank_account: str = "1100-Bank",
         payable_account: str = "2100-AP",
-    ) -> List[GLEntry]:
+    ) -> list[GLEntry]:
         """Generate GL entries for payment with cost center."""
         cost_center = self.cc_service.resolve_cost_center(
             explicit=payment.cost_center,
@@ -392,7 +392,7 @@ class MockGLLedger:
     """Mock GL ledger for testing."""
 
     def __init__(self):
-        self.entries: List[GLEntry] = []
+        self.entries: list[GLEntry] = []
 
     def post_entry(self, entry: GLEntry):
         self.entries.append(entry)
@@ -400,7 +400,7 @@ class MockGLLedger:
     def get_balance(
         self,
         account: str,
-        cost_center: Optional[str] = None,
+        cost_center: str | None = None,
     ) -> Decimal:
         """Get account balance, optionally filtered by cost center."""
         filtered = [e for e in self.entries if e.account == account]
@@ -541,8 +541,8 @@ class TestMultiCostCenterDistribution:
 def distribute_to_cost_centers(
     account: str,
     total: Decimal,
-    allocations: List[tuple],
-) -> List[GLEntry]:
+    allocations: list[tuple],
+) -> list[GLEntry]:
     """Distribute amount across cost centers by percentage."""
     # Validate percentages total 100
     total_pct = sum(pct for _, pct in allocations)

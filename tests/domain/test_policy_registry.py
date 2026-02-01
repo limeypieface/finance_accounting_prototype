@@ -5,9 +5,10 @@ Tests the governance layer that controls economic authority -
 which modules can perform which actions on which ledgers.
 """
 
-import pytest
 from datetime import datetime, timedelta
 from uuid import uuid4
+
+import pytest
 
 from finance_kernel.domain.policy_authority import (
     EconomicCapability,

@@ -51,7 +51,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from finance_kernel.db.base import TrackedBase, UUIDString
 
-
 # =============================================================================
 # Recurring Entry Template
 # =============================================================================
@@ -219,7 +218,7 @@ class JournalBatchModel(TrackedBase):
     )
 
     def to_dto(self):
-        from finance_modules.gl.models import JournalBatch, BatchStatus
+        from finance_modules.gl.models import BatchStatus, JournalBatch
 
         return JournalBatch(
             id=self.id,
@@ -369,7 +368,7 @@ class PeriodCloseTaskModel(TrackedBase):
     completed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     def to_dto(self):
-        from finance_modules.gl.models import PeriodCloseTask, CloseTaskStatus
+        from finance_modules.gl.models import CloseTaskStatus, PeriodCloseTask
 
         return PeriodCloseTask(
             id=self.id,
@@ -442,7 +441,7 @@ class TranslationResultModel(TrackedBase):
     exchange_rate: Mapped[Decimal] = mapped_column(nullable=False)
 
     def to_dto(self):
-        from finance_modules.gl.models import TranslationResult, TranslationMethod
+        from finance_modules.gl.models import TranslationMethod, TranslationResult
 
         return TranslationResult(
             id=self.id,

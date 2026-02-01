@@ -22,11 +22,10 @@ from sqlalchemy.exc import IntegrityError
 
 from finance_modules.procurement.orm import (
     PurchaseRequisitionModel,
-    RequisitionLineModel,
     ReceivingReportModel,
+    RequisitionLineModel,
 )
 from tests.modules.conftest import TEST_VENDOR_ID
-
 
 # ---------------------------------------------------------------------------
 # PurchaseRequisitionModel

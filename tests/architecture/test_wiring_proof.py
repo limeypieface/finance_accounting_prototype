@@ -16,7 +16,6 @@ Test classes:
 
 from __future__ import annotations
 
-
 # ---------------------------------------------------------------------------
 # 1. TestConfigurationCentralization (9.2)
 # ---------------------------------------------------------------------------
@@ -331,7 +330,7 @@ class TestConfigFingerprintPinning:
         import pytest
 
         from finance_config import get_active_config
-        from finance_config.integrity import ConfigIntegrityError, PINFILE_NAME
+        from finance_config.integrity import PINFILE_NAME, ConfigIntegrityError
 
         # Copy the real config set to a temp directory
         src = Path(__file__).resolve().parents[2] / "finance_config" / "sets" / "US-GAAP-2026-v1"

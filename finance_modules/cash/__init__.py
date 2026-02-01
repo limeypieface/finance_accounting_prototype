@@ -31,6 +31,7 @@ Audit relevance:
     posting pipeline, which records InterpretationOutcome and AuditEvent rows.
 """
 
+from finance_modules.cash.config import CashConfig
 from finance_modules.cash.models import (
     BankAccount,
     BankStatement,
@@ -43,7 +44,6 @@ from finance_modules.cash.models import (
 )
 from finance_modules.cash.profiles import CASH_PROFILES
 from finance_modules.cash.workflows import RECONCILIATION_WORKFLOW
-from finance_modules.cash.config import CashConfig
 
 __all__ = [
     "BankAccount",

@@ -17,9 +17,11 @@ from decimal import Decimal
 from typing import Any
 
 from finance_config.compiler import CompiledPolicyPack
-
-from tests.benchmarks.event_shape import introspect_policy, EventShape
-from tests.benchmarks.event_generator import generate_event, TestEvent  # noqa: F401 re-exported
+from tests.benchmarks.event_generator import (  # noqa: F401 re-exported
+    TestEvent,
+    generate_event,
+)
+from tests.benchmarks.event_shape import EventShape, introspect_policy
 
 
 def build_event_catalog(

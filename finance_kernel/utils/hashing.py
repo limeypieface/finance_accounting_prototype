@@ -7,8 +7,8 @@ This module provides the canonical hashing functions used throughout.
 
 import hashlib
 import json
-from decimal import Decimal
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 

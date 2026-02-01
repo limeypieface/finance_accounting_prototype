@@ -27,10 +27,10 @@ def _fmt(v) -> str:
 def main() -> int:
     logging.disable(logging.CRITICAL)
 
-    from finance_kernel.db.engine import init_engine_from_url, get_session
-    from finance_kernel.models.journal import JournalEntry, JournalLine
+    from finance_kernel.db.engine import get_session, init_engine_from_url
     from finance_kernel.models.account import Account
     from finance_kernel.models.event import Event
+    from finance_kernel.models.journal import JournalEntry, JournalLine
 
     try:
         init_engine_from_url(DB_URL, echo=False)

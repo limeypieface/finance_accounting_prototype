@@ -18,7 +18,6 @@ from finance_modules.inventory.helpers import (
 )
 from finance_modules.inventory.models import ItemValue
 
-
 # =============================================================================
 # ABC Classification Tests
 # =============================================================================

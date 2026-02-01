@@ -1,36 +1,12 @@
-"""
-ReferenceSnapshot -- Frozen, named version of economic reality.
-
-Responsibility:
-    Captures the immutable state of all reference data at a point in time.
-    This becomes the ONLY legal input to MeaningBuilder, VarianceEngine,
-    AllocationEngine, MatchingEngine, and TaxEngine.
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    R21 -- Reference snapshot determinism.  Every operation that transforms
-           economic events must reference a snapshot so that replay produces
-           identical results.
-    L4  -- Guards and valuation read only from frozen snapshots.
-
-Failure modes:
-    - ValueError from ComponentVersion if version < 1 or content_hash empty.
-    - SnapshotIntegrityError when content hashes do not match.
-
-Audit relevance:
-    ReferenceSnapshot is persisted alongside JournalEntry (R21) so that
-    auditors can verify that the same reference data was used at posting
-    time and during replay (L4).
-"""
+"""ReferenceSnapshot -- Frozen, named version of economic reality."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Mapping, Any
+from typing import Any
 from uuid import UUID
 
 
@@ -49,11 +25,7 @@ class SnapshotComponentType(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ComponentVersion:
-    """
-    Version information for a single snapshot component.
-
-    Captures both the version number and a content hash for integrity.
-    """
+    """Version information for a single snapshot component."""
 
     component_type: SnapshotComponentType
     version: int
@@ -70,29 +42,7 @@ class ComponentVersion:
 
 @dataclass(frozen=True, slots=True)
 class ReferenceSnapshot:
-    """
-    Immutable snapshot of all reference data at a point in time.
-
-    This is the canonical representation of "economic reality" for a posting.
-    Every operation that transforms economic events must reference a snapshot.
-
-    Contract:
-        ``snapshot_id`` is globally unique.  Once captured, a snapshot never
-        changes (frozen + slotted).
-
-    Guarantees:
-        - ``version_dict`` provides R21-compliant version map for persistence.
-        - ``is_compatible_with()`` enables deterministic replay validation (L4).
-        - ``component_versions`` are frozen tuples -- fully immutable.
-
-    Non-goals:
-        - Does NOT contain actual reference data (only version pointers).
-        - Does NOT perform valuation or posting.
-
-    Invariants enforced:
-        R21 -- captured_at and component_versions are immutable after creation.
-        L4  -- snapshot is the only legal input for interpretation.
-    """
+    """Immutable snapshot of all reference data at a point in time (R21, L4)."""
 
     snapshot_id: UUID
     captured_at: datetime
@@ -154,11 +104,7 @@ class ReferenceSnapshot:
 
     @property
     def version_dict(self) -> dict[str, int]:
-        """
-        Get all versions as a dictionary.
-
-        Useful for R21 compliance when persisting to JournalEntry.
-        """
+        """Get all versions as a dictionary for R21 persistence."""
         return {
             "coa_version": self.coa_version,
             "dimension_schema_version": self.dimension_schema_version,
@@ -167,22 +113,13 @@ class ReferenceSnapshot:
         }
 
     def is_compatible_with(self, other: ReferenceSnapshot) -> bool:
-        """
-        Check if this snapshot is compatible with another for replay.
-
-        Two snapshots are compatible if all component versions match.
-        Used for deterministic replay validation.
-        """
+        """Check if this snapshot is compatible with another for replay."""
         return self.version_dict == other.version_dict
 
 
 @dataclass(frozen=True, slots=True)
 class SnapshotRequest:
-    """
-    Request to capture a new reference snapshot.
-
-    Specifies which components to include and any constraints.
-    """
+    """Request to capture a new reference snapshot."""
 
     requested_by: UUID
     include_components: frozenset[SnapshotComponentType] = field(

@@ -18,6 +18,10 @@ import pytest
 
 from finance_kernel.domain.event_validator import validate_payload_against_schema
 from finance_kernel.domain.meaning_builder import MeaningBuilder, MeaningBuilderResult
+from finance_kernel.domain.policy_selector import (
+    PolicyNotFoundError,
+    PolicySelector,
+)
 from finance_kernel.domain.schemas.definitions.ap import (
     AP_INVOICE_RECEIVED_V1,
     AP_PAYMENT_V1,
@@ -36,6 +40,7 @@ from finance_kernel.domain.schemas.definitions.payroll import (
     PAYROLL_LABOR_DISTRIBUTION_V1,
     PAYROLL_TIMESHEET_V1,
 )
+from finance_kernel.domain.schemas.registry import EventSchemaRegistry
 from finance_modules.ap.profiles import (
     AP_INVOICE_EXPENSE,
     AP_PAYMENT,
@@ -43,6 +48,8 @@ from finance_modules.ap.profiles import (
 from finance_modules.ar.profiles import (
     AR_CREDIT_MEMO_RETURN,
     AR_INVOICE,
+)
+from finance_modules.ar.profiles import (
     AR_PAYMENT_RECEIVED as AR_PAYMENT,
 )
 from finance_modules.inventory.profiles import (
@@ -56,12 +63,6 @@ from finance_modules.payroll.profiles import (
     TIMESHEET_OVERTIME,
     TIMESHEET_REGULAR,
 )
-from finance_kernel.domain.policy_selector import (
-    PolicyNotFoundError,
-    PolicySelector,
-)
-from finance_kernel.domain.schemas.registry import EventSchemaRegistry
-
 
 # =============================================================================
 # FIXTURES

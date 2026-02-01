@@ -20,7 +20,6 @@ import ast
 import glob
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Helpers (same pattern as test_kernel_boundary.py)
 # ---------------------------------------------------------------------------

@@ -8,13 +8,11 @@ Verifies:
 - InterpretationOutcome: one outcome per source_event_id (P15)
 """
 
-import pytest
 from decimal import Decimal
 from uuid import uuid4
 
-from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
-from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
-from finance_kernel.services.journal_writer import WriteStatus
+import pytest
+
 from finance_kernel.domain.accounting_intent import (
     AccountingIntent,
     AccountingIntentSnapshot,
@@ -25,6 +23,9 @@ from finance_kernel.domain.meaning_builder import (
     EconomicEventData,
     MeaningBuilderResult,
 )
+from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
+from finance_kernel.services.journal_writer import WriteStatus
 from tests.conftest import make_source_event
 
 

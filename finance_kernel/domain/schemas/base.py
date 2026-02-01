@@ -1,9 +1,4 @@
-"""
-Event schema data structures.
-
-Provides immutable, hashable schema definitions for event payload validation.
-This is part of the functional core - no I/O, no ORM.
-"""
+"""Event schema data structures."""
 
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -31,11 +26,7 @@ class EventFieldType(str, Enum):
 
 @dataclass(frozen=True)
 class EventFieldSchema:
-    """
-    Schema definition for a single field.
-
-    Immutable and hashable for use in frozen dataclasses.
-    """
+    """Schema definition for a single event field."""
 
     name: str
     field_type: EventFieldType
@@ -63,7 +54,6 @@ class EventFieldSchema:
     allowed_values: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
-        """Validate field schema configuration."""
         if self.field_type == EventFieldType.OBJECT and not self.nested_fields:
             raise ValueError(
                 f"Field '{self.name}' of type OBJECT must have nested_fields"
@@ -82,11 +72,7 @@ class EventFieldSchema:
 
 @dataclass(frozen=True)
 class EventSchema:
-    """
-    Complete schema definition for an event type.
-
-    Immutable and hashable for deterministic validation.
-    """
+    """Complete schema definition for an event type."""
 
     event_type: str
     version: int
@@ -104,7 +90,6 @@ class EventSchema:
     )
 
     def __post_init__(self) -> None:
-        """Validate schema configuration."""
         if not self.event_type:
             raise ValueError("event_type is required")
         if self.version < 1:
@@ -124,16 +109,7 @@ class EventSchema:
         fields: tuple[EventFieldSchema, ...],
         prefix: str = "",
     ) -> "Iterator[str]":
-        """
-        Recursively iterate all field paths.
-
-        Args:
-            fields: Fields to iterate.
-            prefix: Current path prefix.
-
-        Yields:
-            Field paths in dot notation.
-        """
+        """Recursively iterate all field paths in dot notation."""
         for f in fields:
             path = f"{prefix}{f.name}" if prefix else f.name
             yield path
@@ -146,12 +122,7 @@ class EventSchema:
                 yield from self._iterate_field_paths(f.item_schema, f"{path}[*].")
 
     def all_field_paths(self) -> frozenset[str]:
-        """
-        Get all valid field paths in this schema.
-
-        Returns:
-            Frozen set of all field paths in dot notation.
-        """
+        """Get all valid field paths in this schema."""
         # Use object.__setattr__ to bypass frozen dataclass
         if not self._field_paths_cache:
             paths = frozenset(self._iterate_field_paths(self.fields))
@@ -159,27 +130,11 @@ class EventSchema:
         return self._field_paths_cache
 
     def has_field(self, path: str) -> bool:
-        """
-        Check if a field path exists in this schema.
-
-        Args:
-            path: Field path in dot notation (e.g., "amount", "items[*].quantity")
-
-        Returns:
-            True if the field path exists.
-        """
+        """Check if a field path exists in this schema."""
         return path in self.all_field_paths()
 
     def get_field(self, path: str) -> EventFieldSchema | None:
-        """
-        Get field schema by dot-notation path.
-
-        Args:
-            path: Field path (e.g., "amount", "items[*].quantity")
-
-        Returns:
-            EventFieldSchema if found, None otherwise.
-        """
+        """Get field schema by dot-notation path."""
         if not self.has_field(path):
             return None
 
@@ -204,10 +159,5 @@ class EventSchema:
         return None
 
     def get_fields_dict(self) -> dict[str, EventFieldSchema]:
-        """
-        Get top-level fields as a dictionary by name.
-
-        Returns:
-            Dictionary mapping field names to schemas.
-        """
+        """Get top-level fields as a dictionary by name."""
         return {f.name: f for f in self.fields}

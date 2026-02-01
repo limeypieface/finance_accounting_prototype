@@ -8,14 +8,15 @@ Verifies:
 - Float constructor prohibition
 """
 
+from decimal import ROUND_HALF_UP, Decimal
+
 import pytest
-from decimal import Decimal, ROUND_HALF_UP
 
 from finance_kernel.db.types import (
-    money_from_str,
-    money_from_int,
-    round_money,
     MONEY_DECIMAL_PLACES,
+    money_from_int,
+    money_from_str,
+    round_money,
 )
 from finance_kernel.domain.currency import CurrencyRegistry
 

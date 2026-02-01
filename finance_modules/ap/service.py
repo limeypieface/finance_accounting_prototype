@@ -51,25 +51,14 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Sequence
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from finance_kernel.domain.clock import Clock, SystemClock
-from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType
-from finance_kernel.domain.values import Money
-from finance_kernel.logging_config import get_logger
-from finance_kernel.services.journal_writer import RoleResolver
-from finance_kernel.services.link_graph_service import LinkGraphService
-from finance_kernel.services.module_posting_service import (
-    ModulePostingResult,
-    ModulePostingService,
-    ModulePostingStatus,
-)
-from finance_services.reconciliation_service import ReconciliationManager
+from finance_engines.aging import AgingCalculator, AgingReport
 from finance_engines.allocation import (
     AllocationEngine,
     AllocationMethod,
@@ -82,7 +71,17 @@ from finance_engines.matching import (
     MatchTolerance,
     MatchType,
 )
-from finance_engines.aging import AgingCalculator, AgingReport
+from finance_kernel.domain.clock import Clock, SystemClock
+from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType
+from finance_kernel.domain.values import Money
+from finance_kernel.logging_config import get_logger
+from finance_kernel.services.journal_writer import RoleResolver
+from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_kernel.services.module_posting_service import (
+    ModulePostingResult,
+    ModulePostingService,
+    ModulePostingStatus,
+)
 from finance_modules.ap.models import (
     HoldStatus,
     PaymentRun,
@@ -96,6 +95,7 @@ from finance_modules.ap.orm import (
     APPaymentRunModel,
     APVendorHoldModel,
 )
+from finance_services.reconciliation_service import ReconciliationManager
 
 logger = get_logger("modules.ap.service")
 

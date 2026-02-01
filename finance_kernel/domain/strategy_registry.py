@@ -1,30 +1,4 @@
-"""
-StrategyRegistry -- Event-type to PostingStrategy dispatch registry.
-
-Responsibility:
-    Registers, validates, and looks up PostingStrategy instances by event
-    type and version.  Enforces R14 (no central if/switch), R23 (lifecycle
-    governance), and provides replay-aware strategy retrieval.
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    R14 -- Strategy-per-event-type dispatch (no if/switch on event_type)
-    R18 -- All exceptions carry machine-readable ``code`` attributes
-    R23 -- Lifecycle governance validation at registration time
-
-Failure modes:
-    - StrategyNotFoundError       (R18: STRATEGY_NOT_FOUND)
-    - StrategyVersionNotFoundError (R18: STRATEGY_VERSION_NOT_FOUND)
-    - StrategyLifecycleError      (R18: STRATEGY_LIFECYCLE_ERROR)
-    - StrategyIncompatibleError   (R18: STRATEGY_INCOMPATIBLE)
-
-Audit relevance:
-    Strategy version is persisted on every journal entry for deterministic
-    replay.  Auditors use ``get_for_replay()`` to verify that the same
-    strategy version would produce identical results.
-"""
+"""StrategyRegistry -- Event-type to PostingStrategy dispatch registry."""
 
 from typing import ClassVar
 
@@ -33,11 +7,7 @@ from finance_kernel.exceptions import FinanceKernelError
 
 
 class StrategyNotFoundError(FinanceKernelError):
-    """
-    Raised when no strategy is found for an event type.
-
-    R18 Compliance: Has machine-readable code attribute.
-    """
+    """Raised when no strategy is found for an event type (R18)."""
 
     code: str = "STRATEGY_NOT_FOUND"
 
@@ -51,11 +21,7 @@ class StrategyNotFoundError(FinanceKernelError):
 
 
 class StrategyVersionNotFoundError(FinanceKernelError):
-    """
-    Raised when a specific strategy version is not found.
-
-    R18 Compliance: Has machine-readable code attribute.
-    """
+    """Raised when a specific strategy version is not found (R18)."""
 
     code: str = "STRATEGY_VERSION_NOT_FOUND"
 
@@ -70,11 +36,7 @@ class StrategyVersionNotFoundError(FinanceKernelError):
 
 
 class StrategyLifecycleError(FinanceKernelError):
-    """
-    Raised when strategy lifecycle validation fails (R23).
-
-    R18 Compliance: Has machine-readable code attribute.
-    """
+    """Raised when strategy lifecycle validation fails (R23, R18)."""
 
     code: str = "STRATEGY_LIFECYCLE_ERROR"
 
@@ -88,11 +50,7 @@ class StrategyLifecycleError(FinanceKernelError):
 
 
 class StrategyIncompatibleError(FinanceKernelError):
-    """
-    Raised when strategy is incompatible with current system version (R23).
-
-    R18 Compliance: Has machine-readable code attribute.
-    """
+    """Raised when strategy is incompatible with current system version (R23, R18)."""
 
     code: str = "STRATEGY_INCOMPATIBLE"
 
@@ -117,45 +75,14 @@ class StrategyIncompatibleError(FinanceKernelError):
 
 
 class StrategyRegistry:
-    """
-    Registry for posting strategies.
-
-    Contract:
-        ``register()`` validates R23 lifecycle metadata before admitting a
-        strategy.  ``get()`` returns exactly one strategy or raises (R14).
-
-    Guarantees:
-        - Duplicate event_type + version is rejected at registration.
-        - ``get_for_replay()`` respects R23 replay policy and version range.
-        - ``get_compatible_strategies()`` filters by system version (R23).
-
-    Non-goals:
-        - Does NOT execute strategies (Bookkeeper / services do that).
-        - Does NOT persist to database (in-memory, populated at startup).
-
-    Invariants enforced:
-        R14 -- One strategy per (event_type, version) -- no if/switch.
-        R23 -- Lifecycle metadata validated at registration.
-    """
+    """Registry for posting strategies (R14, R23)."""
 
     # Class-level registry for all strategies
     _strategies: ClassVar[dict[str, dict[int, PostingStrategy]]] = {}
 
     @classmethod
     def register(cls, strategy: PostingStrategy) -> None:
-        """
-        Register a posting strategy.
-
-        R23: Validates lifecycle metadata before registration.
-
-        Args:
-            strategy: The strategy to register.
-
-        Raises:
-            ValueError: If a strategy with the same event_type and version
-                       is already registered.
-            StrategyLifecycleError: If lifecycle metadata is invalid (R23).
-        """
+        """Register a posting strategy, validating R23 lifecycle metadata."""
         event_type = strategy.event_type
         version = strategy.version
 
@@ -176,21 +103,7 @@ class StrategyRegistry:
 
     @classmethod
     def _validate_lifecycle(cls, strategy: PostingStrategy) -> None:
-        """
-        R23: Validate strategy lifecycle metadata.
-
-        Ensures:
-        - supported_from_version >= 1
-        - supported_to_version is None or > supported_from_version
-        - replay_policy is valid
-        - Version is positive
-
-        Args:
-            strategy: The strategy to validate.
-
-        Raises:
-            StrategyLifecycleError: If validation fails.
-        """
+        """R23: Validate strategy lifecycle metadata."""
         event_type = strategy.event_type
         version = strategy.version
 
@@ -232,20 +145,7 @@ class StrategyRegistry:
         event_type: str,
         version: int | None = None,
     ) -> PostingStrategy:
-        """
-        Get a strategy for an event type.
-
-        Args:
-            event_type: The event type to look up.
-            version: Optional specific version. If None, returns latest.
-
-        Returns:
-            The posting strategy.
-
-        Raises:
-            StrategyNotFoundError: If no strategy exists for the event type.
-            StrategyVersionNotFoundError: If the specific version doesn't exist.
-        """
+        """Get a strategy for an event type, optionally by version."""
         if event_type not in cls._strategies:
             raise StrategyNotFoundError(event_type)
 
@@ -268,18 +168,7 @@ class StrategyRegistry:
 
     @classmethod
     def get_latest_version(cls, event_type: str) -> int:
-        """
-        Get the latest version number for an event type.
-
-        Args:
-            event_type: The event type.
-
-        Returns:
-            The latest version number.
-
-        Raises:
-            StrategyNotFoundError: If no strategy exists for the event type.
-        """
+        """Get the latest version number for an event type."""
         if event_type not in cls._strategies:
             raise StrategyNotFoundError(event_type)
 
@@ -291,18 +180,7 @@ class StrategyRegistry:
 
     @classmethod
     def get_all_versions(cls, event_type: str) -> list[int]:
-        """
-        Get all registered versions for an event type.
-
-        Args:
-            event_type: The event type.
-
-        Returns:
-            List of version numbers (sorted ascending).
-
-        Raises:
-            StrategyNotFoundError: If no strategy exists for the event type.
-        """
+        """Get all registered versions for an event type."""
         if event_type not in cls._strategies:
             raise StrategyNotFoundError(event_type)
 
@@ -310,25 +188,12 @@ class StrategyRegistry:
 
     @classmethod
     def list_event_types(cls) -> list[str]:
-        """
-        List all registered event types.
-
-        Returns:
-            List of event type strings.
-        """
+        """List all registered event types."""
         return sorted(cls._strategies.keys())
 
     @classmethod
     def has_strategy(cls, event_type: str) -> bool:
-        """
-        Check if a strategy exists for an event type.
-
-        Args:
-            event_type: The event type.
-
-        Returns:
-            True if a strategy exists, False otherwise.
-        """
+        """Check if a strategy exists for an event type."""
         return event_type in cls._strategies and bool(cls._strategies[event_type])
 
     @classmethod
@@ -338,25 +203,7 @@ class StrategyRegistry:
         original_version: int,
         system_version: int,
     ) -> PostingStrategy:
-        """
-        Get a strategy for replay, respecting lifecycle and replay policy (R23).
-
-        For STRICT replay policy: returns exact version used originally.
-        For PERMISSIVE replay policy: may return compatible newer version.
-
-        Args:
-            event_type: The event type.
-            original_version: The strategy version used in original posting.
-            system_version: The current system version.
-
-        Returns:
-            The appropriate strategy for replay.
-
-        Raises:
-            StrategyNotFoundError: If no strategy exists.
-            StrategyVersionNotFoundError: If original version not found.
-            StrategyIncompatibleError: If strategy is incompatible with system version.
-        """
+        """Get a strategy for replay, respecting lifecycle and replay policy (R23)."""
         # Get the original strategy
         strategy = cls.get(event_type, original_version)
 
@@ -385,21 +232,7 @@ class StrategyRegistry:
         event_type: str,
         system_version: int,
     ) -> list[PostingStrategy]:
-        """
-        Get all strategies compatible with a given system version (R23).
-
-        Useful for migration planning and debugging.
-
-        Args:
-            event_type: The event type.
-            system_version: The system version to check against.
-
-        Returns:
-            List of compatible strategies (may be empty).
-
-        Raises:
-            StrategyNotFoundError: If no strategies exist for event type.
-        """
+        """Get all strategies compatible with a given system version (R23)."""
         if event_type not in cls._strategies:
             raise StrategyNotFoundError(event_type)
 
@@ -412,22 +245,12 @@ class StrategyRegistry:
 
     @classmethod
     def clear(cls) -> None:
-        """
-        Clear all registered strategies.
-
-        Use this in tests to reset the registry.
-        """
+        """Clear all registered strategies. For testing only."""
         cls._strategies.clear()
 
     @classmethod
     def unregister(cls, event_type: str, version: int | None = None) -> None:
-        """
-        Unregister a strategy.
-
-        Args:
-            event_type: The event type.
-            version: Specific version to unregister, or None for all versions.
-        """
+        """Unregister a strategy."""
         if event_type not in cls._strategies:
             return
 
@@ -440,27 +263,13 @@ class StrategyRegistry:
 
 
 def register_strategy(strategy: PostingStrategy) -> PostingStrategy:
-    """
-    Decorator to register a strategy class.
-
-    Usage:
-        @register_strategy
-        class MyStrategy(BasePostingStrategy):
-            ...
-    """
+    """Decorator to register a strategy class."""
     StrategyRegistry.register(strategy)
     return strategy
 
 
 def strategy_for(event_type: str, version: int = 1):
-    """
-    Decorator factory to create and register a strategy.
-
-    Usage:
-        @strategy_for("inventory.receipt", version=1)
-        class InventoryReceiptStrategy(BasePostingStrategy):
-            ...
-    """
+    """Decorator factory to create and register a strategy."""
 
     def decorator(cls):
         # The class should define _compute_line_specs

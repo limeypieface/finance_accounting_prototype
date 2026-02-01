@@ -10,14 +10,14 @@ Tests validate realized/unrealized FX gain/loss calculation, multi-currency
 payment, triangular conversion, period-end revaluation, rounding, and GL balance.
 """
 
-import pytest
-from decimal import Decimal
-from datetime import date, timedelta
-from uuid import uuid4
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from datetime import date, timedelta
+from decimal import Decimal
 from enum import Enum
+from typing import List, Optional, Tuple
+from uuid import uuid4
 
+import pytest
 
 # =============================================================================
 # Domain Models for FX
@@ -132,7 +132,7 @@ class FXGainLossCalculator:
         self,
         invoice: ForeignCurrencyInvoice,
         payment: ForeignCurrencyPayment,
-    ) -> Tuple[Decimal, List[GLEntry]]:
+    ) -> tuple[Decimal, list[GLEntry]]:
         """
         Calculate realized FX gain/loss on payment.
 
@@ -180,7 +180,7 @@ class FXGainLossCalculator:
         self,
         balance: OpenBalance,
         revaluation_rate: Decimal,
-    ) -> Tuple[Decimal, List[GLEntry]]:
+    ) -> tuple[Decimal, list[GLEntry]]:
         """
         Calculate unrealized FX gain/loss for open balance.
 
@@ -686,7 +686,7 @@ class MockExchangeRateService:
         from_currency: str,
         to_currency: str,
         effective_date: date,
-    ) -> Optional[ExchangeRate]:
+    ) -> ExchangeRate | None:
         rate = self.rates.get((from_currency, to_currency, effective_date))
         if rate:
             return ExchangeRate(
@@ -701,7 +701,7 @@ class MockExchangeRateService:
         self,
         from_currency: str,
         to_currency: str,
-    ) -> Optional[ExchangeRate]:
+    ) -> ExchangeRate | None:
         # Find latest rate for currency pair
         matching = [
             (d, r) for (f, t, d), r in self.rates.items()

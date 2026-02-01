@@ -9,7 +9,6 @@ from decimal import Decimal
 
 import pytest
 
-from finance_kernel.domain.values import Money
 from finance_engines.billing import (
     BillingContractType,
     BillingInput,
@@ -22,14 +21,14 @@ from finance_engines.billing import (
     MilestoneEntry,
     RateAdjustmentInput,
     RateAdjustmentResult,
+    apply_funding_limit,
+    apply_withholding,
     calculate_billing,
     calculate_fee,
     calculate_indirect_costs,
     calculate_rate_adjustment,
-    apply_funding_limit,
-    apply_withholding,
 )
-
+from finance_kernel.domain.values import Money
 
 # ============================================================================
 # Fixtures

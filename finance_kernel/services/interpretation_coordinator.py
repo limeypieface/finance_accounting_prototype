@@ -1,55 +1,4 @@
-"""
-InterpretationCoordinator - L5 Strengthened Atomicity Service.
-
-Responsibility:
-    Coordinates EconomicEvent creation, JournalWriter, and OutcomeRecorder
-    within a single database transaction to guarantee L5 atomicity: no
-    journal rows exist without a POSTED outcome and no POSTED outcome
-    exists without all corresponding journal rows.
-
-Architecture position:
-    Kernel > Services — imperative shell, owns transaction boundaries.
-    Called by ModulePostingService; delegates journal creation to
-    JournalWriter and outcome persistence to OutcomeRecorder.
-
-Invariants enforced:
-    L5  — No journal rows without POSTED outcome; no POSTED without all rows.
-    P11 — Multi-ledger postings from single AccountingIntent are atomic.
-    P15 — Exactly one InterpretationOutcome per accepted event.
-    R21 — Reference snapshot determinism (snapshot fields on EconomicEvent).
-
-Failure modes:
-    - INTERPRETATION_FAILED: MeaningBuilder did not produce economic event.
-    - ENGINE_DISPATCH_FAILED: One or more required engines failed.
-    - ROLE_RESOLUTION_BLOCKED: Account role could not resolve to COA code.
-    - WRITE_FAILED: JournalWriter could not create entries.
-    - Guard rejection/block: Policy guard denied the posting.
-
-Audit relevance:
-    Emits FINANCE_KERNEL_TRACE log entries with reproducibility proof
-    (input_hash, output_hash) for every POSTED, REJECTED, and BLOCKED
-    outcome.  Captures a full decision journal via LogCapture and
-    persists it on the InterpretationOutcome record.
-
-Usage:
-    coordinator = InterpretationCoordinator(
-        session=session,
-        journal_writer=writer,
-        outcome_recorder=recorder,
-        clock=clock,
-    )
-
-    result = coordinator.interpret_and_post(
-        meaning_result=meaning_result,
-        accounting_intent=intent,
-        actor_id=actor_id,
-    )
-
-    if result.success:
-        session.commit()  # L5: All or nothing
-    else:
-        session.rollback()
-"""
+"""InterpretationCoordinator -- L5 strengthened atomicity service."""
 
 from __future__ import annotations
 
@@ -63,8 +12,6 @@ from uuid import uuid4 as _uuid4
 
 from sqlalchemy.orm import Session
 
-from finance_kernel.logging_config import get_logger, LogContext
-
 from finance_kernel.domain.accounting_intent import (
     AccountingIntent,
     AccountingIntentSnapshot,
@@ -75,14 +22,15 @@ from finance_kernel.domain.meaning_builder import (
     EconomicEventData,
     MeaningBuilderResult,
 )
+from finance_kernel.logging_config import LogContext, get_logger
 from finance_kernel.models.economic_event import EconomicEvent
 from finance_kernel.models.interpretation_outcome import (
     InterpretationOutcome,
     OutcomeStatus,
 )
 from finance_kernel.services.journal_writer import (
-    JournalWriteResult,
     JournalWriter,
+    JournalWriteResult,
     WriteStatus,
 )
 from finance_kernel.services.log_capture import LogCapture
@@ -94,11 +42,7 @@ logger = get_logger("services.interpretation_coordinator")
 
 @dataclass(frozen=True)
 class InterpretationResult:
-    """
-    Result of a complete interpretation and posting operation.
-
-    Contains the final outcome status and all created artifacts.
-    """
+    """Result of a complete interpretation and posting operation."""
 
     success: bool
     outcome: InterpretationOutcome | None = None
@@ -115,7 +59,7 @@ class InterpretationResult:
         economic_event: EconomicEvent,
         journal_result: JournalWriteResult,
         engine_result: EngineDispatchResult | None = None,
-    ) -> "InterpretationResult":
+    ) -> InterpretationResult:
         """Successfully posted."""
         return cls(
             success=True,
@@ -131,7 +75,7 @@ class InterpretationResult:
         outcome: InterpretationOutcome,
         error_code: str,
         error_message: str,
-    ) -> "InterpretationResult":
+    ) -> InterpretationResult:
         """Rejected by guard or validation."""
         return cls(
             success=False,
@@ -146,8 +90,8 @@ class InterpretationResult:
         outcome: InterpretationOutcome,
         error_code: str,
         error_message: str,
-    ) -> "InterpretationResult":
-        """Blocked - valid but cannot process yet."""
+    ) -> InterpretationResult:
+        """Blocked -- valid but cannot process yet."""
         return cls(
             success=False,
             outcome=outcome,
@@ -158,7 +102,7 @@ class InterpretationResult:
     @classmethod
     def failure(
         cls, error_code: str, error_message: str
-    ) -> "InterpretationResult":
+    ) -> InterpretationResult:
         """General failure."""
         return cls(
             success=False,
@@ -168,29 +112,7 @@ class InterpretationResult:
 
 
 class InterpretationCoordinator:
-    """
-    Coordinates interpretation and posting with L5 atomicity.
-
-    Contract:
-        Accepts a MeaningBuilderResult and AccountingIntent and drives
-        EconomicEvent creation, journal posting, and outcome recording
-        within the caller's transaction.
-
-    Guarantees:
-        - L5: EconomicEvent + JournalEntry rows + POSTED outcome are
-          all flushed in the same transaction.  No partial state.
-        - P11: All ledger intents produce entries atomically.
-        - P15: Exactly one InterpretationOutcome per source_event_id.
-        - Reproducibility proof (input_hash / output_hash) logged.
-
-    Non-goals:
-        - Does NOT call session.commit() — caller controls boundaries.
-        - Does NOT manage event ingestion (that is IngestorService).
-        - Does NOT handle subledger posting (delegated by caller).
-
-    If any step fails, the entire operation fails and nothing is persisted.
-    The caller is responsible for commit/rollback.
-    """
+    """Coordinates interpretation and posting with L5 atomicity."""
 
     def __init__(
         self,
@@ -200,19 +122,6 @@ class InterpretationCoordinator:
         clock: Clock | None = None,
         engine_dispatcher: EngineDispatcher | None = None,
     ):
-        """
-        Initialize the coordinator.
-
-        Args:
-            session: SQLAlchemy session.
-            journal_writer: JournalWriter for creating entries.
-            outcome_recorder: OutcomeRecorder for recording outcomes.
-            clock: Clock for timestamps.
-            engine_dispatcher: Optional EngineDispatcher for policy-driven
-                engine invocation. When provided along with a compiled_policy
-                in interpret_and_post, engines listed in
-                policy.required_engines will be dispatched before journal write.
-        """
         self._session = session
         self._journal_writer = journal_writer
         self._outcome_recorder = outcome_recorder
@@ -228,40 +137,10 @@ class InterpretationCoordinator:
         compiled_policy: Any | None = None,
         event_payload: dict[str, Any] | None = None,
     ) -> InterpretationResult:
-        """
-        Interpret an event and post to ledgers atomically.
-
-        Preconditions:
-            - ``meaning_result`` must be a valid MeaningBuilderResult.
-            - ``accounting_intent.source_event_id`` must correspond to
-              an already-ingested event (FK requirement).
-            - ``actor_id`` must be a valid UUID.
-
-        Postconditions:
-            - On success: EconomicEvent, JournalEntry rows, and
-              InterpretationOutcome (POSTED) are all flushed to the
-              session.  Caller must commit.
-            - On failure: An InterpretationOutcome (REJECTED or BLOCKED)
-              is flushed, or no outcome is created (engine dispatch failure).
-
-        Raises:
-            Exception: Any unexpected error is re-raised after logging.
+        """Interpret an event and post to ledgers atomically.
 
         L5 Compliance: All operations happen in the current transaction.
         The caller must commit to finalize or rollback to abort.
-
-        Args:
-            meaning_result: Result from MeaningBuilder.
-            accounting_intent: Intent to post.
-            actor_id: Who is performing the operation.
-            trace_id: Optional trace ID.
-            compiled_policy: Optional CompiledPolicy for engine dispatch.
-                When provided with an EngineDispatcher, engines listed in
-                policy.required_engines are invoked before journal write.
-            event_payload: Optional raw event payload for engine dispatch.
-
-        Returns:
-            InterpretationResult with outcome and artifacts.
         """
         correlation_id = str(_uuid4())
         capture = LogCapture()
@@ -430,7 +309,7 @@ class InterpretationCoordinator:
             meaning_result.economic_event, trace_id
         )
 
-        # INVARIANT: P11 — Multi-ledger postings from single intent are atomic
+        # INVARIANT: P11 -- Multi-ledger postings from single intent are atomic
         journal_result = self._journal_writer.write(
             intent=accounting_intent,
             actor_id=actor_id,
@@ -438,7 +317,6 @@ class InterpretationCoordinator:
         )
 
         if not journal_result.is_success:
-            # Journal write failed - record rejection or block
             if journal_result.status == WriteStatus.ROLE_RESOLUTION_FAILED:
                 return self._record_block_for_resolution(
                     meaning_result=meaning_result,
@@ -454,8 +332,8 @@ class InterpretationCoordinator:
                     trace_id=trace_id,
                 )
 
-        # INVARIANT: L5 — POSTED outcome in same transaction as journal writes
-        # INVARIANT: P15 — Exactly one InterpretationOutcome per event
+        # INVARIANT: L5 -- POSTED outcome in same transaction as journal writes
+        # INVARIANT: P15 -- Exactly one InterpretationOutcome per event
         outcome = self._outcome_recorder.record_posted(
             source_event_id=accounting_intent.source_event_id,
             profile_id=accounting_intent.profile_id,
@@ -465,7 +343,7 @@ class InterpretationCoordinator:
             trace_id=trace_id,
         )
 
-        # INVARIANT: L5 — Both outcome and journal entries must exist together
+        # INVARIANT: L5 -- Both outcome and journal entries must exist together
         assert outcome is not None, "L5 violation: POSTED requires an outcome record"
         assert journal_result.is_success, "L5 violation: POSTED requires successful journal write"
 
@@ -480,7 +358,7 @@ class InterpretationCoordinator:
             },
         )
 
-        # Compute reproducibility proof: hash of input intent → hash of output entries
+        # Compute reproducibility proof: hash of input intent -> hash of output entries
         input_hash = hashlib.sha256(
             canonicalize_json({
                 "source_event_id": str(accounting_intent.source_event_id),
@@ -562,20 +440,7 @@ class InterpretationCoordinator:
         actor_id: UUID,
         trace_id: UUID | None = None,
     ) -> InterpretationResult:
-        """
-        Post from an accounting intent without MeaningBuilder.
-
-        Used when the economic event data is already prepared.
-
-        Args:
-            economic_event_data: Prepared economic event data.
-            accounting_intent: Intent to post.
-            actor_id: Who is performing the operation.
-            trace_id: Optional trace ID.
-
-        Returns:
-            InterpretationResult with outcome and artifacts.
-        """
+        """Post from an accounting intent without MeaningBuilder."""
         # 1. Create EconomicEvent
         economic_event = self._create_economic_event(
             economic_event_data, trace_id
@@ -590,7 +455,6 @@ class InterpretationCoordinator:
 
         if not journal_result.is_success:
             if journal_result.status == WriteStatus.ROLE_RESOLUTION_FAILED:
-                # Block for missing role bindings
                 outcome = self._outcome_recorder.record_blocked(
                     source_event_id=accounting_intent.source_event_id,
                     profile_id=accounting_intent.profile_id,
@@ -608,7 +472,6 @@ class InterpretationCoordinator:
                     error_message=journal_result.error_message or "Unknown error",
                 )
             else:
-                # Reject for validation/other failures
                 outcome = self._outcome_recorder.record_rejected(
                     source_event_id=accounting_intent.source_event_id,
                     profile_id=accounting_intent.profile_id,
@@ -820,20 +683,7 @@ class InterpretationCoordinator:
         actor_id: UUID,
         trace_id: UUID | None = None,
     ) -> InterpretationResult:
-        """
-        Transition a BLOCKED outcome to POSTED.
-
-        Used when the blocking condition is resolved (e.g., role binding added).
-
-        Args:
-            source_event_id: The blocked event's source ID.
-            accounting_intent: The updated intent.
-            actor_id: Who is performing the operation.
-            trace_id: Optional trace ID.
-
-        Returns:
-            InterpretationResult with updated outcome.
-        """
+        """Transition a BLOCKED outcome to POSTED."""
         logger.info(
             "blocked_to_posted_transition",
             extra={"source_event_id": str(source_event_id)},

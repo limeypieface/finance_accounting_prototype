@@ -10,21 +10,22 @@ Covers:
 - Edge cases and error handling
 """
 
-import pytest
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 
-from finance_kernel.domain.values import Money
+import pytest
+
 from finance_engines.tax import (
-    TaxCalculator,
-    TaxRate,
-    TaxLine,
-    TaxCalculationResult,
-    TaxType,
     TaxCalculationMethod,
+    TaxCalculationResult,
+    TaxCalculator,
+    TaxLine,
+    TaxRate,
+    TaxType,
     calculate_sales_tax,
     calculate_vat,
 )
+from finance_kernel.domain.values import Money
 
 
 class TestSimpleTaxCalculation:

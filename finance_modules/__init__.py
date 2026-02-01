@@ -27,25 +27,25 @@ Actual processing logic lives in the kernel and engines.
 """
 
 from finance_modules import (
-    cash,
     ap,
     ar,
-    inventory,
-    wip,
     assets,
-    expense,
-    tax,
-    procurement,
-    payroll,
-    gl,
+    budget,
+    cash,
     contracts,
+    credit_loss,
+    expense,
+    gl,
+    intercompany,
+    inventory,
+    lease,
+    payroll,
+    procurement,
+    project,
     reporting,
     revenue,
-    lease,
-    budget,
-    intercompany,
-    credit_loss,
-    project,
+    tax,
+    wip,
 )
 
 __all__ = [
@@ -84,13 +84,13 @@ def register_all_modules() -> None:
 
     logger = get_logger("modules")
 
-    from finance_modules.inventory.profiles import register as register_inventory
     from finance_modules.ap.profiles import register as register_ap
     from finance_modules.ar.profiles import register as register_ar
     from finance_modules.assets.profiles import register as register_assets
     from finance_modules.cash.profiles import register as register_cash
     from finance_modules.expense.profiles import register as register_expense
     from finance_modules.gl.profiles import register as register_gl
+    from finance_modules.inventory.profiles import register as register_inventory
     from finance_modules.payroll.profiles import register as register_payroll
     from finance_modules.procurement.profiles import register as register_procurement
     from finance_modules.tax.profiles import register as register_tax

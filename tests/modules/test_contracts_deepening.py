@@ -27,7 +27,6 @@ from finance_modules.contracts.models import (
 )
 from finance_modules.contracts.service import GovernmentContractsService
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

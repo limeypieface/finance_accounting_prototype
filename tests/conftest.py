@@ -19,65 +19,75 @@ import json
 import logging
 import os
 import threading
-from io import StringIO
-
-import pytest
+from collections.abc import Generator
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Generator
-from uuid import uuid4, UUID
+from io import StringIO
+from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+# Import strategies to ensure they are registered
+# R14/R15: Strategies self-register on import
+import finance_kernel.domain.strategies.generic_strategy  # noqa: F401
+from finance_kernel.db.base import Base
 from finance_kernel.db.engine import (
-    init_engine_from_url,
     drop_tables,
     get_session,
     get_session_factory,
+    init_engine_from_url,
     reset_engine,
 )
-from finance_kernel.db.base import Base
-from finance_kernel.db.immutability import register_immutability_listeners, unregister_immutability_listeners
-from finance_kernel.models.account import Account, AccountType, NormalBalance, AccountTag
-from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-from finance_kernel.models.event import Event
-from finance_kernel.models.journal import JournalEntry, JournalLine, JournalEntryStatus, LineSide
-from finance_kernel.services.ingestor_service import IngestorService
-from finance_kernel.services.auditor_service import AuditorService
-from finance_kernel.services.period_service import PeriodService
-from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
-from finance_kernel.services.outcome_recorder import OutcomeRecorder
-from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
-from finance_kernel.selectors.ledger_selector import LedgerSelector
-from finance_kernel.selectors.journal_selector import JournalSelector
-from finance_kernel.domain.clock import DeterministicClock
-from finance_kernel.domain.dtos import LineSpec, LineSide as DomainLineSide
-from finance_kernel.domain.values import Money
+from finance_kernel.db.immutability import (
+    register_immutability_listeners,
+    unregister_immutability_listeners,
+)
 from finance_kernel.domain.accounting_intent import (
     AccountingIntent,
     AccountingIntentSnapshot,
     IntentLine,
     LedgerIntent,
 )
+from finance_kernel.domain.clock import DeterministicClock
+from finance_kernel.domain.dtos import LineSide as DomainLineSide
+from finance_kernel.domain.dtos import LineSpec
 from finance_kernel.domain.meaning_builder import (
     EconomicEventData,
     MeaningBuilder,
     MeaningBuilderResult,
     ReferenceSnapshot,
 )
-
-# Import strategies to ensure they are registered
-# R14/R15: Strategies self-register on import
-import finance_kernel.domain.strategies.generic_strategy  # noqa: F401
-
+from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import (
+    LogContext,
     StructuredFormatter,
     configure_logging,
     reset_logging,
-    LogContext,
 )
-
+from finance_kernel.models.account import (
+    Account,
+    AccountTag,
+    AccountType,
+    NormalBalance,
+)
+from finance_kernel.models.event import Event
+from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
+from finance_kernel.models.journal import (
+    JournalEntry,
+    JournalEntryStatus,
+    JournalLine,
+    LineSide,
+)
+from finance_kernel.selectors.journal_selector import JournalSelector
+from finance_kernel.selectors.ledger_selector import LedgerSelector
+from finance_kernel.services.auditor_service import AuditorService
+from finance_kernel.services.ingestor_service import IngestorService
+from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
+from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
+from finance_kernel.services.outcome_recorder import OutcomeRecorder
+from finance_kernel.services.period_service import PeriodService
 
 # Test actor ID for all test operations
 TEST_ACTOR_ID = uuid4()
@@ -927,8 +937,8 @@ def current_period(create_period, deterministic_clock):
 @pytest.fixture
 def reference_data(standard_accounts):
     """Provide reference data for the pure strategy layer."""
-    from finance_kernel.domain.dtos import ReferenceData
     from finance_kernel.domain.currency import CurrencyRegistry
+    from finance_kernel.domain.dtos import ReferenceData
     from finance_kernel.domain.values import Currency
 
     account_ids_by_code = {

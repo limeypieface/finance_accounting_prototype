@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4, uuid5
 
@@ -23,7 +23,6 @@ import pytest
 from sqlalchemy.orm import Session
 
 from tests.benchmarks.helpers import BenchTimer
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -185,18 +184,19 @@ def bench_posting_service(db_engine, db_tables):
     Uses real commits (not savepoint rollback) so timing includes
     actual DB flushes and WAL writes.
     """
+    from sqlalchemy import text
+
     from finance_config import get_active_config
     from finance_config.bridges import build_role_resolver
+    from finance_kernel.db.base import Base
     from finance_kernel.db.engine import get_session
     from finance_kernel.domain.clock import DeterministicClock
     from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
-    from finance_kernel.models.party import Party, PartyType, PartyStatus
+    from finance_kernel.models.party import Party, PartyStatus, PartyType
     from finance_kernel.services.module_posting_service import ModulePostingService
     from finance_modules import register_all_modules
     from finance_services.invokers import register_standard_engines
     from finance_services.posting_orchestrator import PostingOrchestrator
-    from sqlalchemy import text
-    from finance_kernel.db.base import Base
 
     # Mute console logging during benchmarks
     logging.disable(logging.CRITICAL)
@@ -214,7 +214,7 @@ def bench_posting_service(db_engine, db_tables):
 
     # 3. Create session + seed data
     session = get_session()
-    clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+    clock = DeterministicClock(datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC))
     actor_id = uuid4()
 
     create_accounts_from_config(session, config, actor_id)
@@ -283,9 +283,10 @@ def bench_session_factory(db_engine, db_tables):
     Module-scoped. Each thread creates its own session via this factory.
     Teardown force-closes all sessions and truncates data.
     """
-    from finance_kernel.db.engine import get_session_factory
     from sqlalchemy import text
+
     from finance_kernel.db.base import Base
+    from finance_kernel.db.engine import get_session_factory
 
     factory = get_session_factory()
     created_sessions: list[Session] = []

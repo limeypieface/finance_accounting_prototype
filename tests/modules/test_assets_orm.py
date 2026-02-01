@@ -8,14 +8,13 @@ from sqlalchemy.exc import IntegrityError
 
 from finance_modules.assets.orm import (
     AssetCategoryModel,
-    AssetModel,
-    DepreciationScheduleModel,
     AssetDisposalModel,
-    AssetTransferModel,
+    AssetModel,
     AssetRevaluationModel,
+    AssetTransferModel,
     DepreciationComponentModel,
+    DepreciationScheduleModel,
 )
-
 
 # ---------------------------------------------------------------------------
 # Local helpers -- create parent rows with correct ORM field names

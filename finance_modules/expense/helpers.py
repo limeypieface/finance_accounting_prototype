@@ -35,8 +35,9 @@ violation records support internal controls over T&E spending.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 if TYPE_CHECKING:

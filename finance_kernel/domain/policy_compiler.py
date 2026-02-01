@@ -1,31 +1,10 @@
-"""
-PolicyCompiler -- Validates profiles before registration.
-
-Responsibility:
-    Compiles and validates AccountingPolicy objects against three invariants
-    before they are admitted to the PolicySelector.
-
-Architecture position:
-    Kernel > Domain -- pure functional core, zero I/O.
-
-Invariants enforced:
-    P1  -- Overlap detection (exactly one profile matches any event)
-    P7  -- Ledger semantic completeness (required roles present)
-    P10 -- Field references validated against EventSchema
-
-Failure modes:
-    CompilationResult.fail() with one or more ValidationError (R18 codes)
-
-Audit relevance:
-    Compilation results carry machine-readable error codes (R18) that
-    auditors use to verify that only valid profiles were registered.
-"""
+"""PolicyCompiler -- Validates profiles before registration."""
 
 from dataclasses import dataclass
 from datetime import date
 
-from finance_kernel.domain.dtos import ValidationError, ValidationResult
 from finance_kernel.domain.accounting_policy import AccountingPolicy
+from finance_kernel.domain.dtos import ValidationError, ValidationResult
 from finance_kernel.domain.event_validator import validate_field_references
 from finance_kernel.domain.ledger_registry import LedgerRegistry
 from finance_kernel.domain.policy_selector import PolicySelector
@@ -37,14 +16,7 @@ logger = get_logger("domain.policy_compiler")
 
 @dataclass(frozen=True)
 class CompilationResult:
-    """
-    Result of profile compilation.
-
-    Attributes:
-        success: Whether compilation succeeded
-        errors: List of validation errors (empty if success)
-        warnings: List of warnings (non-fatal issues)
-    """
+    """Result of profile compilation."""
 
     success: bool
     errors: tuple[ValidationError, ...]
@@ -62,22 +34,7 @@ class CompilationResult:
 
 
 class PolicyCompiler:
-    """
-    Compiles and validates AccountingPolicy objects.
-
-    Contract:
-        ``compile()`` returns a ``CompilationResult`` describing whether
-        the profile may be safely registered.
-
-    Guarantees:
-        - P1: ``_validate_no_overlaps()`` rejects ambiguous profile matching.
-        - P7: ``_validate_ledger_requirements()`` ensures required roles.
-        - P10: ``_validate_field_references()`` checks event schema.
-
-    Non-goals:
-        - Does NOT register the profile (``compile_and_register()`` does both).
-        - Does NOT evaluate guards (MeaningBuilder does that at runtime).
-    """
+    """Compiles and validates AccountingPolicy objects (P1, P7, P10)."""
 
     def __init__(
         self,
@@ -85,36 +42,12 @@ class PolicyCompiler:
         check_schema: bool = True,
         check_ledger: bool = True,
     ):
-        """
-        Initialize compiler with validation options.
-
-        Args:
-            check_overlaps: Enable P1 overlap detection
-            check_schema: Enable P10 field reference validation
-            check_ledger: Enable P7 ledger semantic validation
-        """
         self.check_overlaps = check_overlaps
         self.check_schema = check_schema
         self.check_ledger = check_ledger
 
     def compile(self, profile: AccountingPolicy) -> CompilationResult:
-        """
-        Compile and validate a profile.
-
-        Preconditions:
-            - ``profile`` is a valid ``AccountingPolicy`` (passed __post_init__).
-
-        Postconditions:
-            - Returns ``CompilationResult.ok()`` only if P1, P7, and P10 hold.
-            - Returns ``CompilationResult.fail()`` with machine-readable error
-              codes (R18) otherwise.
-
-        Args:
-            profile: The profile to compile.
-
-        Returns:
-            CompilationResult with success/failure and errors.
-        """
+        """Compile and validate a profile."""
         errors: list[ValidationError] = []
         warnings: list[ValidationError] = []
 
@@ -204,11 +137,7 @@ class PolicyCompiler:
         return errors
 
     def _validate_no_overlaps(self, profile: AccountingPolicy) -> list[ValidationError]:
-        """
-        P1: Validate that adding this profile won't create ambiguous matches.
-
-        Checks if any existing profile would conflict with the new one.
-        """
+        """P1: Validate that adding this profile won't create ambiguous matches."""
         errors: list[ValidationError] = []
 
         # Get existing profiles for same event type
@@ -339,11 +268,7 @@ class PolicyCompiler:
     def _validate_field_references(
         self, profile: AccountingPolicy
     ) -> CompilationResult:
-        """
-        P10: Validate field references against event schema.
-
-        Returns CompilationResult with errors and warnings.
-        """
+        """P10: Validate field references against event schema."""
         errors: list[ValidationError] = []
         warnings: list[ValidationError] = []
 
@@ -389,11 +314,7 @@ class PolicyCompiler:
     def _validate_ledger_requirements(
         self, profile: AccountingPolicy
     ) -> list[ValidationError]:
-        """
-        P7: Validate ledger semantic completeness.
-
-        Ensures profile provides all required account roles.
-        """
+        """P7: Validate ledger semantic completeness."""
         errors: list[ValidationError] = []
         economic_type = profile.meaning.economic_type
 
@@ -437,15 +358,7 @@ class PolicyCompiler:
         return errors
 
     def compile_and_register(self, profile: AccountingPolicy) -> CompilationResult:
-        """
-        Compile and register a profile if validation passes.
-
-        Args:
-            profile: The profile to compile and register.
-
-        Returns:
-            CompilationResult with success/failure.
-        """
+        """Compile and register a profile if validation passes."""
         result = self.compile(profile)
         if result.success:
             PolicySelector.register(profile)

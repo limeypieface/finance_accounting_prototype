@@ -20,10 +20,9 @@ from decimal import Decimal
 
 from finance_config.compiler import (
     CompiledPolicyPack,
-    PolicyMatchIndex,
     PolicyDecisionTrace,
+    PolicyMatchIndex,
 )
-
 
 # ---------------------------------------------------------------------------
 # Tier definitions
@@ -225,8 +224,8 @@ def register_tier_modules(tier: ComplexityTier) -> int:
     """
     import importlib
 
-    from finance_kernel.domain.policy_selector import PolicySelector
     from finance_kernel.domain.policy_bridge import ModulePolicyRegistry
+    from finance_kernel.domain.policy_selector import PolicySelector
 
     # Clear global registries
     PolicySelector.clear()

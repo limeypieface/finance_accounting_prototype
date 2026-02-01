@@ -19,9 +19,9 @@ All ``required_tests`` entries reference files that exist on disk.
 the build if missing.
 """
 
-import pytest
 from pathlib import Path
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Invariant → test file mapping (tiered)

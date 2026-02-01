@@ -43,13 +43,15 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from finance_engines.matching import MatchingEngine
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType
 from finance_kernel.logging_config import get_logger
@@ -60,8 +62,6 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingService,
     ModulePostingStatus,
 )
-from finance_services.reconciliation_service import ReconciliationManager
-from finance_engines.matching import MatchingEngine
 from finance_modules.cash.models import (
     BankStatement,
     BankStatementLine,
@@ -75,6 +75,7 @@ from finance_modules.cash.orm import (
     BankTransactionModel,
     ReconciliationModel,
 )
+from finance_services.reconciliation_service import ReconciliationManager
 
 logger = get_logger("modules.cash.service")
 
@@ -840,7 +841,7 @@ class CashService:
         Returns:
             Tuple of (BankStatement, list of BankStatementLine).
         """
-        from finance_modules.cash.helpers import parse_mt940, parse_bai2, parse_camt053
+        from finance_modules.cash.helpers import parse_bai2, parse_camt053, parse_mt940
 
         parsers = {
             "MT940": parse_mt940,

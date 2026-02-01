@@ -19,7 +19,6 @@ from finance_kernel.services.module_posting_service import ModulePostingStatus
 from finance_modules.tax.service import TaxService
 from tests.modules.conftest import TEST_TAX_JURISDICTION_ID
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

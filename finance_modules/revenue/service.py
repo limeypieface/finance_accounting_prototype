@@ -44,14 +44,16 @@ Audit relevance:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
-from typing import Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from finance_engines.allocation import AllocationEngine
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
@@ -60,7 +62,6 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingService,
     ModulePostingStatus,
 )
-from finance_engines.allocation import AllocationEngine
 from finance_modules.revenue.helpers import (
     assess_modification_type,
     calculate_ssp,
@@ -359,7 +360,7 @@ class RevenueRecognitionService:
         # INVARIANT: Monetary amounts must be Decimal (R16).
         assert isinstance(total_price, Decimal), "total_price must be Decimal"
         # Engine: AllocationEngine for proportional SSP allocation
-        from finance_engines.allocation import AllocationTarget, AllocationMethod
+        from finance_engines.allocation import AllocationMethod, AllocationTarget
         from finance_kernel.domain.values import Money
 
         total_ssp = sum(o.standalone_selling_price for o in obligations)
@@ -379,7 +380,7 @@ class RevenueRecognitionService:
                 method=AllocationMethod.PRORATA,
             )
             allocations = []
-            for line, obligation in zip(alloc_result.lines, obligations):
+            for line, obligation in zip(alloc_result.lines, obligations, strict=False):
                 pct = obligation.standalone_selling_price / total_ssp
                 allocations.append(SSPAllocation(
                     id=uuid4(),
@@ -404,7 +405,7 @@ class RevenueRecognitionService:
                 method=AllocationMethod.EQUAL,
             )
             allocations = []
-            for line, obligation in zip(alloc_result.lines, obligations):
+            for line, obligation in zip(alloc_result.lines, obligations, strict=False):
                 pct = Decimal("1") / Decimal(str(len(obligations)))
                 allocations.append(SSPAllocation(
                     id=uuid4(),

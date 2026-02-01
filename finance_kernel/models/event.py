@@ -25,9 +25,17 @@ Audit relevance:
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import Date, DateTime, Index, Integer, String, UniqueConstraint, event
-from sqlalchemy import JSON
-from sqlalchemy.orm import Mapped, mapped_column, Session
+from sqlalchemy import (
+    JSON,
+    Date,
+    DateTime,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    event,
+)
+from sqlalchemy.orm import Mapped, Session, mapped_column
 from sqlalchemy.orm.attributes import get_history
 
 from finance_kernel.db.base import Base, UUIDString

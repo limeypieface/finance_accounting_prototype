@@ -38,19 +38,19 @@ Total: ~200 lines of module-specific code.
 Tax calculation engines come from pure helpers in ``helpers.py``.
 """
 
+from finance_modules.payroll.config import PayrollConfig
 from finance_modules.payroll.models import (
     BenefitsDeduction,
     Employee,
     EmployerContribution,
-    PayPeriod,
-    Timecard,
-    PayrollRun,
     Paycheck,
+    PayPeriod,
+    PayrollRun,
+    Timecard,
     WithholdingResult,
 )
 from finance_modules.payroll.profiles import PAYROLL_PROFILES
 from finance_modules.payroll.workflows import PAYROLL_RUN_WORKFLOW
-from finance_modules.payroll.config import PayrollConfig
 
 __all__ = [
     "BenefitsDeduction",

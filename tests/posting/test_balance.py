@@ -9,9 +9,10 @@ Verifies:
 - Rounding lines handled via AccountingIntent
 """
 
-import pytest
 from decimal import Decimal
 from uuid import uuid4
+
+import pytest
 
 from finance_kernel.domain.accounting_intent import (
     AccountingIntent,

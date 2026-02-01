@@ -38,8 +38,8 @@ compliance requires traceable allowability determination.
 Total: 29 profiles (18 contract + 11 DCAA compliance).
 """
 
-from finance_modules.contracts.profiles import CONTRACT_PROFILES
 from finance_modules.contracts.config import ContractsConfig
+from finance_modules.contracts.profiles import CONTRACT_PROFILES
 from finance_modules.contracts.workflows import ContractLifecycleState
 
 __all__ = [

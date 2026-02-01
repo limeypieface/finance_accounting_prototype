@@ -40,15 +40,16 @@ Audit relevance:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Mapping, Any
+from typing import Any
 from uuid import UUID
 
-from finance_kernel.domain.values import Money
 from finance_kernel.domain.economic_link import ArtifactRef, EconomicLink
+from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 
 logger = get_logger("engines.reconciliation.domain")

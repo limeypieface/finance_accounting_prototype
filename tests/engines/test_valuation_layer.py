@@ -11,30 +11,29 @@ Tests cover:
 - Insufficient inventory errors
 """
 
-import pytest
 from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.orm import Session
 
-from finance_kernel.domain.values import Money, Quantity
+from finance_engines.valuation import (
+    ConsumptionResult,
+    CostLayer,
+    CostLot,
+    CostMethod,
+)
 from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType, LinkType
-from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_kernel.domain.values import Money, Quantity
 from finance_kernel.exceptions import (
     InsufficientInventoryError,
-    LotNotFoundError,
     LotDepletedError,
+    LotNotFoundError,
     StandardCostNotFoundError,
 )
-
+from finance_kernel.services.link_graph_service import LinkGraphService
 from finance_services.valuation_service import ValuationLayer
-from finance_engines.valuation import (
-    CostLot,
-    CostLayer,
-    CostMethod,
-    ConsumptionResult,
-)
 
 
 class TestCostLotCreation:

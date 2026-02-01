@@ -8,20 +8,20 @@ Tests for dimension referential integrity and validation:
 - Inactive dimensions cannot be used for posting
 """
 
-import pytest
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from finance_kernel.models.dimensions import Dimension, DimensionValue
 from finance_kernel.exceptions import (
+    DimensionNotFoundError,
     ImmutabilityViolationError,
     InactiveDimensionError,
     InactiveDimensionValueError,
     InvalidDimensionValueError,
-    DimensionNotFoundError,
 )
+from finance_kernel.models.dimensions import Dimension, DimensionValue
 
 
 class _ReferenceDataLoader:

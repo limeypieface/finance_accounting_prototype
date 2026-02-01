@@ -1,15 +1,4 @@
-"""
-Structured JSON logging for the finance kernel.
-
-Module name is logging_config.py to avoid shadowing stdlib logging.
-
-Provides:
-- StructuredFormatter: JSON log formatter with consistent fields
-- LogContext: Thread-safe / async-safe context propagation via contextvars
-- get_logger: Factory that returns stdlib loggers under finance_kernel namespace
-- configure_logging: One-time idempotent initialization
-- reset_logging: Test-only reset
-"""
+"""Structured JSON logging for the finance kernel."""
 
 __all__ = [
     "StructuredFormatter",
@@ -24,10 +13,9 @@ import logging
 import threading
 import time
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 from uuid import UUID
-
 
 # ---------------------------------------------------------------------------
 # Context propagation
@@ -35,24 +23,7 @@ from uuid import UUID
 
 
 class LogContext:
-    """
-    Thread-safe / async-safe context holder for request-scoped fields.
-
-    Uses contextvars so each asyncio task or thread gets its own copy.
-    Fields set here automatically appear in every JSON log record for the
-    duration of the context.
-
-    Usage::
-
-        LogContext.set(correlation_id=str(uuid4()), event_id=str(event_id))
-        ...
-        LogContext.clear()
-
-    Or as a context manager::
-
-        with LogContext.bind(correlation_id=cid, event_id=eid):
-            orchestrator.post_event(...)
-    """
+    """Thread-safe / async-safe context holder for request-scoped log fields."""
 
     _correlation_id: ContextVar[str | None] = ContextVar(
         "log_correlation_id", default=None
@@ -155,8 +126,6 @@ class _LogContextManager:
 # JSON Formatter
 # ---------------------------------------------------------------------------
 
-# Pre-compute the set of stdlib LogRecord attribute names so we can filter
-# them out when extracting user-provided extra fields.
 _STDLIB_KEYS: frozenset[str] = frozenset(
     vars(logging.LogRecord("", 0, "", 0, "", (), None)).keys()
 ) | {"message", "taskName"}
@@ -181,19 +150,13 @@ class _JSONEncoder(json.JSONEncoder):
 
 
 class StructuredFormatter(logging.Formatter):
-    """
-    Formats each log record as a single JSON line.
-
-    Every record contains the mandatory envelope fields plus any
-    context from LogContext, plus any extra kwargs passed via
-    ``logger.info("msg", extra={"key": "val"})``.
-    """
+    """Formats each log record as a single JSON line."""
 
     def format(self, record: logging.LogRecord) -> str:
         # Mandatory envelope
         payload: dict[str, Any] = {
             "ts": datetime.fromtimestamp(
-                record.created, tz=timezone.utc
+                record.created, tz=UTC
             ).isoformat(),
             "level": record.levelname,
             "logger": record.name,
@@ -232,16 +195,7 @@ _LOGGER_PREFIX = "finance_kernel"
 
 
 def get_logger(name: str) -> logging.Logger:
-    """
-    Get a logger under the finance_kernel namespace.
-
-    Args:
-        name: Dotted name, e.g. ``"services.posting_orchestrator"``.
-              Will become ``"finance_kernel.services.posting_orchestrator"``.
-
-    Returns:
-        stdlib Logger instance.
-    """
+    """Get a logger under the finance_kernel namespace."""
     return logging.getLogger(f"{_LOGGER_PREFIX}.{name}")
 
 
@@ -259,17 +213,7 @@ def configure_logging(
     stream: Any = None,
     handler: logging.Handler | None = None,
 ) -> None:
-    """
-    Configure the finance_kernel logger hierarchy.
-
-    Safe to call multiple times; only the first call takes effect.
-
-    Args:
-        level: Logging level (default INFO).
-        stream: Stream for StreamHandler. Defaults to sys.stderr.
-        handler: Optional pre-built handler (for testing with
-                 MemoryHandler, StringIO-backed StreamHandler, etc.).
-    """
+    """Configure the finance_kernel logger hierarchy (idempotent)."""
     global _configured
     with _lock:
         if _configured:
@@ -292,11 +236,7 @@ def configure_logging(
 
 
 def reset_logging() -> None:
-    """
-    Reset logging configuration. FOR TESTING ONLY.
-
-    Allows tests to reconfigure logging between runs.
-    """
+    """Reset logging configuration. FOR TESTING ONLY."""
     global _configured
     with _lock:
         _configured = False

@@ -14,18 +14,22 @@ from finance_modules.ap.workflows import INVOICE_WORKFLOW as AP_INVOICE_WORKFLOW
 from finance_modules.ap.workflows import PAYMENT_WORKFLOW as AP_PAYMENT_WORKFLOW
 from finance_modules.ar.workflows import INVOICE_WORKFLOW as AR_INVOICE_WORKFLOW
 from finance_modules.ar.workflows import RECEIPT_WORKFLOW as AR_RECEIPT_WORKFLOW
-from finance_modules.inventory.workflows import RECEIPT_WORKFLOW as INV_RECEIPT_WORKFLOW
-from finance_modules.inventory.workflows import ISSUE_WORKFLOW as INV_ISSUE_WORKFLOW
-from finance_modules.inventory.workflows import TRANSFER_WORKFLOW as INV_TRANSFER_WORKFLOW
-from finance_modules.wip.workflows import WORK_ORDER_WORKFLOW
 from finance_modules.assets.workflows import ASSET_WORKFLOW
-from finance_modules.expense.workflows import EXPENSE_REPORT_WORKFLOW
-from finance_modules.tax.workflows import TAX_RETURN_WORKFLOW
-from finance_modules.procurement.workflows import REQUISITION_WORKFLOW, PURCHASE_ORDER_WORKFLOW
-from finance_modules.payroll.workflows import PAYROLL_RUN_WORKFLOW
-from finance_modules.gl.workflows import PERIOD_CLOSE_WORKFLOW
 from finance_modules.cash.workflows import RECONCILIATION_WORKFLOW
-
+from finance_modules.expense.workflows import EXPENSE_REPORT_WORKFLOW
+from finance_modules.gl.workflows import PERIOD_CLOSE_WORKFLOW
+from finance_modules.inventory.workflows import ISSUE_WORKFLOW as INV_ISSUE_WORKFLOW
+from finance_modules.inventory.workflows import RECEIPT_WORKFLOW as INV_RECEIPT_WORKFLOW
+from finance_modules.inventory.workflows import (
+    TRANSFER_WORKFLOW as INV_TRANSFER_WORKFLOW,
+)
+from finance_modules.payroll.workflows import PAYROLL_RUN_WORKFLOW
+from finance_modules.procurement.workflows import (
+    PURCHASE_ORDER_WORKFLOW,
+    REQUISITION_WORKFLOW,
+)
+from finance_modules.tax.workflows import TAX_RETURN_WORKFLOW
+from finance_modules.wip.workflows import WORK_ORDER_WORKFLOW
 
 ALL_WORKFLOWS = [
     ("AP Invoice", AP_INVOICE_WORKFLOW),
