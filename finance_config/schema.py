@@ -18,6 +18,7 @@ from datetime import date
 from typing import Any
 
 from finance_config.lifecycle import ConfigStatus
+from finance_kernel.domain.schemas.base import EventFieldType
 
 # ---------------------------------------------------------------------------
 # Scope
@@ -268,6 +269,69 @@ class ApprovalPolicyDef:
 
 
 # ---------------------------------------------------------------------------
+# Import mapping (ERP ingestion Phase 3)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ImportFieldDef:
+    """Single field mapping: source column -> target field with type and transform."""
+
+    source: str
+    target: str
+    field_type: EventFieldType = EventFieldType.STRING
+    required: bool = False
+    default: Any = None
+    format: str | None = None  # Date/time format string
+    transform: str | None = None  # "upper", "lower", "strip", "trim", "to_decimal"
+
+
+@dataclass(frozen=True)
+class ImportValidationDef:
+    """Single validation rule for import records (batch/system/record scope)."""
+
+    rule_type: str  # "unique", "exists", "expression", "cross_field"
+    fields: tuple[str, ...] = ()
+    scope: str = "batch"  # "batch", "system", "record"
+    reference_entity: str | None = None  # For "exists" rules
+    expression: str | None = None  # For "expression" rules
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class ImportMappingDef:
+    """Declarative import mapping: source format, field mappings, validations, tier."""
+
+    name: str
+    version: int = 1
+    entity_type: str = ""
+    source_format: str = "csv"
+    source_options: dict[str, Any] = field(default_factory=dict)
+    field_mappings: tuple[ImportFieldDef, ...] = ()
+    validations: tuple[ImportValidationDef, ...] = ()
+    dependency_tier: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Batch schedule definitions (BATCH_PROCESSING_PLAN Phase 6)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BatchScheduleDef:
+    """Declarative batch job schedule definition from YAML."""
+
+    name: str
+    task_type: str
+    frequency: str  # Matches ScheduleFrequency values
+    parameters: dict[str, Any] = field(default_factory=dict)
+    cron_expression: str | None = None
+    max_retries: int = 3
+    is_active: bool = True
+    legal_entity: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Top-level configuration set
 # ---------------------------------------------------------------------------
 
@@ -313,3 +377,5 @@ class AccountingConfigurationSet:
     capabilities: dict[str, bool] = field(default_factory=dict)
     subledger_contracts: tuple[SubledgerContractDef, ...] = ()
     approval_policies: tuple[ApprovalPolicyDef, ...] = ()
+    import_mappings: tuple[ImportMappingDef, ...] = ()
+    batch_schedules: tuple[BatchScheduleDef, ...] = ()

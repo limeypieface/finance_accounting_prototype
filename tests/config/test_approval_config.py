@@ -489,3 +489,53 @@ class TestCompiledPolicyPackIntegration:
             assert isinstance(policy.rules, tuple)
             for rule in policy.rules:
                 assert isinstance(rule, CompiledApprovalRule)
+
+
+# =========================================================================
+# 6. Tier config sets (STARTUP / MIDMARKET / ENTERPRISE)
+# =========================================================================
+
+
+class TestTierConfigApprovalPolicies:
+    """Tier config sets with ap capability must define AP approval policies.
+
+    Phase 10: AP workflows require ap_invoice_approval and ap_payment_approval.
+    STARTUP has ap: false so approval_policies may be empty.
+    MIDMARKET and ENTERPRISE have ap: true so they must include both policies.
+    """
+
+    def test_startup_config_loads_without_ap_approval_policies(self):
+        from finance_config import get_active_config
+
+        pack = get_active_config(
+            legal_entity="STARTUP",
+            as_of_date=date(2026, 6, 15),
+        )
+        assert pack.capabilities.get("ap") is False
+        # STARTUP has no AP module; empty or absent approval policies is valid
+        policy_names = {p.policy_name for p in pack.approval_policies}
+        assert "ap_invoice_approval" not in policy_names or not pack.approval_policies
+
+    def test_midmarket_config_has_ap_approval_policies(self):
+        from finance_config import get_active_config
+
+        pack = get_active_config(
+            legal_entity="MIDMARKET",
+            as_of_date=date(2026, 6, 15),
+        )
+        assert pack.capabilities.get("ap") is True
+        policy_names = {p.policy_name for p in pack.approval_policies}
+        assert "ap_invoice_approval" in policy_names
+        assert "ap_payment_approval" in policy_names
+
+    def test_enterprise_config_has_ap_approval_policies(self):
+        from finance_config import get_active_config
+
+        pack = get_active_config(
+            legal_entity="ENTERPRISE",
+            as_of_date=date(2026, 6, 15),
+        )
+        assert pack.capabilities.get("ap") is True
+        policy_names = {p.policy_name for p in pack.approval_policies}
+        assert "ap_invoice_approval" in policy_names
+        assert "ap_payment_approval" in policy_names

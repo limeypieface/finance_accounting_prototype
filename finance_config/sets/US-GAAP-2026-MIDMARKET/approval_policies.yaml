@@ -1,2 +1,43 @@
-# No approval policies configured for this config set.
-approval_policies: []
+# Mid-market: AP invoice and payment approval policies (Phase 10).
+# Same structure as v1; thresholds can be tuned per tier if desired.
+approval_policies:
+  - policy_name: "ap_invoice_approval"
+    version: 1
+    applies_to_workflow: "ap_invoice"
+    applies_to_action: "approve"
+    policy_currency: "USD"
+    rules:
+      - rule_name: "auto_approve_small"
+        priority: 10
+        auto_approve_below: "500.00"
+      - rule_name: "manager_approval"
+        priority: 20
+        min_amount: "500.00"
+        max_amount: "10000.00"
+        required_roles: ["ap_manager", "finance_manager"]
+        min_approvers: 1
+      - rule_name: "director_approval"
+        priority: 30
+        min_amount: "10000.00"
+        max_amount: "100000.00"
+        required_roles: ["finance_director", "cfo"]
+        min_approvers: 1
+      - rule_name: "executive_approval"
+        priority: 40
+        min_amount: "100000.00"
+        required_roles: ["cfo", "ceo"]
+        min_approvers: 2
+        require_distinct_roles: true
+        escalation_timeout_hours: 48
+
+  - policy_name: "ap_payment_approval"
+    version: 1
+    applies_to_workflow: "ap_payment"
+    applies_to_action: "approve"
+    policy_currency: "USD"
+    rules:
+      - rule_name: "payment_approval"
+        priority: 10
+        required_roles: ["treasury_manager", "cfo"]
+        min_approvers: 1
+        guard_expression: "payload.amount > 0"

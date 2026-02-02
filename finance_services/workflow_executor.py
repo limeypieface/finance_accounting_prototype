@@ -44,8 +44,9 @@ logger = logging.getLogger("services.workflow_executor")
 
 
 # ---------------------------------------------------------------------------
-# Structural protocols for module-level workflow types (each module declares
-# its own identical Workflow/Transition dataclasses).
+# Structural protocols for module-level workflow types. Modules may use
+# canonical Guard/Transition/Workflow from finance_kernel.domain.workflow
+# (Phase 10) or declare their own compatible types.
 # ---------------------------------------------------------------------------
 
 
@@ -55,6 +56,9 @@ class TransitionLike(Protocol):
     to_state: str
     action: str
     posts_entry: bool
+    # Phase 10: optional; when present, transition is gated by approval engine
+    requires_approval: bool = False
+    approval_policy: Any | None = None
 
 
 @runtime_checkable

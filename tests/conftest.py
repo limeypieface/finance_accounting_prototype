@@ -624,8 +624,19 @@ def make_source_event(session, source_event_id, actor_id, clock, effective_date=
     JournalEntry.source_event_id has FK("events.event_id"), so any test that
     posts through the interpretation pipeline must first create an Event record
     for the source_event_id used in AccountingIntent.
+
+    Idempotent: if an Event with this event_id already exists (e.g. same test
+    posting twice for idempotency checks), returns the existing record.
     """
+    from sqlalchemy import select
+
     from finance_kernel.utils.hashing import hash_payload
+
+    existing = session.execute(
+        select(Event).where(Event.event_id == source_event_id)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
 
     effective_date = effective_date or clock.now().date()
     payload = {"test": "data"}

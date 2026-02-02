@@ -439,6 +439,210 @@ class AuditorService:
             },
         )
 
+    # ERP ingestion lifecycle (ERP_INGESTION_PLAN Phase 7)
+
+    def record_import_record_promoted(
+        self,
+        record_id: UUID,
+        batch_id: UUID,
+        source_row: int,
+        entity_type: str,
+        promoted_entity_id: UUID,
+        actor_id: UUID,
+    ) -> AuditEvent:
+        """Record that an import record was promoted to a live entity."""
+        return self._create_audit_event(
+            entity_type="ImportRecord",
+            entity_id=record_id,
+            action=AuditAction.IMPORT_RECORD_PROMOTED,
+            actor_id=actor_id,
+            payload={
+                "batch_id": str(batch_id),
+                "source_row": source_row,
+                "entity_type": entity_type,
+                "promoted_entity_id": str(promoted_entity_id),
+                "promoted_entity_type": entity_type,
+            },
+        )
+
+    def record_import_batch_completed(
+        self,
+        batch_id: UUID,
+        actor_id: UUID,
+        promoted: int,
+        failed: int,
+        skipped: int,
+        total_duration_ms: int = 0,
+    ) -> AuditEvent:
+        """Record that an import batch promotion run completed."""
+        return self._create_audit_event(
+            entity_type="ImportBatch",
+            entity_id=batch_id,
+            action=AuditAction.IMPORT_BATCH_COMPLETED,
+            actor_id=actor_id,
+            payload={
+                "promoted": promoted,
+                "failed": failed,
+                "skipped": skipped,
+                "total_duration_ms": total_duration_ms,
+            },
+        )
+
+    # Batch processing lifecycle (BATCH_PROCESSING_PLAN Phase 2)
+
+    def record_batch_job_started(
+        self,
+        job_id: UUID,
+        job_name: str,
+        task_type: str,
+        total_items: int,
+        actor_id: UUID,
+        correlation_id: str | None = None,
+    ) -> AuditEvent:
+        """Record that a batch job execution started."""
+        return self._create_audit_event(
+            entity_type="BatchJob",
+            entity_id=job_id,
+            action=AuditAction.BATCH_JOB_STARTED,
+            actor_id=actor_id,
+            payload={
+                "job_name": job_name,
+                "task_type": task_type,
+                "total_items": total_items,
+                "correlation_id": correlation_id,
+            },
+        )
+
+    def record_batch_job_completed(
+        self,
+        job_id: UUID,
+        job_name: str,
+        succeeded: int,
+        failed: int,
+        skipped: int,
+        duration_ms: int,
+        actor_id: UUID,
+    ) -> AuditEvent:
+        """Record that a batch job completed (success or partial)."""
+        return self._create_audit_event(
+            entity_type="BatchJob",
+            entity_id=job_id,
+            action=AuditAction.BATCH_JOB_COMPLETED,
+            actor_id=actor_id,
+            payload={
+                "job_name": job_name,
+                "succeeded": succeeded,
+                "failed": failed,
+                "skipped": skipped,
+                "duration_ms": duration_ms,
+            },
+        )
+
+    def record_batch_job_failed(
+        self,
+        job_id: UUID,
+        job_name: str,
+        error_summary: str,
+        actor_id: UUID,
+    ) -> AuditEvent:
+        """Record that a batch job failed at the job level."""
+        return self._create_audit_event(
+            entity_type="BatchJob",
+            entity_id=job_id,
+            action=AuditAction.BATCH_JOB_FAILED,
+            actor_id=actor_id,
+            payload={
+                "job_name": job_name,
+                "error_summary": error_summary,
+            },
+        )
+
+    def record_batch_job_cancelled(
+        self,
+        job_id: UUID,
+        job_name: str,
+        reason: str,
+        actor_id: UUID,
+    ) -> AuditEvent:
+        """Record that a batch job was cancelled."""
+        return self._create_audit_event(
+            entity_type="BatchJob",
+            entity_id=job_id,
+            action=AuditAction.BATCH_JOB_CANCELLED,
+            actor_id=actor_id,
+            payload={
+                "job_name": job_name,
+                "reason": reason,
+            },
+        )
+
+    def record_batch_item_failed(
+        self,
+        job_id: UUID,
+        item_key: str,
+        error_code: str,
+        error_message: str,
+        retry_count: int,
+        actor_id: UUID,
+    ) -> AuditEvent:
+        """Record that a batch item failed processing."""
+        return self._create_audit_event(
+            entity_type="BatchJob",
+            entity_id=job_id,
+            action=AuditAction.BATCH_ITEM_FAILED,
+            actor_id=actor_id,
+            payload={
+                "item_key": item_key,
+                "error_code": error_code,
+                "error_message": error_message,
+                "retry_count": retry_count,
+            },
+        )
+
+    # Lifecycle reconciliation (GAP-REC)
+
+    def record_lifecycle_check(
+        self,
+        root_artifact_id: UUID,
+        root_artifact_type: str,
+        status: str,
+        nodes_checked: int,
+        edges_checked: int,
+        error_count: int,
+        warning_count: int,
+        checks_performed: tuple[str, ...],
+        actor_id: UUID,
+        findings_summary: list[dict[str, Any]] | None = None,
+    ) -> AuditEvent:
+        """Record the result of a lifecycle reconciliation check.
+
+        Preconditions:
+            - ``root_artifact_id`` is the root of the lifecycle chain checked.
+            - ``status`` is one of 'passed', 'failed', 'warning'.
+        """
+        action_map = {
+            "passed": AuditAction.LIFECYCLE_CHECK_PASSED,
+            "failed": AuditAction.LIFECYCLE_CHECK_FAILED,
+            "warning": AuditAction.LIFECYCLE_CHECK_WARNING,
+        }
+        action = action_map.get(status, AuditAction.LIFECYCLE_CHECK_FAILED)
+
+        return self._create_audit_event(
+            entity_type=root_artifact_type,
+            entity_id=root_artifact_id,
+            action=action,
+            actor_id=actor_id,
+            payload={
+                "status": status,
+                "nodes_checked": nodes_checked,
+                "edges_checked": edges_checked,
+                "error_count": error_count,
+                "warning_count": warning_count,
+                "checks_performed": list(checks_performed),
+                "findings_summary": findings_summary or [],
+            },
+        )
+
     # Chain validation
 
     def validate_chain(self) -> bool:

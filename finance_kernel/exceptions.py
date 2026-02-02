@@ -1513,3 +1513,95 @@ class DuplicateApprovalRequestError(ApprovalError):
             f"Duplicate pending request for {entity_type}/{entity_id} "
             f"action={action}"
         )
+
+
+# Batch processing exceptions (BATCH_PROCESSING_PLAN)
+
+
+class BatchError(FinanceKernelError):
+    """Base exception for batch processing errors."""
+
+    code: str = "BATCH_ERROR"
+
+
+class BatchJobNotFoundError(BatchError):
+    """Batch job with given ID was not found."""
+
+    code: str = "BATCH_JOB_NOT_FOUND"
+
+    def __init__(self, job_id: str):
+        self.job_id = job_id
+        super().__init__(f"Batch job not found: {job_id}")
+
+
+class BatchAlreadyRunningError(BatchError):
+    """A batch job with this definition is already running (BT-8)."""
+
+    code: str = "BATCH_ALREADY_RUNNING"
+
+    def __init__(self, job_name: str, running_job_id: str):
+        self.job_name = job_name
+        self.running_job_id = running_job_id
+        super().__init__(
+            f"Batch job '{job_name}' is already running: {running_job_id}"
+        )
+
+
+class BatchIdempotencyError(BatchError):
+    """Job with same idempotency_key already exists (BT-2)."""
+
+    code: str = "BATCH_IDEMPOTENCY_CONFLICT"
+
+    def __init__(self, idempotency_key: str, existing_job_id: str):
+        self.idempotency_key = idempotency_key
+        self.existing_job_id = existing_job_id
+        super().__init__(
+            f"Idempotency key '{idempotency_key}' already used by job {existing_job_id}"
+        )
+
+
+class BatchRetryExhaustedError(BatchError):
+    """Item has exhausted its maximum retry count (BT-7)."""
+
+    code: str = "BATCH_RETRY_EXHAUSTED"
+
+    def __init__(self, item_key: str, max_retries: int, retry_count: int):
+        self.item_key = item_key
+        self.max_retries = max_retries
+        self.retry_count = retry_count
+        super().__init__(
+            f"Item '{item_key}' exhausted retries: {retry_count}/{max_retries}"
+        )
+
+
+class TaskNotRegisteredError(BatchError):
+    """No BatchTask registered for the given task_type."""
+
+    code: str = "TASK_NOT_REGISTERED"
+
+    def __init__(self, task_type: str, available: tuple[str, ...] = ()):
+        self.task_type = task_type
+        self.available = available
+        avail_str = f" Available: {sorted(available)}" if available else ""
+        super().__init__(
+            f"No batch task registered for type '{task_type}'.{avail_str}"
+        )
+
+
+class ScheduleError(FinanceKernelError):
+    """Base exception for schedule-related errors."""
+
+    code: str = "SCHEDULE_ERROR"
+
+
+class InvalidCronExpressionError(ScheduleError):
+    """Cron expression is syntactically invalid."""
+
+    code: str = "INVALID_CRON_EXPRESSION"
+
+    def __init__(self, expression: str, reason: str):
+        self.expression = expression
+        self.reason = reason
+        super().__init__(
+            f"Invalid cron expression '{expression}': {reason}"
+        )

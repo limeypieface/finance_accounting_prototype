@@ -20,7 +20,33 @@ from finance_engines.reconciliation.domain import (
     ThreeWayMatchResult,
 )
 
+from finance_engines.reconciliation.lifecycle_types import (
+    CheckSeverity,
+    CheckStatus,
+    LifecycleChain,
+    LifecycleCheckResult,
+    LifecycleEdge,
+    LifecycleNode,
+    ReconciliationFinding,
+)
+
+from finance_engines.reconciliation.checker import (
+    LifecycleReconciliationChecker,
+)
+
+from finance_engines.reconciliation.bank_recon_types import (
+    BankReconCheckResult,
+    BankReconContext,
+    BankReconLine,
+    BankReconStatement,
+)
+
+from finance_engines.reconciliation.bank_checker import (
+    BankReconciliationChecker,
+)
+
 __all__ = [
+    # Existing reconciliation domain
     "ReconciliationState",
     "ReconciliationStatus",
     "DocumentMatch",
@@ -29,4 +55,19 @@ __all__ = [
     "ThreeWayMatchResult",
     "BankReconciliationLine",
     "BankReconciliationStatus",
+    # Lifecycle reconciliation (GAP-REC)
+    "CheckSeverity",
+    "CheckStatus",
+    "LifecycleChain",
+    "LifecycleCheckResult",
+    "LifecycleEdge",
+    "LifecycleNode",
+    "ReconciliationFinding",
+    "LifecycleReconciliationChecker",
+    # Bank reconciliation checks (GAP-BRC)
+    "BankReconLine",
+    "BankReconStatement",
+    "BankReconContext",
+    "BankReconCheckResult",
+    "BankReconciliationChecker",
 ]

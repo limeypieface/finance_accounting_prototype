@@ -200,3 +200,44 @@ class TestWorkflowNamingConventions:
             assert transition.action == transition.action.lower(), (
                 f"{name} workflow action '{transition.action}' should be lowercase"
             )
+
+
+class TestPhase10APApprovalGatedTransitions:
+    """Phase 10: AP workflows use kernel types and declare approval-gated transitions.
+
+    Verifies the reference implementation for Module workflow migration (AP first).
+    """
+
+    def test_ap_invoice_workflow_has_approval_gated_approve_transition(self):
+        approval_transitions = [
+            t
+            for t in AP_INVOICE_WORKFLOW.transitions
+            if getattr(t, "requires_approval", False) and getattr(t, "approval_policy", None)
+        ]
+        assert len(approval_transitions) == 1, (
+            "AP invoice workflow must have exactly one approval-gated transition"
+        )
+        t = approval_transitions[0]
+        assert t.from_state == "pending_approval" and t.to_state == "approved"
+        assert t.approval_policy.policy_name == "ap_invoice_approval"
+        assert getattr(t.approval_policy, "min_version", None) is not None
+
+    def test_ap_payment_workflow_has_approval_gated_approve_transition(self):
+        approval_transitions = [
+            t
+            for t in AP_PAYMENT_WORKFLOW.transitions
+            if getattr(t, "requires_approval", False) and getattr(t, "approval_policy", None)
+        ]
+        assert len(approval_transitions) == 1, (
+            "AP payment workflow must have exactly one approval-gated transition"
+        )
+        t = approval_transitions[0]
+        assert t.from_state == "pending_approval" and t.to_state == "approved"
+        assert t.approval_policy.policy_name == "ap_payment_approval"
+        assert getattr(t.approval_policy, "min_version", None) is not None
+
+    def test_ap_workflows_declare_terminal_states(self):
+        assert hasattr(AP_INVOICE_WORKFLOW, "terminal_states")
+        assert AP_INVOICE_WORKFLOW.terminal_states == ("paid", "cancelled")
+        assert hasattr(AP_PAYMENT_WORKFLOW, "terminal_states")
+        assert AP_PAYMENT_WORKFLOW.terminal_states == ("cleared", "voided")

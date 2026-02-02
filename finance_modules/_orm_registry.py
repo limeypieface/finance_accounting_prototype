@@ -55,6 +55,8 @@ def import_all_orm_models() -> None:
     import finance_modules.tax.orm  # noqa: F401
     import finance_modules.wip.orm  # noqa: F401
     import finance_services.orm  # noqa: F401
+    import finance_ingestion.models  # noqa: F401  # ERP ingestion staging tables
+    import finance_batch.models  # noqa: F401  # Batch processing tables
     # fmt: on
 
 

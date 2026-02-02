@@ -68,6 +68,12 @@ class JournalEntryDTO:
     seq: int | None
     description: str | None
     lines: list[JournalLineDTO]
+    # R21 snapshot columns (populated at posting time)
+    coa_version: int | None = None
+    dimension_schema_version: int | None = None
+    rounding_policy_version: int | None = None
+    currency_registry_version: int | None = None
+    posting_rule_version: int | None = None
 
     @property
     def total_debits(self) -> Decimal:
@@ -141,6 +147,11 @@ class JournalSelector(BaseSelector[JournalEntry]):
             seq=entry.seq,
             description=entry.description,
             lines=lines,
+            coa_version=entry.coa_version,
+            dimension_schema_version=entry.dimension_schema_version,
+            rounding_policy_version=entry.rounding_policy_version,
+            currency_registry_version=entry.currency_registry_version,
+            posting_rule_version=entry.posting_rule_version,
         )
 
     def get_entry(self, journal_entry_id: UUID) -> JournalEntryDTO | None:
@@ -161,6 +172,33 @@ class JournalSelector(BaseSelector[JournalEntry]):
             select(JournalEntry)
             .options(selectinload(JournalEntry.lines))
             .where(JournalEntry.id == journal_entry_id)
+        ).scalar_one_or_none()
+
+        if entry is None:
+            return None
+
+        return self._to_dto(entry)
+
+    def get_posted_entry_by_event(self, event_id: UUID) -> JournalEntryDTO | None:
+        """Get the posted journal entry for a source event ID.
+
+        Preconditions: event_id is a valid UUID.
+        Postconditions: Returns the first POSTED JournalEntryDTO matching the
+            event, or None if no posted entry exists.
+
+        Args:
+            event_id: Source event ID.
+
+        Returns:
+            JournalEntryDTO if found, None otherwise.
+        """
+        entry = self.session.execute(
+            select(JournalEntry)
+            .where(
+                JournalEntry.source_event_id == event_id,
+                JournalEntry.status == JournalEntryStatus.POSTED.value,
+            )
+            .limit(1)
         ).scalar_one_or_none()
 
         if entry is None:

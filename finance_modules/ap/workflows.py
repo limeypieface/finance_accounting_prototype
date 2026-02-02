@@ -6,12 +6,14 @@ Responsibility
 Declares the state-machine definitions for the AP invoice lifecycle and
 AP payment lifecycle.  Guards express preconditions for transitions;
 ``posts_entry=True`` marks transitions that produce journal entries.
+Transitions with ``requires_approval=True`` are gated by the approval
+engine (Phase 10).
 
 Architecture position
 ---------------------
-**Modules layer** -- declarative workflow definitions.  These frozen
-dataclasses are consumed by the workflow engine at runtime; they contain
-no I/O and no imports beyond ``finance_kernel.logging_config``.
+**Modules layer** -- declarative workflow definitions.  Imports canonical
+Guard, Transition, Workflow from ``finance_kernel.domain.workflow``.
+Consumed by the workflow engine at runtime.
 
 Invariants enforced
 -------------------
@@ -31,52 +33,10 @@ Workflow definitions logged at module-load time with state counts and
 transition counts for configuration audit.
 """
 
-from dataclasses import dataclass
-
+from finance_kernel.domain.workflow import ApprovalPolicyRef, Guard, Transition, Workflow
 from finance_kernel.logging_config import get_logger
 
 logger = get_logger("modules.ap.workflows")
-
-
-@dataclass(frozen=True)
-class Guard:
-    """A condition that must be satisfied before a transition fires.
-
-    Contract: frozen, descriptive only.
-    Guarantees: name and description are non-empty at construction.
-    Non-goals: does not evaluate the condition -- the workflow engine does.
-    """
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class Transition:
-    """A valid state transition in a workflow.
-
-    Contract: frozen.  ``posts_entry=True`` indicates a journal-posting transition.
-    Guarantees: ``from_state`` and ``to_state`` are strings matching ``Workflow.states``.
-    """
-    from_state: str
-    to_state: str
-    action: str
-    guard: Guard | None = None
-    posts_entry: bool = False
-
-
-@dataclass(frozen=True)
-class Workflow:
-    """A state machine definition for an AP document lifecycle.
-
-    Contract: frozen; ``transitions`` reference only states in ``states``.
-    Guarantees: ``initial_state`` is a member of ``states``.
-    Non-goals: does not execute transitions -- the workflow engine does.
-    """
-    name: str
-    description: str
-    initial_state: str
-    states: tuple[str, ...]
-    transitions: tuple[Transition, ...]
 
 
 # -----------------------------------------------------------------------------
@@ -134,6 +94,7 @@ INVOICE_WORKFLOW = Workflow(
         "paid",
         "cancelled",
     ),
+    terminal_states=("paid", "cancelled"),
     transitions=(
         Transition("draft", "pending_match", action="submit"),
         Transition("draft", "cancelled", action="cancel"),
@@ -141,7 +102,14 @@ INVOICE_WORKFLOW = Workflow(
         Transition("pending_match", "pending_approval", action="match_override"),  # manual override
         Transition("pending_match", "cancelled", action="cancel"),
         Transition("matched", "pending_approval", action="request_approval"),
-        Transition("pending_approval", "approved", action="approve", guard=APPROVAL_THRESHOLD_MET),
+        Transition(
+            "pending_approval",
+            "approved",
+            action="approve",
+            guard=APPROVAL_THRESHOLD_MET,
+            requires_approval=True,
+            approval_policy=ApprovalPolicyRef(policy_name="ap_invoice_approval", min_version=1),
+        ),
         Transition("pending_approval", "matched", action="reject"),
         Transition("approved", "scheduled", action="schedule_payment"),
         Transition("scheduled", "paid", action="mark_paid"),
@@ -176,10 +144,18 @@ PAYMENT_WORKFLOW = Workflow(
         "cleared",
         "voided",
     ),
+    terminal_states=("cleared", "voided"),
     transitions=(
         Transition("draft", "pending_approval", action="submit", guard=SUFFICIENT_FUNDS),
         Transition("draft", "voided", action="void"),
-        Transition("pending_approval", "approved", action="approve", guard=PAYMENT_APPROVED),
+        Transition(
+            "pending_approval",
+            "approved",
+            action="approve",
+            guard=PAYMENT_APPROVED,
+            requires_approval=True,
+            approval_policy=ApprovalPolicyRef(policy_name="ap_payment_approval", min_version=1),
+        ),
         Transition("pending_approval", "draft", action="reject"),
         Transition("approved", "submitted", action="release", posts_entry=True),
         Transition("approved", "voided", action="void"),

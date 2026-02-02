@@ -84,6 +84,26 @@ class AuditAction(str, Enum):
     APPROVAL_POLICY_DRIFT = "approval_policy_version_drift"
     APPROVAL_TAMPER_DETECTED = "approval_tamper_detected"
 
+    # Import / ERP ingestion lifecycle (ERP_INGESTION_PLAN)
+    IMPORT_BATCH_CREATED = "import_batch_created"
+    IMPORT_BATCH_VALIDATED = "import_batch_validated"
+    IMPORT_RECORD_PROMOTED = "import_record_promoted"
+    IMPORT_RECORD_REJECTED = "import_record_rejected"
+    IMPORT_BATCH_COMPLETED = "import_batch_completed"
+
+    # Batch processing lifecycle (BATCH_PROCESSING_PLAN)
+    BATCH_JOB_STARTED = "batch_job_started"
+    BATCH_JOB_COMPLETED = "batch_job_completed"
+    BATCH_JOB_FAILED = "batch_job_failed"
+    BATCH_JOB_CANCELLED = "batch_job_cancelled"
+    BATCH_ITEM_FAILED = "batch_item_failed"
+    SCHEDULE_TRIGGERED = "schedule_triggered"
+
+    # Lifecycle reconciliation (GAP-REC)
+    LIFECYCLE_CHECK_PASSED = "lifecycle_check_passed"
+    LIFECYCLE_CHECK_FAILED = "lifecycle_check_failed"
+    LIFECYCLE_CHECK_WARNING = "lifecycle_check_warning"
+
 
 class AuditEvent(Base):
     """

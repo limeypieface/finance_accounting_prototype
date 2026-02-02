@@ -56,9 +56,11 @@ from finance_config.loader import (
     compute_checksum,
     load_yaml_file,
     parse_approval_policy,
+    parse_batch_schedule,
     parse_control_rule,
     parse_date,
     parse_engine_config,
+    parse_import_mapping,
     parse_ledger_definition,
     parse_policy,
     parse_role_binding,
@@ -68,8 +70,10 @@ from finance_config.loader import (
 from finance_config.schema import (
     AccountingConfigurationSet,
     ApprovalPolicyDef,
+    BatchScheduleDef,
     ControlRule,
     EngineConfigDef,
+    ImportMappingDef,
     LedgerDefinition,
     PolicyDefinition,
     PrecedenceRule,
@@ -198,6 +202,48 @@ def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:
             parse_approval_policy(ap) for ap in ap_data.get("approval_policies", [])
         )
 
+    # 8b. Load import_mappings (optional: single file or import_mappings/ directory)
+    import_mappings_list: list[ImportMappingDef] = []
+    imp_single = fragment_dir / "import_mappings.yaml"
+    if imp_single.exists():
+        imp_data = load_yaml_file(imp_single)
+        import_mappings_list.extend(
+            parse_import_mapping(im) for im in imp_data.get("import_mappings", [])
+        )
+    imp_dir = fragment_dir / "import_mappings"
+    if imp_dir.is_dir():
+        for imp_file in sorted(imp_dir.glob("*.yaml")):
+            imp_data = load_yaml_file(imp_file)
+            items = imp_data.get("import_mappings", [])
+            if not items and isinstance(imp_data, dict) and "name" in imp_data:
+                items = [imp_data]
+            for im in items:
+                if im and isinstance(im, dict) and "name" in im:
+                    import_mappings_list.append(parse_import_mapping(im))
+
+    import_mappings: tuple[ImportMappingDef, ...] = tuple(import_mappings_list)
+
+    # 8c. Load batch_schedules (optional: single file or batch_schedules/ directory)
+    batch_schedules_list: list[BatchScheduleDef] = []
+    bs_single = fragment_dir / "batch_schedules.yaml"
+    if bs_single.exists():
+        bs_data = load_yaml_file(bs_single)
+        batch_schedules_list.extend(
+            parse_batch_schedule(bs) for bs in bs_data.get("batch_schedules", [])
+        )
+    bs_dir = fragment_dir / "batch_schedules"
+    if bs_dir.is_dir():
+        for bs_file in sorted(bs_dir.glob("*.yaml")):
+            bs_data = load_yaml_file(bs_file)
+            items = bs_data.get("batch_schedules", [])
+            if not items and isinstance(bs_data, dict) and "name" in bs_data:
+                items = [bs_data]
+            for bs in items:
+                if bs and isinstance(bs, dict) and "name" in bs:
+                    batch_schedules_list.append(parse_batch_schedule(bs))
+
+    batch_schedules: tuple[BatchScheduleDef, ...] = tuple(batch_schedules_list)
+
     # 9. Parse root metadata
     scope = parse_scope(root_data["scope"])
     capabilities = root_data.get("capabilities", {})
@@ -224,6 +270,8 @@ def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:
         "engine_configs": [ec.engine_name for ec in engine_configs],
         "controls": [c.name for c in controls],
         "capabilities": capabilities,
+        "import_mappings": [im.name for im in import_mappings],
+        "batch_schedules": [bs.name for bs in batch_schedules],
     }
     checksum = compute_checksum(all_data)
 
@@ -248,4 +296,6 @@ def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:
         capabilities=capabilities,
         subledger_contracts=subledger_contracts,
         approval_policies=approval_policies,
+        import_mappings=import_mappings,
+        batch_schedules=batch_schedules,
     )

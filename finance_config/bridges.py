@@ -48,11 +48,16 @@ Usage::
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid5
 
-from finance_config.compiler import CompiledPolicyPack
+from finance_config.compiler import (
+    CompiledApprovalPolicy,
+    CompiledApprovalRule,
+    CompiledPolicyPack,
+)
 from finance_config.schema import SubledgerContractDef
+from finance_kernel.domain.approval import ApprovalPolicy, ApprovalRule
 from finance_kernel.domain.subledger_control import (
     ControlAccountBinding,
     ReconciliationTiming,
@@ -306,3 +311,54 @@ def build_subledger_registry_from_defs(
         registry.register(contract)
 
     return registry
+
+
+def build_approval_policies_for_executor(
+    pack: CompiledPolicyPack,
+) -> dict[str, ApprovalPolicy]:
+    """Build a dict of approval policies for WorkflowExecutor from CompiledPolicyPack.
+
+    Keys: "{workflow_name}:{action}" (e.g. "ap_invoice:approve") so
+    WorkflowExecutor._resolve_policy(workflow_name, action) can look them up.
+    Converts CompiledApprovalPolicy (string amounts) to domain ApprovalPolicy (Decimal).
+    """
+    def _to_decimal(s: str | None) -> Decimal | None:
+        if not s:
+            return None
+        try:
+            return Decimal(s)
+        except (InvalidOperation, ValueError):
+            return None
+
+    result: dict[str, ApprovalPolicy] = {}
+    for cp in pack.approval_policies:
+        rules: list[ApprovalRule] = []
+        for cr in cp.rules:
+            rules.append(
+                ApprovalRule(
+                    rule_name=cr.rule_name,
+                    priority=cr.priority,
+                    min_amount=_to_decimal(cr.min_amount),
+                    max_amount=_to_decimal(cr.max_amount),
+                    required_roles=cr.required_roles,
+                    min_approvers=cr.min_approvers,
+                    require_distinct_roles=cr.require_distinct_roles,
+                    guard_expression=cr.guard_expression,
+                    auto_approve_below=_to_decimal(cr.auto_approve_below),
+                    escalation_timeout_hours=cr.escalation_timeout_hours,
+                )
+            )
+        action = cp.applies_to_action or "approve"
+        key = f"{cp.applies_to_workflow}:{action}"
+        result[key] = ApprovalPolicy(
+            policy_name=cp.policy_name,
+            version=cp.version,
+            applies_to_workflow=cp.applies_to_workflow,
+            applies_to_action=cp.applies_to_action or "approve",
+            rules=tuple(rules),
+            policy_currency=cp.policy_currency,
+            policy_hash=cp.policy_hash or None,
+        )
+        if cp.applies_to_workflow not in result:
+            result[cp.applies_to_workflow] = result[key]
+    return result

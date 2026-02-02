@@ -52,10 +52,14 @@ from finance_config.schema import (
     AccountingConfigurationSet,
     ApprovalPolicyDef,
     ApprovalRuleDef,
+    BatchScheduleDef,
     ConfigScope,
     ControlRule,
     EngineConfigDef,
     GuardDef,
+    ImportFieldDef,
+    ImportMappingDef,
+    ImportValidationDef,
     LedgerDefinition,
     LedgerEffectDef,
     LineMappingDef,
@@ -67,6 +71,7 @@ from finance_config.schema import (
     RoleBinding,
     SubledgerContractDef,
 )
+from finance_kernel.domain.schemas.base import EventFieldType
 
 
 def load_yaml_file(path: Path) -> dict[str, Any]:
@@ -275,6 +280,56 @@ def parse_subledger_contract(data: dict[str, Any]) -> SubledgerContractDef:
     )
 
 
+def _parse_event_field_type(value: Any) -> EventFieldType:
+    """Parse EventFieldType from YAML string (e.g. 'string', 'integer', 'currency')."""
+    if isinstance(value, EventFieldType):
+        return value
+    s = (value or "string").lower().strip()
+    try:
+        return EventFieldType(s)
+    except ValueError:
+        raise ValueError(f"Invalid field_type {value!r}; must be one of {[e.value for e in EventFieldType]}")
+
+
+def parse_import_field_def(data: dict[str, Any]) -> ImportFieldDef:
+    """Parse an ImportFieldDef from a dict (YAML field_mappings entry)."""
+    return ImportFieldDef(
+        source=data["source"],
+        target=data["target"],
+        field_type=_parse_event_field_type(data.get("field_type", "string")),
+        required=data.get("required", False),
+        default=data.get("default"),
+        format=data.get("format"),
+        transform=data.get("transform"),
+    )
+
+
+def parse_import_validation_def(data: dict[str, Any]) -> ImportValidationDef:
+    """Parse an ImportValidationDef from a dict (YAML validations entry)."""
+    return ImportValidationDef(
+        rule_type=data["rule_type"],
+        fields=tuple(data.get("fields", [])),
+        scope=data.get("scope", "batch"),
+        reference_entity=data.get("reference_entity"),
+        expression=data.get("expression"),
+        message=data.get("message", ""),
+    )
+
+
+def parse_import_mapping(data: dict[str, Any]) -> ImportMappingDef:
+    """Parse an ImportMappingDef from a dict (YAML import_mappings entry)."""
+    return ImportMappingDef(
+        name=data["name"],
+        version=data.get("version", 1),
+        entity_type=data.get("entity_type", ""),
+        source_format=data.get("source_format", "csv"),
+        source_options=dict(data.get("source_options", {})),
+        field_mappings=tuple(parse_import_field_def(f) for f in data.get("field_mappings", [])),
+        validations=tuple(parse_import_validation_def(v) for v in data.get("validations", [])),
+        dependency_tier=data.get("dependency_tier", 0),
+    )
+
+
 def parse_approval_policy(data: dict[str, Any]) -> ApprovalPolicyDef:
     """Parse an ApprovalPolicyDef from a dict."""
     rules = tuple(
@@ -302,6 +357,20 @@ def parse_approval_policy(data: dict[str, Any]) -> ApprovalPolicyDef:
         rules=rules,
         effective_from=data.get("effective_from"),
         effective_to=data.get("effective_to"),
+    )
+
+
+def parse_batch_schedule(data: dict[str, Any]) -> BatchScheduleDef:
+    """Parse a BatchScheduleDef from a dict (YAML batch_schedules entry)."""
+    return BatchScheduleDef(
+        name=data["name"],
+        task_type=data["task_type"],
+        frequency=data["frequency"],
+        parameters=dict(data.get("parameters", {})),
+        cron_expression=data.get("cron_expression"),
+        max_retries=data.get("max_retries", 3),
+        is_active=data.get("is_active", True),
+        legal_entity=data.get("legal_entity"),
     )
 
 

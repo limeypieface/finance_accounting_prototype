@@ -66,6 +66,7 @@ finance_config/sets/
     engine_params.yaml          optional  Calculation engine parameters
     controls.yaml               optional  Global governance rules
     subledger_contracts.yaml    optional  Subledger ownership declarations
+    approval_policies.yaml      optional  Approval rules for workflow transitions
     APPROVED_FINGERPRINT        optional  Integrity pin (written by approval script)
     policies/                   REQUIRED  One YAML per business module
       inventory.yaml
@@ -82,7 +83,7 @@ finance_config/sets/
       contracts.yaml
 ```
 
-The assembler loads fragments in a fixed order: root first, then chart of accounts, ledgers, all policy files (sorted alphabetically), engine params, controls, subledger contracts.
+The assembler loads fragments in a fixed order: root first, then chart of accounts, ledgers, all policy files (sorted alphabetically), engine params, controls, subledger contracts, approval policies.
 
 ---
 
@@ -119,6 +120,10 @@ Configure calculation engines referenced by your policies.
 ### Step 7: Write controls.yaml (if needed)
 
 Add global governance rules that apply across all event types.
+
+### Step 7b: Write approval_policies.yaml (if needed)
+
+Define approval rules for workflow transitions that require human authorization. Each policy targets a workflow (and optionally a specific action) and contains prioritized rules with amount thresholds, required roles, auto-approval criteria, and escalation timeouts. See [Section 4.7](#47-approval_policiesyaml) for full reference.
 
 ### Step 8: Validate locally
 
@@ -446,6 +451,78 @@ controls:
     message: Transaction amount must be positive
 ```
 
+### 4.7 approval_policies.yaml
+
+Defines approval rules that govern workflow transitions. When a module workflow declares `requires_approval: true`, the WorkflowExecutor looks up the matching approval policy from this file.
+
+```yaml
+approval_policies:
+  - policy_name: "ap_invoice_approval"    # Unique name (string, required)
+    version: 1                             # Version number (integer, default: 1)
+    applies_to_workflow: "ap_invoice"      # Workflow name to match (string)
+    applies_to_action: "approve"           # Specific action, or null for all (string)
+    policy_currency: "USD"                 # Required currency, or null for any (string)
+    effective_from: "2026-01-01"           # Start date (ISO 8601, optional)
+    effective_to: null                     # End date (optional)
+    rules:
+      - rule_name: "auto_approve_small"   # Unique within this policy (string, required)
+        priority: 10                       # Lower = evaluated first (integer, required)
+        auto_approve_below: "500.00"       # Auto-approve if amount < this (Decimal string)
+
+      - rule_name: "manager_approval"
+        priority: 20
+        min_amount: "500.00"               # Rule applies when amount >= this (Decimal string)
+        max_amount: "10000.00"             # Rule applies when amount < this (Decimal string)
+        required_roles: ["ap_manager", "finance_manager"]   # Any of these may approve
+        min_approvers: 1                   # How many decisions needed (integer, default: 1)
+
+      - rule_name: "executive_approval"
+        priority: 40
+        min_amount: "100000.00"
+        required_roles: ["cfo", "ceo"]
+        min_approvers: 2                   # Requires TWO approvals
+        require_distinct_roles: true       # Must be different roles (boolean, default: false)
+        escalation_timeout_hours: 48       # Auto-escalate after N hours (integer, optional)
+        guard_expression: "payload.amount > 0"  # Restricted expression (same syntax as policy guards)
+```
+
+**Policy-level fields:**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `policy_name` | string | yes | Unique across all approval policies |
+| `version` | integer | no | Default: 1. Captured at request creation; used for drift detection (AL-5) |
+| `applies_to_workflow` | string | no | Workflow name to match (e.g., `ap_invoice`) |
+| `applies_to_action` | string | no | Specific action (e.g., `approve`); null = all actions in workflow |
+| `policy_currency` | string | no | If set, request currency must match (AL-3); null = any currency |
+| `rules` | list | yes | At least one rule required |
+| `effective_from` | string | no | ISO 8601 date |
+| `effective_to` | string | no | ISO 8601 date |
+
+**Rule-level fields:**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `rule_name` | string | yes | Unique within the policy |
+| `priority` | integer | yes | Lower = evaluated first; **must be unique within a policy** (AL-6) |
+| `min_amount` | string | no | Decimal string; rule applies when amount >= this |
+| `max_amount` | string | no | Decimal string; rule applies when amount < this |
+| `required_roles` | list | no | Actor must hold one of these roles to approve |
+| `min_approvers` | integer | no | Default: 1. Number of approvals needed |
+| `require_distinct_roles` | boolean | no | Default: false. If true, each approver must hold a different role |
+| `guard_expression` | string | no | Same restricted AST as policy guards (see Section 5) |
+| `auto_approve_below` | string | no | Decimal string; auto-approve if amount < this threshold |
+| `escalation_timeout_hours` | integer | no | Hours before the request auto-escalates |
+
+**Policy resolution order.** When a transition occurs, the WorkflowExecutor resolves the applicable policy by checking two keys in order:
+
+1. `{workflow_name}:{action}` — action-specific policy (highest priority)
+2. `{workflow_name}` — workflow-level policy (fallback)
+
+If no policy matches, the transition proceeds without approval.
+
+**Rule matching.** Within a policy, rules are sorted by priority (ascending). The first rule whose amount range contains the request amount is selected. If the request amount is below the rule's `auto_approve_below` threshold, the system auto-approves without human intervention.
+
 ---
 
 ## 5. Guard Expression Language
@@ -548,6 +625,9 @@ If any ERROR-level check fails, `get_active_config()` raises `ValueError`.
 | Role coverage | role | warning | `Policy '{name}' uses GL role '{role}' but no RoleBinding exists` |
 | Capability tags | capability | warning | `Policy '{name}' uses capability tag '{tag}' not declared in capabilities` |
 | Control AST | control | error | `Invalid control expression '{name}': {msg}` |
+| Approval duplicate priorities | approval | error | `Approval policy '{name}': duplicate rule priorities` |
+| Approval amount format | approval | error | `Approval policy '{name}' rule '{rule}': min_amount '{val}' is not a valid Decimal` |
+| Approval guard AST | approval | error | `Approval policy '{name}' rule '{rule}': invalid guard expression` |
 
 If any error-severity check fails, compilation raises `CompilationFailedError`.
 
@@ -820,7 +900,33 @@ account_code: 1200
 account_code: '1200'
 ```
 
-### 9.10 Engine Reference Errors
+### 9.10 Approval Policy Duplicate Priorities
+
+Each rule within an approval policy must have a unique `priority` value:
+
+> Approval policy 'ap_invoice_approval': duplicate rule priorities
+
+**Fix:** Give each rule a distinct priority. Priority determines evaluation order (lower = first).
+
+### 9.11 Approval Policy Amount Formats
+
+Amount thresholds (`min_amount`, `max_amount`, `auto_approve_below`) must be valid Decimal strings:
+
+```yaml
+# WRONG — YAML number, may lose precision
+auto_approve_below: 500.00
+
+# RIGHT — quoted string, safe for Decimal
+auto_approve_below: "500.00"
+```
+
+### 9.12 Approval Policy Currency Mismatch
+
+If `policy_currency` is set, all approval requests against that policy must use the same currency. A mismatch raises `ApprovalCurrencyMismatchError` at runtime (AL-3).
+
+**Fix:** Either match the currency in the request, or set `policy_currency: null` to accept any currency.
+
+### 9.13 Engine Reference Errors
 
 If a policy declares `required_engines: [myengine]` but no engine contract exists:
 
@@ -993,6 +1099,30 @@ policies:
       - role: CASH
         side: credit
 ```
+
+### approval_policies.yaml (optional)
+
+If the expense workflow requires manager approval above a threshold:
+
+```yaml
+approval_policies:
+  - policy_name: "expense_approval"
+    version: 1
+    applies_to_workflow: "expense_report"
+    applies_to_action: "approve"
+    policy_currency: "USD"
+    rules:
+      - rule_name: "auto_approve_small"
+        priority: 10
+        auto_approve_below: "100.00"
+      - rule_name: "manager_approval"
+        priority: 20
+        min_amount: "100.00"
+        required_roles: ["expense_manager"]
+        min_approvers: 1
+```
+
+This auto-approves expenses under $100 and requires a manager for anything above.
 
 ### Validate
 
