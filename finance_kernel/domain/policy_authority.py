@@ -171,7 +171,7 @@ class PolicyAuthority:
     """Central registry of all economic policies."""
 
     version: int
-    effective_from: datetime
+    effective_from: datetime | None
     effective_to: datetime | None  # None = current
 
     # Module authorizations
@@ -369,7 +369,7 @@ class PolicyAuthorityBuilder:
 
     def __init__(self, version: int = 1):
         self._version = version
-        self._effective_from = datetime.now()
+        self._effective_from: datetime | None = None
         self._effective_to: datetime | None = None
         self._module_authorizations: list[ModuleAuthorization] = []
         self._ledger_role_mappings: list[LedgerRoleMapping] = []

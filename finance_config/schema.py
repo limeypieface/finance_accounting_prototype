@@ -233,6 +233,41 @@ class PrecedenceRule:
 
 
 # ---------------------------------------------------------------------------
+# Approval policy definitions
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ApprovalRuleDef:
+    """YAML-authored approval rule."""
+
+    rule_name: str
+    priority: int
+    min_amount: str | None = None
+    max_amount: str | None = None
+    required_roles: tuple[str, ...] = ()
+    min_approvers: int = 1
+    require_distinct_roles: bool = False
+    guard_expression: str | None = None
+    auto_approve_below: str | None = None
+    escalation_timeout_hours: int | None = None
+
+
+@dataclass(frozen=True)
+class ApprovalPolicyDef:
+    """YAML-authored approval policy."""
+
+    policy_name: str
+    version: int = 1
+    applies_to_workflow: str = ""
+    applies_to_action: str | None = None
+    policy_currency: str | None = None
+    rules: tuple[ApprovalRuleDef, ...] = ()
+    effective_from: str | None = None
+    effective_to: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Top-level configuration set
 # ---------------------------------------------------------------------------
 
@@ -277,3 +312,4 @@ class AccountingConfigurationSet:
     controls: tuple[ControlRule, ...] = ()
     capabilities: dict[str, bool] = field(default_factory=dict)
     subledger_contracts: tuple[SubledgerContractDef, ...] = ()
+    approval_policies: tuple[ApprovalPolicyDef, ...] = ()

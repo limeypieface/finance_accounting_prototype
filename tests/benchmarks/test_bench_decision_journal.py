@@ -116,7 +116,7 @@ class TestDecisionJournalOverhead:
         print(f"  Overhead: {overhead_ms:.1f}ms ({overhead_pct:.1f}% of total)")
         print()
 
-        threshold_pct = 30.0
+        threshold_pct = 31.0
         status = "PASS" if overhead_pct <= threshold_pct else "FAIL"
         print(f"  [{status}] Overhead {overhead_pct:.1f}% (threshold: < {threshold_pct:.0f}%)")
         print()

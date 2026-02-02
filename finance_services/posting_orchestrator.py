@@ -63,6 +63,7 @@ from finance_config.compiler import CompiledPolicyPack
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.meaning_builder import MeaningBuilder
 from finance_kernel.domain.policy_authority import PolicyAuthority
+from finance_kernel.services.approval_service import ApprovalService
 from finance_kernel.services.auditor_service import AuditorService
 from finance_kernel.services.contract_service import ContractService
 from finance_kernel.services.ingestor_service import IngestorService
@@ -75,6 +76,7 @@ from finance_kernel.services.period_service import PeriodService
 from finance_kernel.services.reference_snapshot_service import ReferenceSnapshotService
 from finance_kernel.services.reversal_service import ReversalService
 from finance_services.engine_dispatcher import EngineDispatcher
+from finance_services.workflow_executor import WorkflowExecutor
 from finance_services.subledger_ap import APSubledgerService
 from finance_services.subledger_ar import ARSubledgerService
 from finance_services.subledger_bank import BankSubledgerService
@@ -156,6 +158,17 @@ class PostingOrchestrator:
             auditor=self.auditor,
             link_graph=self.link_graph,
             period_service=self.period_service,
+            clock=self._clock,
+        )
+
+        # Approval service (depends on auditor)
+        self.approval_service = ApprovalService(session, self.auditor, self._clock)
+
+        # Approval policies: convert compiled config to domain ApprovalPolicy objects
+        approval_policy_map = _build_approval_policy_map(compiled_pack)
+        self.workflow_executor = WorkflowExecutor(
+            approval_service=self.approval_service,
+            approval_policies=approval_policy_map,
             clock=self._clock,
         )
 
@@ -303,3 +316,54 @@ class PostingOrchestrator:
             return reversal_entry.id
 
         return _write_reversal
+
+
+def _build_approval_policy_map(
+    compiled_pack: CompiledPolicyPack,
+) -> dict[str, "ApprovalPolicy"]:
+    """Convert compiled approval policies to domain ApprovalPolicy objects.
+
+    Keys are ``workflow_name:action`` for action-specific policies, or
+    ``workflow_name`` for workflow-level policies.
+    """
+    from decimal import Decimal
+
+    from finance_kernel.domain.approval import ApprovalPolicy, ApprovalRule
+
+    result: dict[str, ApprovalPolicy] = {}
+
+    for cap in compiled_pack.approval_policies:
+        rules = tuple(
+            ApprovalRule(
+                rule_name=r.rule_name,
+                priority=r.priority,
+                min_amount=Decimal(r.min_amount) if r.min_amount else None,
+                max_amount=Decimal(r.max_amount) if r.max_amount else None,
+                required_roles=r.required_roles,
+                min_approvers=r.min_approvers,
+                require_distinct_roles=r.require_distinct_roles,
+                guard_expression=r.guard_expression,
+                auto_approve_below=Decimal(r.auto_approve_below) if r.auto_approve_below else None,
+                escalation_timeout_hours=r.escalation_timeout_hours,
+            )
+            for r in cap.rules
+        )
+
+        policy = ApprovalPolicy(
+            policy_name=cap.policy_name,
+            version=cap.version,
+            applies_to_workflow=cap.applies_to_workflow,
+            applies_to_action=cap.applies_to_action,
+            rules=rules,
+            policy_currency=cap.policy_currency,
+            policy_hash=cap.policy_hash,
+        )
+
+        # Key by workflow:action or just workflow
+        if cap.applies_to_action:
+            key = f"{cap.applies_to_workflow}:{cap.applies_to_action}"
+        else:
+            key = cap.applies_to_workflow
+        result[key] = policy
+
+    return result

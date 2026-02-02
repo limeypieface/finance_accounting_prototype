@@ -10,6 +10,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.exceptions import (
     CLINInactiveError,
     CLINNotFoundError,
@@ -102,6 +103,10 @@ class CLINInfo:
 
 class ContractService(BaseService[Contract]):
     """Manages government contracts and CLINs with DCAA compliance validation."""
+
+    def __init__(self, session: Session, clock: Clock | None = None):
+        super().__init__(session)
+        self._clock = clock or SystemClock()
 
     def _to_dto(self, contract: Contract) -> ContractInfo:
         """Convert ORM Contract to ContractInfo DTO."""
@@ -489,7 +494,7 @@ class ContractService(BaseService[Contract]):
         contracts = self.session.execute(stmt).scalars().all()
 
         # Filter by submission date
-        today = date.today()
+        today = self._clock.now().date()
         needing_ice = []
         for contract in contracts:
             if contract.last_ice_submission_date is None:

@@ -50,6 +50,8 @@ import yaml
 from finance_config.lifecycle import ConfigStatus
 from finance_config.schema import (
     AccountingConfigurationSet,
+    ApprovalPolicyDef,
+    ApprovalRuleDef,
     ConfigScope,
     ControlRule,
     EngineConfigDef,
@@ -270,6 +272,36 @@ def parse_subledger_contract(data: dict[str, Any]) -> SubledgerContractDef:
         tolerance_percentage=str(data.get("tolerance_percentage", "0")),
         enforce_on_post=data.get("enforce_on_post", True),
         enforce_on_close=data.get("enforce_on_close", True),
+    )
+
+
+def parse_approval_policy(data: dict[str, Any]) -> ApprovalPolicyDef:
+    """Parse an ApprovalPolicyDef from a dict."""
+    rules = tuple(
+        ApprovalRuleDef(
+            rule_name=r["rule_name"],
+            priority=r["priority"],
+            min_amount=str(r["min_amount"]) if r.get("min_amount") is not None else None,
+            max_amount=str(r["max_amount"]) if r.get("max_amount") is not None else None,
+            required_roles=tuple(r.get("required_roles", ())),
+            min_approvers=r.get("min_approvers", 1),
+            require_distinct_roles=r.get("require_distinct_roles", False),
+            guard_expression=r.get("guard_expression"),
+            auto_approve_below=str(r["auto_approve_below"]) if r.get("auto_approve_below") is not None else None,
+            escalation_timeout_hours=r.get("escalation_timeout_hours"),
+        )
+        for r in data.get("rules", [])
+    )
+
+    return ApprovalPolicyDef(
+        policy_name=data["policy_name"],
+        version=data.get("version", 1),
+        applies_to_workflow=data.get("applies_to_workflow", ""),
+        applies_to_action=data.get("applies_to_action"),
+        policy_currency=data.get("policy_currency"),
+        rules=rules,
+        effective_from=data.get("effective_from"),
+        effective_to=data.get("effective_to"),
     )
 
 

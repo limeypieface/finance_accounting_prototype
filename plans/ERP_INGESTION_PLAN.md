@@ -2,7 +2,7 @@
 
 **Objective:** Design and implement a configuration-driven ERP data ingestion system with staging, per-record validation, and granular visibility into processing status.
 
-**Last Update:** 2026-02-01 (v3 -- added intra-batch dependency resolution, SAVEPOINT atomicity, skip_blocked mode)
+**Last Update:** 2026-02-01 (v4 -- simplification pass: reuse EventFieldType, drop IM-12/transient statuses/record-level snapshots, consolidate types)
 **Status:** NOT STARTED -- plan approved, awaiting implementation
 
 **User Requirements:**
@@ -165,30 +165,6 @@ IMPORT_BATCH_COMPLETED = "import_batch_completed"
 
 This means: the hash chain links ingestion events to journal postings, period closes, and every other auditable action in the system. An auditor can trace from a journal entry back through the import record, to the source file, to the raw row.
 
-#### Canonical Import Event Stream (IM-12)
-
-Every successful promotion emits an immutable `import.record.promoted` event through the existing `IngestorService`. This aligns ingestion with the event-sourced architecture -- every state change in the system, including data migration, has an event.
-
-```python
-# Emitted by PromotionService after each successful promotion
-event_type = "import.record.promoted"
-payload = {
-    "batch_id": str(batch_id),
-    "record_id": str(record_id),
-    "source_row": source_row,
-    "entity_type": entity_type,
-    "promoted_entity_id": str(promoted_entity_id),
-    "mapping_name": mapping_name,
-    "mapping_version": mapping_version,
-    "mapping_hash": mapping_hash,
-}
-```
-
-This enables:
-- Unified audit trail across ALL system state changes (events, journals, imports)
-- Event replay for import verification
-- Downstream reactions to imports (e.g., trigger approval workflows on imported invoices)
-
 #### Trace Continuity
 
 The full provenance chain for any imported entity:
@@ -197,12 +173,11 @@ The full provenance chain for any imported entity:
 Source file row N
     → ImportRecord (raw_data preserved, IM-9)
         → ImportRecord (mapped_data + validation results, IM-6)
-            → AuditEvent (import_record_promoted, hash-chained)
-                → Event (import.record.promoted, immutable, payload-hashed)
-                    → Live entity (promoted_entity_id links back)
+            → AuditEvent (import_record_promoted, hash-chained, IM-12)
+                → Live entity (promoted_entity_id links back)
 ```
 
-Any entity created by ingestion can be traced backwards to the exact source row in the exact source file, with every intermediate transformation preserved and hash-linked.
+Any entity created by ingestion can be traced backwards to the exact source row in the exact source file, with every intermediate transformation preserved and hash-linked. The AuditEvent chain provides the full audit trail -- no separate event stream needed.
 
 ---
 
@@ -256,22 +231,20 @@ Pure frozen dataclasses for the import system.
 ### Types
 
 ```python
+from finance_kernel.domain.schemas.base import EventFieldType  # Reuse existing type system
+
 class ImportRecordStatus(str, Enum):
     STAGED = "staged"              # Raw data loaded
-    VALIDATING = "validating"      # Validation in progress
     VALID = "valid"                # All validations passed
     INVALID = "invalid"            # One or more validations failed
-    PROMOTING = "promoting"        # Promotion in progress
     PROMOTED = "promoted"          # Successfully promoted to live tables
     PROMOTION_FAILED = "promotion_failed"  # Promotion error
-    SKIPPED = "skipped"            # Intentionally skipped (e.g., duplicate)
+    SKIPPED = "skipped"            # Intentionally skipped (e.g., duplicate or blocked)
 
 class ImportBatchStatus(str, Enum):
     LOADING = "loading"            # Source file being read
     STAGED = "staged"              # All records loaded to staging
-    VALIDATING = "validating"      # Validation running
     VALIDATED = "validated"        # All records validated (some may be invalid)
-    PROMOTING = "promoting"        # Promotion running
     COMPLETED = "completed"        # All promotable records promoted
     FAILED = "failed"              # Batch-level failure (e.g., file read error)
 
@@ -303,15 +276,11 @@ class ImportRecord:
     promoted_entity_id: UUID | None = None  # ID in live table after promotion
     promoted_at: datetime | None = None
 
-    # IM-11: Mapping version snapshot (deterministic replay)
-    mapping_version: int | None = None
-    mapping_hash: str | None = None        # SHA-256 of mapping config at import time
-
 @dataclass(frozen=True)
 class FieldMapping:
     source: str                    # Source field name
     target: str                    # Target field name
-    field_type: str                # string, integer, decimal, date, etc.
+    field_type: EventFieldType     # Reuses kernel's EventFieldType enum (STRING, DECIMAL, DATE, etc.)
     required: bool = False
     default: Any = None
     format: str | None = None      # e.g., date format "MM/DD/YYYY"
@@ -322,22 +291,19 @@ class ImportMapping:
     name: str
     version: int
     entity_type: str               # Target entity type
-    entity_subtype: str | None = None
     source_format: str             # "csv", "json"
     source_options: dict[str, Any] = field(default_factory=dict)
     field_mappings: tuple[FieldMapping, ...] = ()
-    validations: tuple[ValidationRuleDef, ...] = ()
+    validations: tuple[ImportValidationDef, ...] = ()  # References config-layer type
     dependency_tier: int = 0       # For promotion ordering
-
-@dataclass(frozen=True)
-class ValidationRuleDef:
-    rule_type: str                 # "unique", "exists", "expression", "cross_field"
-    fields: tuple[str, ...] = ()   # Fields involved
-    scope: str = "batch"           # "batch", "system", "record"
-    reference_entity: str | None = None  # For "exists" rules
-    expression: str | None = None  # For "expression" rules
-    message: str = ""
 ```
+
+**Simplification notes:**
+- `FieldMapping.field_type` uses `EventFieldType` from `finance_kernel/domain/schemas/base.py` instead of a parallel string-based type system. One type enum for both events and imports.
+- `ValidationRuleDef` eliminated -- `ImportMapping.validations` directly references `ImportValidationDef` from `finance_config/schema.py` (same shape, one type instead of two).
+- `ImportRecord` does not carry `mapping_version`/`mapping_hash` -- the batch already stores these (IM-11). Records link to batch via `batch_id`.
+- `entity_subtype` removed from `ImportMapping` -- not used by any promoter or YAML example.
+- Transient statuses `VALIDATING`/`PROMOTING` removed from both enums -- with synchronous v1 processing, no external observer sees these states. Batch-level status already signals re-run needs.
 
 ### Files Created
 - `finance_ingestion/__init__.py`
@@ -383,10 +349,6 @@ class ImportRecordModel(TrackedBase):
     promoted_entity_id: Mapped[UUID | None]
     promoted_at: Mapped[datetime | None]
 
-    # IM-11: Mapping version snapshot for deterministic replay
-    mapping_version: Mapped[int | None] = mapped_column(nullable=True)
-    mapping_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
     __table_args__ = (
         Index("ix_import_records_batch_status", "batch_id", "status"),
         Index("ix_import_records_entity_type", "entity_type"),
@@ -398,7 +360,7 @@ class ImportRecordModel(TrackedBase):
 - Validation errors stored as JSON array on the record (fully self-contained)
 - Mapped data stored separately from raw data (both preserved for auditability)
 - Batch-level counters for quick status queries without counting records
-- mapping_version + mapping_hash frozen at batch creation for replay determinism (IM-11)
+- mapping_version + mapping_hash frozen at batch level only (IM-11) -- records link to batch via `batch_id`, no redundant per-record snapshot
 
 ### Files Created
 - `finance_ingestion/models/__init__.py`
@@ -456,11 +418,13 @@ class SourceProbe:
 ### New Config Types (`finance_config/schema.py`)
 
 ```python
+from finance_kernel.domain.schemas.base import EventFieldType
+
 @dataclass(frozen=True)
 class ImportFieldDef:
     source: str
     target: str
-    field_type: str = "string"     # string, integer, decimal, boolean, date, datetime, uuid, currency
+    field_type: EventFieldType = EventFieldType.STRING  # Reuses kernel's type enum
     required: bool = False
     default: Any = None
     format: str | None = None      # Date/time format string
@@ -468,33 +432,31 @@ class ImportFieldDef:
 
 @dataclass(frozen=True)
 class ImportValidationDef:
+    """Single validation rule type used by both config and domain layers."""
     rule_type: str                 # "unique", "exists", "expression", "cross_field"
     fields: tuple[str, ...] = ()
-    scope: str = "batch"
-    reference_entity: str | None = None
-    expression: str | None = None
+    scope: str = "batch"           # "batch", "system", "record"
+    reference_entity: str | None = None  # For "exists" rules
+    expression: str | None = None  # For "expression" rules
     message: str = ""
-
-@dataclass(frozen=True)
-class ImportSourceOptionsDef:
-    delimiter: str = ","
-    encoding: str = "utf-8"
-    has_header: bool = True
-    skip_rows: int = 0
-    json_path: str | None = None   # For JSON: path to array
 
 @dataclass(frozen=True)
 class ImportMappingDef:
     name: str
     version: int = 1
     entity_type: str = ""
-    entity_subtype: str | None = None
     source_format: str = "csv"
-    source_options: ImportSourceOptionsDef = field(default_factory=ImportSourceOptionsDef)
+    source_options: dict[str, Any] = field(default_factory=dict)  # Adapter validates its own options
     field_mappings: tuple[ImportFieldDef, ...] = ()
     validations: tuple[ImportValidationDef, ...] = ()
     dependency_tier: int = 0
 ```
+
+**Simplification notes:**
+- `ImportFieldDef.field_type` uses `EventFieldType` enum instead of parallel strings.
+- `ImportSourceOptionsDef` eliminated -- `source_options` is `dict[str, Any]`. Each adapter validates its own options at read time (CSV adapter checks delimiter/encoding; JSON adapter checks json_path). No cross-adapter coupling.
+- `ImportValidationDef` is the single validation rule type -- no separate `ValidationRuleDef` in the domain layer. Domain types import this directly from config.
+- `entity_subtype` removed from `ImportMappingDef`.
 
 ### AccountingConfigurationSet Addition
 ```python
@@ -554,7 +516,7 @@ import_mappings:
 ```
 
 ### Files Modified
-- `finance_config/schema.py` (add `ImportFieldDef`, `ImportValidationDef`, `ImportSourceOptionsDef`, `ImportMappingDef`, field on `AccountingConfigurationSet`)
+- `finance_config/schema.py` (add `ImportFieldDef`, `ImportValidationDef`, `ImportMappingDef`, field on `AccountingConfigurationSet`)
 - `finance_config/loader.py` (add `parse_import_mapping()`)
 - `finance_config/assembler.py` (add `import_mappings/` fragment directory)
 
@@ -562,23 +524,32 @@ import_mappings:
 
 ## Phase 4: Mapping Engine (`finance_ingestion/mapping/engine.py`)
 
-Pure transformation: source dict -> target dict using field mappings.
+Pure transformation: source dict -> target dict using field mappings. Reuses the kernel's `validate_field_type()` for type checking and adds a thin coercion layer on top for string-to-typed conversion (CSV data arrives as strings; events arrive as typed JSON).
 
 ### Functions
 
 ```python
+from finance_kernel.domain.schemas.base import EventFieldType
+from finance_kernel.domain.event_validator import validate_field_type  # Reuse
+
 def apply_mapping(
     raw_data: dict[str, Any],
     field_mappings: tuple[FieldMapping, ...],
 ) -> MappingResult:
     """Apply field mappings to a raw source record. Pure function."""
 
-def coerce_type(
-    value: Any,
-    field_type: str,
+def coerce_from_string(
+    value: str,
+    field_type: EventFieldType,
     format: str | None = None,
 ) -> CoercionResult:
-    """Coerce a value to the target type. Pure function."""
+    """
+    Coerce a string value to the target type. Pure function.
+
+    This is the only new logic beyond what validate_field_type() provides:
+    CSV/text sources produce strings, so we need string -> Decimal, string -> date, etc.
+    After coercion, validate_field_type() confirms the result is well-typed.
+    """
 
 def apply_transform(
     value: Any,
@@ -599,15 +570,19 @@ class CoercionResult:
     error: ValidationError | None = None
 ```
 
-### Supported Types
-- `string` -- strip, encode
-- `integer` -- int() with error handling
-- `decimal` -- Decimal() (never float)
-- `boolean` -- true/false/yes/no/1/0
-- `date` -- configurable format (default ISO), auto-detect common formats
-- `datetime` -- ISO 8601
-- `uuid` -- UUID parse
-- `currency` -- ISO 4217 validation via CurrencyRegistry
+### Type Coercion (via EventFieldType)
+
+Reuses the same 10-type enum as the event schema system. Coercion adds string-to-typed conversion:
+- `STRING` -- strip, encode
+- `INTEGER` -- int() with error handling
+- `DECIMAL` -- Decimal() (never float)
+- `BOOLEAN` -- true/false/yes/no/1/0
+- `DATE` -- configurable format (default ISO), auto-detect common formats
+- `DATETIME` -- ISO 8601
+- `UUID` -- UUID parse
+- `CURRENCY` -- ISO 4217 validation via CurrencyRegistry
+
+Post-coercion validation delegates to `validate_field_type()` from `event_validator.py`.
 
 ### Supported Transforms
 - `strip` / `trim` -- whitespace removal
@@ -625,11 +600,15 @@ class CoercionResult:
 
 ### Pre-packaged Validators
 
+Record-level validators reuse existing kernel functions where possible:
+
 ```python
 # Record-level validators (one record at a time)
+# validate_required_fields wraps event_validator.validate_payload_required_fields()
 def validate_required_fields(record: dict, mappings: tuple[FieldMapping, ...]) -> list[ValidationError]
+# validate_field_types wraps event_validator.validate_field_type() per field
 def validate_field_types(record: dict, mappings: tuple[FieldMapping, ...]) -> list[ValidationError]
-def validate_field_constraints(record: dict, constraints: tuple[FieldConstraint, ...]) -> list[ValidationError]
+# validate_currency_codes wraps event_validator.validate_currencies_in_payload()
 def validate_currency_codes(record: dict, currency_fields: tuple[str, ...]) -> list[ValidationError]
 def validate_decimal_precision(record: dict, decimal_fields: tuple[str, ...]) -> list[ValidationError]
 def validate_date_ranges(record: dict, date_fields: tuple[str, ...]) -> list[ValidationError]
@@ -648,7 +627,7 @@ def validate_entity_exists(
     """
     Check that a referenced entity exists.
 
-    Resolution order (IM-15):
+    Resolution order (IM-14):
     1. Check live tables first (already promoted / pre-existing)
     2. If not found, check valid staged records in the same batch
        (for intra-batch dependencies, e.g., vendor referencing party in same import)
@@ -661,7 +640,7 @@ def validate_entity_exists(
 def validate_system_uniqueness(session: Session, entity_type: str, fields: dict[str, Any]) -> ValidationError | None
 ```
 
-### Intra-Batch Dependency Resolution (IM-15)
+### Intra-Batch Dependency Resolution (IM-14)
 
 When a batch contains entities across multiple dependency tiers (e.g., parties at tier 1 and vendors at tier 2), the "exists" validator must resolve references against **both** live tables and valid staged records within the same batch. Without this, a vendor referencing a party in the same import file would fail validation because the party hasn't been promoted yet.
 
@@ -745,12 +724,12 @@ class ImportService:
         Flow:
         1. Load batch + records
         2. Group records by dependency tier
-        3. For each tier (ascending order -- IM-15):
+        3. For each tier (ascending order -- IM-14):
            a. Run record-level validators (type, required, format)
            b. Run cross-record validators (batch uniqueness)
            c. Run referential integrity validators (system uniqueness, FK exists)
               - "exists" checks resolve against live tables + valid staged records
-                from lower tiers in the same batch (IM-15)
+                from lower tiers in the same batch (IM-14)
            d. Update each record status (VALID/INVALID)
         4. Update batch counters
         """
@@ -816,7 +795,7 @@ class PromotionService:
         2. Compute preflight graph (identify ready vs. blocked)
         3. If skip_blocked: filter to ready records only; mark blocked as SKIPPED
         4. Sort ready records by dependency tier
-        5. For each record (within a SAVEPOINT -- IM-16):
+        5. For each record (within a SAVEPOINT -- IM-15):
            a. BEGIN SAVEPOINT
            b. Look up EntityPromoter for entity_type
            c. Call promoter.promote(mapped_data)
@@ -894,7 +873,7 @@ PreflightGraph:
     - missing account "6500" blocks 2 opening balances (rows 101, 102)
 ```
 
-### SAVEPOINT Atomicity (IM-16)
+### SAVEPOINT Atomicity (IM-15)
 
 Each record promotion is wrapped in a database SAVEPOINT. This is critical for **compound promoters** (VendorPromoter, CustomerPromoter, APInvoicePromoter) that touch multiple tables in a single promotion:
 
@@ -1040,7 +1019,7 @@ The `VendorPromoter` knows that creating a vendor requires:
 
 This keeps the mapping YAML simple -- the user maps vendor fields and the promoter handles the multi-table dance.
 
-**SAVEPOINT contract:** Compound promoters do NOT manage their own transactions. They execute within the SAVEPOINT provided by `PromotionService` (IM-16). If any step fails, the promoter raises an exception and `PromotionService` handles the SAVEPOINT rollback. Promoters are responsible only for the ORM operations, not the transaction boundary.
+**SAVEPOINT contract:** Compound promoters do NOT manage their own transactions. They execute within the SAVEPOINT provided by `PromotionService` (IM-15). If any step fails, the promoter raises an exception and `PromotionService` handles the SAVEPOINT rollback. Promoters are responsible only for the ORM operations, not the transaction boundary.
 
 ### Files Created
 - `finance_ingestion/promoters/__init__.py`
@@ -1060,15 +1039,15 @@ This keeps the mapping YAML simple -- the user maps vendor fields and the promot
 
 | File | Scope | Tests |
 |------|-------|-------|
-| `tests/ingestion/test_domain_types.py` | Domain type construction, immutability, enum values | ~15 |
-| `tests/ingestion/test_mapping_engine.py` | Field mapping, type coercion, transforms | ~25 |
+| `tests/ingestion/test_domain_types.py` | Domain type construction, immutability, enum values | ~12 |
+| `tests/ingestion/test_mapping_engine.py` | Field mapping, type coercion via EventFieldType, transforms | ~25 |
 | `tests/ingestion/test_mapping_harness.py` | Mapping test harness, report generation | ~15 |
 | `tests/ingestion/test_validators.py` | Pre-packaged validators, intra-batch dependency resolution | ~35 |
 | `tests/ingestion/test_csv_adapter.py` | CSV reading, encoding, edge cases | ~15 |
 | `tests/ingestion/test_json_adapter.py` | JSON/JSONL reading, nested paths | ~10 |
-| `tests/ingestion/test_staging_orm.py` | ORM round-trip, mapping snapshot columns | ~15 |
+| `tests/ingestion/test_staging_orm.py` | ORM round-trip, batch-level mapping snapshot | ~12 |
 | `tests/ingestion/test_import_service.py` | Load, validate, retry flows, logging | ~30 |
-| `tests/ingestion/test_promotion_service.py` | Promotion flow, SAVEPOINT atomicity, preflight graph, skip_blocked, event stream, audit events | ~40 |
+| `tests/ingestion/test_promotion_service.py` | Promotion flow, SAVEPOINT atomicity, preflight graph, skip_blocked, audit events | ~35 |
 | `tests/ingestion/test_promoters.py` | Per-entity-type promotion | ~25 |
 | `tests/ingestion/test_config_loading.py` | YAML mapping loading, validation | ~10 |
 | `tests/ingestion/test_audit_trail.py` | Audit event creation, hash chain, trace continuity | ~15 |
@@ -1095,50 +1074,47 @@ This keeps the mapping YAML simple -- the user maps vendor fields and the promot
 
 **Mapping Snapshots (IM-11):**
 16. mapping_version + mapping_hash stored on batch at creation
-17. mapping_version + mapping_hash propagated to every record
-18. Replay test: same source data + same mapping version = identical mapped output
-19. Different mapping version on same source data = different mapped output flagged
+17. Replay test: same source data + same mapping version = identical mapped output
+18. Different mapping version on same source data = different mapped output flagged
 
-**Audit & Event Stream (IM-12, IM-13):**
-20. Batch creation emits IMPORT_BATCH_CREATED audit event with mapping snapshot
-21. Batch validation emits IMPORT_BATCH_VALIDATED audit event with counts
-22. Each promotion emits IMPORT_RECORD_PROMOTED audit event with entity link
-23. Each promotion emits import.record.promoted event via IngestorService
-24. Batch completion emits IMPORT_BATCH_COMPLETED audit event with summary
-25. Audit events are hash-chained (prev_hash links to prior audit event)
-26. Promotion events appear in unified event stream alongside journal postings
+**Audit Trail (IM-12):**
+19. Batch creation emits IMPORT_BATCH_CREATED audit event with mapping snapshot
+20. Batch validation emits IMPORT_BATCH_VALIDATED audit event with counts
+21. Each promotion emits IMPORT_RECORD_PROMOTED audit event with entity link
+22. Batch completion emits IMPORT_BATCH_COMPLETED audit event with summary
+23. Audit events are hash-chained (prev_hash links to prior audit event)
 
-**Trace Continuity (IM-14):**
-27. Full provenance trace: live entity -> ImportRecord -> ImportBatch -> source file
-28. LogContext.correlation_id = batch_id propagated through all structured log events
-29. Structured log events emitted at every lifecycle transition (see table above)
+**Trace Continuity (IM-13):**
+24. Full provenance trace: live entity -> ImportRecord -> ImportBatch -> source file
+25. LogContext.correlation_id = batch_id propagated through all structured log events
+26. Structured log events emitted at every lifecycle transition (see table above)
 
 **Preflight Graph:**
-30. Preflight identifies "1 missing vendor blocks 12 invoices"
-31. Preflight returns ready_count + blocked_count before promotion starts
-32. After resolving missing reference and re-running, blocked records become ready
+27. Preflight identifies "1 missing vendor blocks 12 invoices"
+28. Preflight returns ready_count + blocked_count before promotion starts
+29. After resolving missing reference and re-running, blocked records become ready
 
 **Mapping Test Harness:**
-33. test_mapping() with valid sample rows -> all success, mapped data returned
-34. test_mapping() with invalid rows -> per-row errors with field-level detail
-35. test_mapping() does not write to database (pure function)
-36. test_mapping() + probe_source() compose naturally (probe provides sample_rows)
+30. test_mapping() with valid sample rows -> all success, mapped data returned
+31. test_mapping() with invalid rows -> per-row errors with field-level detail
+32. test_mapping() does not write to database (pure function)
+33. test_mapping() + probe_source() compose naturally (probe provides sample_rows)
 
-**Intra-Batch Dependencies (IM-15):**
-37. Batch with parties (tier 1) + vendors (tier 2) -> vendors pass "exists" check against staged parties
-38. Batch with vendors only (no parties) -> vendors fail "exists" check (party not in live or staged)
-39. Vendor references party that is INVALID in staging -> fails (only VALID staged records satisfy deps)
-40. Validation runs in tier order: tier 0 validated first, then tier 1 sees tier 0 results
+**Intra-Batch Dependencies (IM-14):**
+34. Batch with parties (tier 1) + vendors (tier 2) -> vendors pass "exists" check against staged parties
+35. Batch with vendors only (no parties) -> vendors fail "exists" check (party not in live or staged)
+36. Vendor references party that is INVALID in staging -> fails (only VALID staged records satisfy deps)
+37. Validation runs in tier order: tier 0 validated first, then tier 1 sees tier 0 results
 
-**SAVEPOINT Atomicity (IM-16):**
-41. VendorPromoter fails on VendorProfile after creating Party -> SAVEPOINT rollback undoes Party, no orphan
-42. APInvoicePromoter fails on line 3 of 5 -> entire invoice + all lines rolled back, record PROMOTION_FAILED
-43. Record N promotion failure does not affect record N-1 (already committed) or N+1 (still pending)
+**SAVEPOINT Atomicity (IM-15):**
+38. VendorPromoter fails on VendorProfile after creating Party -> SAVEPOINT rollback undoes Party, no orphan
+39. APInvoicePromoter fails on line 3 of 5 -> entire invoice + all lines rolled back, record PROMOTION_FAILED
+40. Record N promotion failure does not affect record N-1 (already committed) or N+1 (still pending)
 
 **skip_blocked Mode:**
-44. promote_batch(skip_blocked=True) with 2 blocked records -> 2 SKIPPED, rest PROMOTED
-45. promote_batch(skip_blocked=False) with 2 blocked records -> 2 PROMOTION_FAILED with dependency error
-46. After creating missing reference, re-promote skipped records -> PROMOTED
+41. promote_batch(skip_blocked=True) with 2 blocked records -> 2 SKIPPED, rest PROMOTED
+42. promote_batch(skip_blocked=False) with 2 blocked records -> 2 PROMOTION_FAILED with dependency error
+43. After creating missing reference, re-promote skipped records -> PROMOTED
 
 ---
 
@@ -1156,12 +1132,11 @@ This keeps the mapping YAML simple -- the user maps vendor fields and the promot
 | IM-8 | Rollback safety | Failed promotion rolls back individual record transaction, not entire batch. |
 | IM-9 | Raw data preservation | Original source data preserved unmodified alongside mapped data. |
 | IM-10 | Decimal fidelity | All monetary amounts use Decimal (never float). Type coercion to Decimal is explicit. |
-| IM-11 | Mapping version snapshot | `mapping_version` + `mapping_hash` snapshotted on every batch and record at import time. Enables deterministic replay. Mirrors R21 for journal entries and AL-2 for approval requests. |
-| IM-12 | Canonical event stream | Every successful promotion emits an immutable `import.record.promoted` event via IngestorService. Unifies ingestion with the event-sourced audit trail. |
-| IM-13 | Audit chain integration | All ingestion lifecycle transitions produce hash-chained AuditEvents via AuditorService. Import provenance is tamper-evident and linked to the same chain as journal postings. |
-| IM-14 | Trace continuity | Every imported entity is traceable from live table → promoted_entity_id → ImportRecord → ImportBatch → source file + row. LogContext propagates batch_id as correlation_id through all structured log events. |
-| IM-15 | Intra-batch dependency resolution | "Exists" validators resolve references against both live tables AND valid staged records in the same batch (tier-ordered). A vendor can reference a party in the same import file without failing validation. |
-| IM-16 | SAVEPOINT atomicity | Each record promotion is wrapped in a database SAVEPOINT. Compound promoter failures roll back only that record's writes (e.g., orphaned Party from failed VendorProfile creation is impossible). Outer transaction continues for remaining records. |
+| IM-11 | Mapping version snapshot | `mapping_version` + `mapping_hash` snapshotted on the batch at import time. Records link to batch via `batch_id`. Enables deterministic replay. Mirrors R21 for journal entries and AL-2 for approval requests. |
+| IM-12 | Audit chain integration | All ingestion lifecycle transitions produce hash-chained AuditEvents via AuditorService. Import provenance is tamper-evident and linked to the same chain as journal postings. |
+| IM-13 | Trace continuity | Every imported entity is traceable from live table → promoted_entity_id → ImportRecord → ImportBatch → source file + row. LogContext propagates batch_id as correlation_id through all structured log events. |
+| IM-14 | Intra-batch dependency resolution | "Exists" validators resolve references against both live tables AND valid staged records in the same batch (tier-ordered). A vendor can reference a party in the same import file without failing validation. |
+| IM-15 | SAVEPOINT atomicity | Each record promotion is wrapped in a database SAVEPOINT. Compound promoter failures roll back only that record's writes (e.g., orphaned Party from failed VendorProfile creation is impossible). Outer transaction continues for remaining records. |
 
 ---
 
@@ -1177,15 +1152,16 @@ This keeps the mapping YAML simple -- the user maps vendor fields and the promot
 8. **Probe before import** -- `probe_source()` lets users verify column detection and preview data before committing to a full import.
 9. **Retry individual records** -- Failed records can be corrected and re-validated without re-importing the entire batch.
 10. **Dry-run promotion** -- `dry_run=True` parameter validates everything would work without writing to live tables.
-11. **Mapping version snapshotting** -- `mapping_version` + `mapping_hash` frozen on batch/record at import time. Same pattern as R21 for journals and AL-2 for approvals. Enables deterministic replay of imports.
-12. **Canonical event stream** -- Every promotion emits `import.record.promoted` via IngestorService. Ingestion joins the unified event model rather than being a side-channel.
-13. **Referential preflight graph** -- Before promotion, compute and surface a dependency DAG. "1 missing vendor blocks 12 invoices" instead of 12 individual error messages.
-14. **Mapping test harness** -- Pure `test_mapping()` function for pre-import validation. No DB, no staging tables. Customers validate mappings in minutes.
-15. **Full audit chain integration** -- Ingestion lifecycle events enter the same hash-chained AuditEvent table as journal postings and period closes. One chain, one truth.
-16. **Structured logging with LogContext** -- `batch_id` propagated as `correlation_id` through all log events. Every log line in an import operation carries batch context automatically.
-17. **Intra-batch dependency resolution** -- "Exists" validators check valid staged records in the same batch, not just live tables. Validation runs in tier order within a batch so lower-tier records are validated first. Eliminates the false-negative problem where a vendor and its party arrive in the same file.
-18. **SAVEPOINT per record promotion** -- Each record promotion gets a `session.begin_nested()` SAVEPOINT. Compound promoters (VendorPromoter, APInvoicePromoter) rely on the SAVEPOINT for atomicity rather than managing their own transactions. Promoters are pure ORM operations; PromotionService owns the transaction boundary.
-19. **skip_blocked promotion mode** -- `promote_batch(skip_blocked=True)` promotes only ready records and marks blocked records as SKIPPED. This avoids the false choice between "promote everything or nothing" when some references are unresolvable. Blocked records can be retried after the missing references are created.
+11. **Mapping version snapshotting (batch-level only)** -- `mapping_version` + `mapping_hash` frozen on batch at import time. Records inherit via `batch_id`. Same pattern as R21 for journals and AL-2 for approvals. No per-record duplication -- the batch is the snapshot boundary.
+12. **Referential preflight graph** -- Before promotion, compute and surface a dependency DAG. "1 missing vendor blocks 12 invoices" instead of 12 individual error messages.
+13. **Mapping test harness** -- Pure `test_mapping()` function for pre-import validation. No DB, no staging tables. Customers validate mappings in minutes.
+14. **Full audit chain integration** -- Ingestion lifecycle events enter the same hash-chained AuditEvent table as journal postings and period closes. One chain, one truth. No separate event stream -- AuditEvents are sufficient for traceability and replay.
+15. **Structured logging with LogContext** -- `batch_id` propagated as `correlation_id` through all log events. Every log line in an import operation carries batch context automatically.
+16. **Intra-batch dependency resolution** -- "Exists" validators check valid staged records in the same batch, not just live tables. Validation runs in tier order within a batch so lower-tier records are validated first. Eliminates the false-negative problem where a vendor and its party arrive in the same file.
+17. **SAVEPOINT per record promotion** -- Each record promotion gets a `session.begin_nested()` SAVEPOINT. Compound promoters (VendorPromoter, APInvoicePromoter) rely on the SAVEPOINT for atomicity rather than managing their own transactions. Promoters are pure ORM operations; PromotionService owns the transaction boundary.
+18. **skip_blocked promotion mode** -- `promote_batch(skip_blocked=True)` promotes only ready records and marks blocked records as SKIPPED. This avoids the false choice between "promote everything or nothing" when some references are unresolvable. Blocked records can be retried after the missing references are created.
+19. **Reuse kernel type system** -- `EventFieldType` enum and `validate_field_type()` from `event_validator.py` are reused for import field typing. One type system for events and imports. Mapping engine adds only a thin `coerce_from_string()` layer for CSV data.
+20. **Minimal status enums** -- No transient `VALIDATING`/`PROMOTING` statuses. With synchronous processing, these states are invisible to external observers. Simpler state machine, fewer transitions to test. If async processing is added later, re-introduce them then.
 
 ---
 
@@ -1198,9 +1174,9 @@ This keeps the mapping YAML simple -- the user maps vendor fields and the promot
 | 2 | Source adapters (CSV, JSON) | -- |
 | 3 | Import mapping config (YAML schema) | -- |
 | 4 | Mapping engine + test harness (pure) | Phases 0, 3 |
-| 5 | Validation pipeline | Phases 0, 4 |
+| 5 | Validation pipeline (with intra-batch dependency resolution) | Phases 0, 4 |
 | 6 | Import service (with structured logging) | Phases 1, 2, 4, 5 |
-| 7 | Promotion service (with preflight graph, event stream, audit events) | Phases 1, 6 |
+| 7 | Promotion service (SAVEPOINT atomicity, preflight graph, skip_blocked, audit events) | Phases 1, 6 |
 | 8 | Entity promoters | Phase 7 |
 | 9 | Tests | All phases |
 
@@ -1341,12 +1317,11 @@ import_mappings:
 8. **Idempotency test**: Promote same batch twice -> second time SKIPs already-promoted records
 9. **Opening balance test**: Promote opening_balance records -> journal entries created via posting pipeline -> trial balance correct
 10. **Audit chain test**: Verify AuditEvents created for batch_created -> batch_validated -> record_promoted -> batch_completed, all hash-chained
-11. **Event stream test**: Verify `import.record.promoted` events emitted, payload contains batch/record/mapping references
-12. **Provenance trace test**: Given a promoted entity, trace back to source file row via record_id -> batch_id -> source_filename + source_row
-13. **Mapping snapshot test**: Verify mapping_version + mapping_hash frozen on batch/record, verified on replay
-14. **Preflight test**: Compute preflight graph with missing references, verify blocked count and blocker detail
-15. **Test harness test**: Run test_mapping() on sample data, verify report accuracy without database side effects
-16. **Structured logging test**: Verify LogContext.correlation_id = batch_id propagated through all log events in a batch operation
-17. **Intra-batch dependency test**: Batch with parties + vendors in same file -> vendors validated successfully against staged parties
-18. **SAVEPOINT rollback test**: Compound promoter failure -> only that record's writes rolled back, no orphaned rows
-19. **skip_blocked test**: promote_batch(skip_blocked=True) skips blocked records, promotes ready ones, re-promote after fix succeeds
+11. **Provenance trace test**: Given a promoted entity, trace back to source file row via record_id -> batch_id -> source_filename + source_row
+12. **Mapping snapshot test**: Verify mapping_version + mapping_hash frozen on batch, verified on replay
+13. **Preflight test**: Compute preflight graph with missing references, verify blocked count and blocker detail
+14. **Test harness test**: Run test_mapping() on sample data, verify report accuracy without database side effects
+15. **Structured logging test**: Verify LogContext.correlation_id = batch_id propagated through all log events in a batch operation
+16. **Intra-batch dependency test**: Batch with parties + vendors in same file -> vendors validated successfully against staged parties
+17. **SAVEPOINT rollback test**: Compound promoter failure -> only that record's writes rolled back, no orphaned rows
+18. **skip_blocked test**: promote_batch(skip_blocked=True) skips blocked records, promotes ready ones, re-promote after fix succeeds

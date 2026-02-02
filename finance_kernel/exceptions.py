@@ -1368,3 +1368,148 @@ class ActorFrozenError(ActorError):
         super().__init__(
             f"Actor {actor_id} is frozen and cannot post{reason_text}"
         )
+
+
+# Approval-related exceptions
+
+
+class ApprovalError(FinanceKernelError):
+    """Base exception for approval system errors."""
+
+    code: str = "APPROVAL_ERROR"
+
+
+class ApprovalRequiredError(ApprovalError):
+    """Transition requires approval that has not been granted."""
+
+    code: str = "APPROVAL_REQUIRED"
+
+    def __init__(self, workflow_name: str, action: str, request_id: str | None = None):
+        self.workflow_name = workflow_name
+        self.action = action
+        self.request_id = request_id
+        msg = f"Approval required for {workflow_name}/{action}"
+        if request_id:
+            msg += f" (request {request_id})"
+        super().__init__(msg)
+
+
+class ApprovalNotFoundError(ApprovalError):
+    """Referenced approval request does not exist."""
+
+    code: str = "APPROVAL_NOT_FOUND"
+
+    def __init__(self, request_id: str):
+        self.request_id = request_id
+        super().__init__(f"Approval request not found: {request_id}")
+
+
+class UnauthorizedApproverError(ApprovalError):
+    """Actor does not have the required role to approve."""
+
+    code: str = "UNAUTHORIZED_APPROVER"
+
+    def __init__(self, actor_id: str, actor_role: str, required_roles: tuple):
+        self.actor_id = actor_id
+        self.actor_role = actor_role
+        self.required_roles = required_roles
+        super().__init__(
+            f"Actor {actor_id} (role={actor_role}) not authorized; "
+            f"required: {required_roles}"
+        )
+
+
+class ApprovalAlreadyResolvedError(ApprovalError):
+    """Approval request has already been resolved (AL-1)."""
+
+    code: str = "APPROVAL_ALREADY_RESOLVED"
+
+    def __init__(self, request_id: str, current_status: str):
+        self.request_id = request_id
+        self.current_status = current_status
+        super().__init__(
+            f"Approval request {request_id} already resolved: {current_status}"
+        )
+
+
+class InvalidApprovalTransitionError(ApprovalError):
+    """Status transition violates the approval lifecycle state machine (AL-1)."""
+
+    code: str = "INVALID_APPROVAL_TRANSITION"
+
+    def __init__(self, from_status: str, to_status: str):
+        self.from_status = from_status
+        self.to_status = to_status
+        super().__init__(
+            f"Invalid approval transition: {from_status} -> {to_status}"
+        )
+
+
+class PolicyDriftError(ApprovalError):
+    """Active policy version is lower than the snapshotted version (AL-5)."""
+
+    code: str = "POLICY_DRIFT"
+
+    def __init__(self, policy_name: str, snapshotted_version: int, active_version: int):
+        self.policy_name = policy_name
+        self.snapshotted_version = snapshotted_version
+        self.active_version = active_version
+        super().__init__(
+            f"Policy '{policy_name}' downgraded: request has v{snapshotted_version}, "
+            f"active is v{active_version}"
+        )
+
+
+class ApprovalCurrencyMismatchError(ApprovalError):
+    """Request currency does not match the policy's declared currency (AL-3)."""
+
+    code: str = "APPROVAL_CURRENCY_MISMATCH"
+
+    def __init__(self, request_currency: str, policy_currency: str):
+        self.request_currency = request_currency
+        self.policy_currency = policy_currency
+        super().__init__(
+            f"Currency mismatch: request={request_currency}, "
+            f"policy={policy_currency}"
+        )
+
+
+class DuplicateApprovalError(ApprovalError):
+    """Same actor attempted to approve the same request twice (AL-7)."""
+
+    code: str = "DUPLICATE_APPROVAL"
+
+    def __init__(self, request_id: str, actor_id: str):
+        self.request_id = request_id
+        self.actor_id = actor_id
+        super().__init__(
+            f"Actor {actor_id} already decided on request {request_id}"
+        )
+
+
+class TamperDetectedError(ApprovalError):
+    """Approval request hash does not match stored hash (AL-8)."""
+
+    code: str = "APPROVAL_TAMPER_DETECTED"
+
+    def __init__(self, request_id: str):
+        self.request_id = request_id
+        super().__init__(
+            f"Tamper detected on approval request {request_id}: "
+            f"hash mismatch"
+        )
+
+
+class DuplicateApprovalRequestError(ApprovalError):
+    """Duplicate pending approval request for the same transition (AL-10)."""
+
+    code: str = "DUPLICATE_APPROVAL_REQUEST"
+
+    def __init__(self, entity_type: str, entity_id: str, action: str):
+        self.entity_type = entity_type
+        self.entity_id = entity_id
+        self.action = action
+        super().__init__(
+            f"Duplicate pending request for {entity_type}/{entity_id} "
+            f"action={action}"
+        )

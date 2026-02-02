@@ -55,6 +55,7 @@ from finance_config.lifecycle import ConfigStatus
 from finance_config.loader import (
     compute_checksum,
     load_yaml_file,
+    parse_approval_policy,
     parse_control_rule,
     parse_date,
     parse_engine_config,
@@ -66,6 +67,7 @@ from finance_config.loader import (
 )
 from finance_config.schema import (
     AccountingConfigurationSet,
+    ApprovalPolicyDef,
     ControlRule,
     EngineConfigDef,
     LedgerDefinition,
@@ -187,7 +189,16 @@ def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:
             parse_subledger_contract(sc) for sc in sl_data.get("contracts", [])
         )
 
-    # 8. Parse root metadata
+    # 8. Load approval_policies.yaml (optional)
+    approval_path = fragment_dir / "approval_policies.yaml"
+    approval_policies: tuple[ApprovalPolicyDef, ...] = ()
+    if approval_path.exists():
+        ap_data = load_yaml_file(approval_path)
+        approval_policies = tuple(
+            parse_approval_policy(ap) for ap in ap_data.get("approval_policies", [])
+        )
+
+    # 9. Parse root metadata
     scope = parse_scope(root_data["scope"])
     capabilities = root_data.get("capabilities", {})
     status_str = root_data.get("status", "draft")
@@ -205,7 +216,7 @@ def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:
         for pr in root_data.get("precedence_rules", [])
     )
 
-    # 9. Compute checksum over all assembled data
+    # 10. Compute checksum over all assembled data
     all_data: dict[str, Any] = {
         "root": root_data,
         "role_bindings": len(role_bindings),
@@ -236,4 +247,5 @@ def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:
         controls=controls,
         capabilities=capabilities,
         subledger_contracts=subledger_contracts,
+        approval_policies=approval_policies,
     )

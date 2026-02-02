@@ -73,6 +73,17 @@ class AuditAction(str, Enum):
     ACCOUNT_CREATED = "account_created"
     ACCOUNT_DEACTIVATED = "account_deactivated"
 
+    # Approval lifecycle
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_GRANTED = "approval_granted"
+    APPROVAL_REJECTED = "approval_rejected"
+    APPROVAL_ESCALATED = "approval_escalated"
+    APPROVAL_AUTO_APPROVED = "approval_auto_approved"
+    APPROVAL_EXPIRED = "approval_expired"
+    APPROVAL_CANCELLED = "approval_cancelled"
+    APPROVAL_POLICY_DRIFT = "approval_policy_version_drift"
+    APPROVAL_TAMPER_DETECTED = "approval_tamper_detected"
+
 
 class AuditEvent(Base):
     """

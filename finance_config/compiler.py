@@ -59,6 +59,8 @@ from finance_config.guard_ast import validate_guard_expression
 from finance_config.lifecycle import ConfigStatus
 from finance_config.schema import (
     AccountingConfigurationSet,
+    ApprovalPolicyDef,
+    ApprovalRuleDef,
     ConfigScope,
     ControlRule,
     EngineConfigDef,
@@ -160,6 +162,37 @@ class CompiledControl:
     expression: str
     reason_code: str
     message: str = ""
+
+
+@dataclass(frozen=True)
+class CompiledApprovalRule:
+    """Validated approval rule with Decimal thresholds."""
+
+    rule_name: str
+    priority: int
+    min_amount: str | None = None
+    max_amount: str | None = None
+    required_roles: tuple[str, ...] = ()
+    min_approvers: int = 1
+    require_distinct_roles: bool = False
+    guard_expression: str | None = None
+    auto_approve_below: str | None = None
+    escalation_timeout_hours: int | None = None
+
+
+@dataclass(frozen=True)
+class CompiledApprovalPolicy:
+    """Validated approval policy ready for runtime use."""
+
+    policy_name: str
+    version: int
+    applies_to_workflow: str
+    applies_to_action: str | None = None
+    policy_currency: str | None = None
+    rules: tuple[CompiledApprovalRule, ...] = ()
+    effective_from: str | None = None
+    effective_to: str | None = None
+    policy_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -296,6 +329,7 @@ class CompiledPolicyPack:
     canonical_fingerprint: str
     decision_trace: PolicyDecisionTrace
     subledger_contracts: tuple[SubledgerContractDef, ...] = ()
+    approval_policies: tuple[CompiledApprovalPolicy, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +443,11 @@ def compile_policy_pack(
     # 7. Compile controls
     compiled_controls = _compile_controls(config.controls, errors)
 
+    # 8. Compile approval policies
+    compiled_approval_policies = _compile_approval_policies(
+        config.approval_policies, errors
+    )
+
     # Fail on errors (not warnings)
     actual_errors = [e for e in errors if e.severity == "error"]
     if actual_errors:
@@ -432,6 +471,7 @@ def compile_policy_pack(
         canonical_fingerprint=fingerprint,
         decision_trace=decision_trace,
         subledger_contracts=config.subledger_contracts,
+        approval_policies=tuple(compiled_approval_policies),
     )
 
 
@@ -837,6 +877,135 @@ def _check_json_type(value: Any, json_type: str) -> bool:
     if json_type == "object":
         return isinstance(value, dict)
     return True  # Unknown type — pass
+
+
+def _compile_approval_policies(
+    policies: tuple[ApprovalPolicyDef, ...],
+    errors: list[CompilationError],
+) -> list[CompiledApprovalPolicy]:
+    """Validate and compile approval policies.
+
+    Validates:
+    - Guard expressions via restricted AST
+    - Amount thresholds are valid Decimal strings
+    - Rule priorities are unique within each policy (AL-6)
+    - Computes policy_hash (AL-2)
+    """
+    compiled: list[CompiledApprovalPolicy] = []
+
+    for policy_def in policies:
+        # Validate rule priorities are unique (AL-6)
+        priorities = [r.priority for r in policy_def.rules]
+        if len(priorities) != len(set(priorities)):
+            errors.append(
+                CompilationError(
+                    category="approval",
+                    message=(
+                        f"Approval policy '{policy_def.policy_name}' has "
+                        f"duplicate rule priorities: {priorities}"
+                    ),
+                    policy_name=policy_def.policy_name,
+                )
+            )
+
+        compiled_rules: list[CompiledApprovalRule] = []
+        for rule in policy_def.rules:
+            # Validate amount thresholds are valid Decimal strings
+            for field_name in ("min_amount", "max_amount", "auto_approve_below"):
+                val = getattr(rule, field_name)
+                if val is not None:
+                    try:
+                        from decimal import Decimal, InvalidOperation
+                        Decimal(val)
+                    except (InvalidOperation, ValueError):
+                        errors.append(
+                            CompilationError(
+                                category="approval",
+                                message=(
+                                    f"Approval rule '{rule.rule_name}' in policy "
+                                    f"'{policy_def.policy_name}': "
+                                    f"'{field_name}' is not a valid Decimal: {val}"
+                                ),
+                                policy_name=policy_def.policy_name,
+                            )
+                        )
+
+            # Validate guard expression via restricted AST
+            if rule.guard_expression:
+                ast_errors = validate_guard_expression(rule.guard_expression)
+                if ast_errors:
+                    for ast_err in ast_errors:
+                        errors.append(
+                            CompilationError(
+                                category="approval",
+                                message=(
+                                    f"Invalid guard expression in approval rule "
+                                    f"'{rule.rule_name}' of policy "
+                                    f"'{policy_def.policy_name}': {ast_err.message}"
+                                ),
+                                policy_name=policy_def.policy_name,
+                            )
+                        )
+
+            compiled_rules.append(
+                CompiledApprovalRule(
+                    rule_name=rule.rule_name,
+                    priority=rule.priority,
+                    min_amount=rule.min_amount,
+                    max_amount=rule.max_amount,
+                    required_roles=rule.required_roles,
+                    min_approvers=rule.min_approvers,
+                    require_distinct_roles=rule.require_distinct_roles,
+                    guard_expression=rule.guard_expression,
+                    auto_approve_below=rule.auto_approve_below,
+                    escalation_timeout_hours=rule.escalation_timeout_hours,
+                )
+            )
+
+        # Compute policy hash (AL-2)
+        policy_data = {
+            "policy_name": policy_def.policy_name,
+            "version": policy_def.version,
+            "applies_to_workflow": policy_def.applies_to_workflow,
+            "applies_to_action": policy_def.applies_to_action,
+            "policy_currency": policy_def.policy_currency,
+            "rules": [
+                {
+                    "rule_name": r.rule_name,
+                    "priority": r.priority,
+                    "min_amount": r.min_amount,
+                    "max_amount": r.max_amount,
+                    "required_roles": list(r.required_roles),
+                    "min_approvers": r.min_approvers,
+                    "require_distinct_roles": r.require_distinct_roles,
+                    "guard_expression": r.guard_expression,
+                    "auto_approve_below": r.auto_approve_below,
+                }
+                for r in compiled_rules
+            ],
+        }
+        policy_hash = hashlib.sha256(
+            json.dumps(policy_data, sort_keys=True).encode()
+        ).hexdigest()
+
+        # Sort rules by priority (AL-6)
+        sorted_rules = sorted(compiled_rules, key=lambda r: r.priority)
+
+        compiled.append(
+            CompiledApprovalPolicy(
+                policy_name=policy_def.policy_name,
+                version=policy_def.version,
+                applies_to_workflow=policy_def.applies_to_workflow,
+                applies_to_action=policy_def.applies_to_action,
+                policy_currency=policy_def.policy_currency,
+                rules=tuple(sorted_rules),
+                effective_from=policy_def.effective_from,
+                effective_to=policy_def.effective_to,
+                policy_hash=policy_hash,
+            )
+        )
+
+    return compiled
 
 
 def _compute_fingerprint(config: AccountingConfigurationSet) -> str:

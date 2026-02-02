@@ -35,7 +35,7 @@ config time.
 
 ## 2. ERP Data Ingestion System
 
-**Status:** NOT STARTED -- plan approved (v3), awaiting implementation
+**Status:** NOT STARTED -- plan approved (v4), awaiting implementation
 **Full plan:** `plans/ERP_INGESTION_PLAN.md`
 
 Design and implement a configuration-driven ERP data ingestion system with
@@ -43,6 +43,10 @@ staging, per-record validation, and granular visibility into processing status.
 YAML-driven field mappings, pre-packaged validators, and pluggable entity
 promoters for migration from other ERPs. Full integration with structured
 logging (LogContext) and hash-chained audit trail (AuditorService).
+
+v4 simplification: reuses kernel's `EventFieldType` and `validate_field_type()`,
+drops canonical event stream (AuditEvents sufficient), eliminates 3 redundant
+config/domain types, removes transient statuses and per-record mapping snapshots.
 
 | Phase | Description | Status | Depends On |
 |-------|------------|--------|------------|
@@ -53,12 +57,12 @@ logging (LogContext) and hash-chained audit trail (AuditorService).
 | 4 | Mapping engine + test harness (pure) | pending | Phases 0, 3 |
 | 5 | Validation pipeline (with intra-batch dependency resolution) | pending | Phases 0, 4 |
 | 6 | Import service (with structured logging) | pending | Phases 1, 2, 4, 5 |
-| 7 | Promotion service (SAVEPOINT atomicity, preflight graph, skip_blocked, event stream, audit) | pending | Phases 1, 6 |
+| 7 | Promotion service (SAVEPOINT atomicity, preflight graph, skip_blocked, audit) | pending | Phases 1, 6 |
 | 8 | Entity promoters | pending | Phase 7 |
-| 9 | Tests (~260 across 13 files) | pending | All phases |
+| 9 | Tests (~240 across 13 files) | pending | All phases |
 
-**Invariants:** IM-1 through IM-16 (see full plan)
-**Key decisions:** 19 decisions documented (see full plan)
+**Invariants:** IM-1 through IM-15 (see full plan)
+**Key decisions:** 20 decisions documented (see full plan)
 
 ---
 
@@ -101,6 +105,40 @@ logging (LogContext) and hash-chained audit trail (AuditorService).
 13. **Deprecation cleanup** -- Lint/architecture test forbidding new reads/writes of `JournalEntryStatus.REVERSED` outside migration code.
 14. **API symmetry** -- Add `can_reverse(entry_id)` method to `ReversalService` for UI/agent preflight checks.
 15. **Replay harness** -- Deterministic replay test: replay original + reversal events against blank ledger, assert identical final balances and entry hashes.
+
+---
+
+## 4. Kernel Architecture Hygiene (Completed 2026-02-01)
+
+**Status:** DONE
+
+Audited `finance_kernel/` for architectural violations. Found and fixed 2 issues:
+
+### Fixed
+
+1. **ContractService missing Clock injection** (`finance_kernel/services/contract_service.py`)
+   - `get_contracts_needing_ice()` called `date.today()` directly
+   - Added `Clock` parameter to `__init__` (optional, defaults to `SystemClock`)
+   - Replaced `date.today()` with `self._clock.now().date()`
+   - Follows same pattern as `PeriodService`, `ApprovalService`, etc.
+
+2. **PolicyAuthorityBuilder calling `datetime.now()` in domain code** (`finance_kernel/domain/policy_authority.py`)
+   - Builder `__init__` used `datetime.now()` as default for `_effective_from`
+   - Changed default to `None` (domain code must be pure — no I/O, no clock)
+   - Updated `PolicyAuthority.effective_from` type from `datetime` to `datetime | None`
+   - All downstream code already handles `None` correctly (`is_effective()` treats `None` as always-effective)
+
+### Acknowledged (no fix needed)
+
+- `Contract.is_within_pop` model property uses `date.today()` — documented inline as acceptable for model layer; callers needing determinism use `ContractService` with injected Clock.
+
+### Verified clean
+
+- No forbidden imports (finance_modules/services/config) into kernel
+- No `float` for money — `Decimal` throughout
+- No `MAX(seq)+1` patterns
+- Domain purity intact (no ORM/I/O imports)
+- All 270 affected tests pass
 
 ---
 
