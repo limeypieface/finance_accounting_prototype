@@ -105,6 +105,14 @@ class PayrollConfig:
     aca_tracking: bool = True
     new_hire_reporting: bool = True
 
+    # DCAA Timesheet Controls
+    max_retroactive_entry_days: int = 7
+    require_supervisor_approval: bool = True
+    total_time_tolerance_hours: Decimal = Decimal("0.25")
+    enable_floor_checks: bool = True
+    floor_check_frequency_days: int = 30
+    enable_concurrent_overlap_check: bool = True
+
     def __post_init__(self):
         # Validate pay frequencies
         if self.default_pay_frequency not in VALID_PAY_FREQUENCIES:
@@ -171,6 +179,14 @@ class PayrollConfig:
             thresholds = [rule.threshold_hours for rule in self.overtime_rules]
             if thresholds != sorted(thresholds):
                 raise ValueError("overtime_rules must be sorted by threshold_hours ascending")
+
+        # Validate DCAA timesheet controls
+        if self.max_retroactive_entry_days < 0:
+            raise ValueError("max_retroactive_entry_days cannot be negative")
+        if self.total_time_tolerance_hours < 0:
+            raise ValueError("total_time_tolerance_hours cannot be negative")
+        if self.floor_check_frequency_days <= 0:
+            raise ValueError("floor_check_frequency_days must be positive")
 
         logger.info(
             "payroll_config_initialized",

@@ -46,12 +46,15 @@ class PartyType(str, Enum):
 
     Contract: Every Party has exactly one PartyType.  The type determines
     which subledger (AR, AP, PAYROLL) and which guards apply.
+    SYSTEM and MIGRATION_SERVICE are for migration/import-only posting paths.
     """
 
     CUSTOMER = "customer"
     SUPPLIER = "supplier"
     EMPLOYEE = "employee"
     INTERCOMPANY = "intercompany"
+    SYSTEM = "system"                      # System-generated or migration actor
+    MIGRATION_SERVICE = "migration_service"  # Migration/import service actor
 
 
 class PartyStatus(str, Enum):

@@ -4,7 +4,7 @@ Work-in-Process Domain Models (``finance_modules.wip.models``).
 Responsibility
 --------------
 Frozen dataclass value objects representing the nouns of manufacturing:
-work orders, operations, labor charges, overhead allocation, scrap records,
+manufacturing orders, operations, labor charges, overhead allocation, scrap records,
 byproduct records, production cost summaries, and unit cost breakdowns.
 
 Architecture position
@@ -41,7 +41,7 @@ logger = get_logger("modules.wip.models")
 
 
 class WorkOrderStatus(Enum):
-    """Work order lifecycle states."""
+    """Manufacturing order lifecycle states."""
     PLANNED = "planned"
     RELEASED = "released"
     IN_PROGRESS = "in_progress"
@@ -51,7 +51,7 @@ class WorkOrderStatus(Enum):
 
 
 class OperationStatus(Enum):
-    """Operation status within a work order."""
+    """Operation status within a manufacturing order."""
     NOT_STARTED = "not_started"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
@@ -118,7 +118,7 @@ class WorkOrder:
 
 @dataclass(frozen=True)
 class WorkOrderLine:
-    """Material component for a work order (BOM explosion)."""
+    """Material component for a manufacturing order (BOM explosion)."""
     id: UUID
     work_order_id: UUID
     item_id: UUID  # component item
@@ -130,7 +130,7 @@ class WorkOrderLine:
 
 @dataclass(frozen=True)
 class Operation:
-    """A manufacturing operation within a work order."""
+    """A manufacturing operation within a manufacturing order."""
     id: UUID
     work_order_id: UUID
     sequence: int
@@ -160,7 +160,7 @@ class LaborEntry:
 
 @dataclass(frozen=True)
 class OverheadApplication:
-    """Overhead applied to a work order."""
+    """Overhead applied to a manufacturing order."""
     id: UUID
     work_order_id: UUID
     application_date: date

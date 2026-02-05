@@ -65,6 +65,7 @@ from finance_config.schema import (
     ControlRule,
     EngineConfigDef,
     GuardDef,
+    ImportMappingDef,
     LedgerEffectDef,
     LineMappingDef,
     PolicyDefinition,
@@ -133,6 +134,7 @@ class CompiledPolicy:
     precedence: PrecedenceDef | None
     valuation_model: str | None
     line_mappings: tuple[LineMappingDef, ...]
+    intent_source: str | None
     required_engines: tuple[str, ...]
     engine_parameters_ref: str | None
     variance_disposition: str | None
@@ -313,6 +315,7 @@ class CompiledPolicyPack:
         capabilities: Feature gates
         canonical_fingerprint: Deterministic hash of entire pack
         decision_trace: Build-time debugging artifact
+        import_mappings: Import mapping definitions for data transition (ERP ingestion)
     """
 
     config_id: str
@@ -330,6 +333,7 @@ class CompiledPolicyPack:
     decision_trace: PolicyDecisionTrace
     subledger_contracts: tuple[SubledgerContractDef, ...] = ()
     approval_policies: tuple[CompiledApprovalPolicy, ...] = ()
+    import_mappings: tuple[ImportMappingDef, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +414,7 @@ def compile_policy_pack(
                 precedence=policy_def.precedence,
                 valuation_model=policy_def.valuation_model,
                 line_mappings=policy_def.line_mappings,
+                intent_source=getattr(policy_def, "intent_source", None),
                 required_engines=policy_def.required_engines,
                 engine_parameters_ref=policy_def.engine_parameters_ref,
                 variance_disposition=policy_def.variance_disposition,
@@ -472,6 +477,7 @@ def compile_policy_pack(
         decision_trace=decision_trace,
         subledger_contracts=config.subledger_contracts,
         approval_policies=tuple(compiled_approval_policies),
+        import_mappings=config.import_mappings,
     )
 
 
@@ -556,6 +562,15 @@ def _is_admissible(policy: CompiledPolicy, capabilities: dict[str, bool]) -> boo
     return all(
         capabilities.get(tag.lower(), False) for tag in policy.capability_tags
     )
+
+
+def is_policy_admissible(policy: CompiledPolicy, capabilities: dict[str, bool]) -> bool:
+    """Return True if the policy is admissible given enabled capabilities (runtime gating).
+
+    Use when filtering policy candidates by pack.capabilities so that policies
+    whose capability_tags are not enabled in the current config are excluded.
+    """
+    return _is_admissible(policy, capabilities)
 
 
 def _check_dispatch_ambiguity(
@@ -1027,6 +1042,7 @@ def _compute_fingerprint(config: AccountingConfigurationSet) -> str:
             "policy_names": sorted(p.name for p in config.policies),
             "role_binding_count": len(config.role_bindings),
             "capability_keys": sorted(config.capabilities.keys()),
+            "import_mapping_names": sorted(im.name for im in config.import_mappings),
         },
         sort_keys=True,
     )

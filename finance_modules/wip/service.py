@@ -27,6 +27,12 @@ Invariants enforced
 * L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
 * L5  -- Atomicity: link creation and journal posting share a single
           transaction (``auto_commit=False``).
+* R25 -- Kernel primitives only: Money, ArtifactRef from finance_kernel.
+* R26 -- Journal + link graph are the system of record; WIP ORM is an
+          operational projection, persisted in the same transaction.
+* R27 -- Ledger impact is defined by kernel policy (profiles).
+* Workflow executor required; every financial action calls
+  ``execute_transition`` (guards enforced, no bypass).
 
 Failure modes
 -------------
@@ -46,7 +52,8 @@ for full cost-flow traceability.
 
 Usage::
 
-    service = WipService(session, role_resolver, clock)
+    # workflow_executor is required — guards are always enforced (no bypass).
+    service = WipService(session, role_resolver, workflow_executor, clock=clock)
     result = service.record_material_issue(
         issue_id=uuid4(), job_id="JOB-100",
         item_id="STEEL-001", quantity=Decimal("50"),
@@ -75,11 +82,13 @@ from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
 from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
 )
+from finance_modules._posting_helpers import run_workflow_guard
 from finance_modules.wip.models import (
     ByproductRecord,
     ProductionCostSummary,
@@ -91,7 +100,20 @@ from finance_modules.wip.orm import (
     OverheadApplicationModel,
     WorkOrderModel,
 )
+from finance_modules.wip.workflows import (
+    WIP_BYPRODUCT_WORKFLOW,
+    WIP_COMPLETION_WORKFLOW,
+    WIP_LABOR_CHARGE_WORKFLOW,
+    WIP_LABOR_VARIANCE_WORKFLOW,
+    WIP_MATERIAL_ISSUE_WORKFLOW,
+    WIP_MATERIAL_VARIANCE_WORKFLOW,
+    WIP_OVERHEAD_VARIANCE_WORKFLOW,
+    WIP_OVERHEAD_WORKFLOW,
+    WIP_REWORK_WORKFLOW,
+    WIP_SCRAP_WORKFLOW,
+)
 from finance_services.valuation_service import ValuationLayer
+from finance_services.workflow_executor import WorkflowExecutor
 
 logger = get_logger("modules.wip.service")
 
@@ -136,17 +158,21 @@ class WipService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor  # Required: guards always enforced
 
-        # Kernel posting (auto_commit=False -- we own the boundary)
+        # Kernel posting (auto_commit=False -- we own the boundary). G14: actor validation mandatory.
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
         # Stateful engines (share session for atomicity)
@@ -174,12 +200,24 @@ class WipService:
         warehouse: str | None = None,
     ) -> ModulePostingResult:
         """
-        Record raw materials issued to a work order.
+        Record raw materials issued to a manufacturing order.
 
         Engine: LinkGraphService establishes material-to-job link.
         Profile: wip.material_issued -> WipMaterialIssued
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                WIP_MATERIAL_ISSUE_WORKFLOW,
+                "wip_material_issue",
+                issue_id,
+                actor_id=actor_id,
+                amount=Decimal(str(cost)),
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
             # Engine: establish production link (material -> job)
             from finance_kernel.domain.economic_link import EconomicLink, LinkType
             material_ref = ArtifactRef(ArtifactType.COST_LOT, issue_id)
@@ -254,12 +292,24 @@ class WipService:
         labor_code: str | None = None,
     ) -> ModulePostingResult:
         """
-        Record direct labor charged to a work order.
+        Record direct labor charged to a manufacturing order.
 
         Profile: wip.labor_charged -> WipLaborCharged
         """
         total_cost = hours * rate
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                WIP_LABOR_CHARGE_WORKFLOW,
+                "wip_labor_charge",
+                charge_id,
+                actor_id=actor_id,
+                amount=total_cost,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
             logger.info("wip_labor_charge", extra={
                 "charge_id": str(charge_id),
                 "job_id": job_id,
@@ -323,7 +373,7 @@ class WipService:
         rate: Decimal | None = None,
     ) -> ModulePostingResult:
         """
-        Record overhead applied to a work order.
+        Record overhead applied to a manufacturing order.
 
         Engine: AllocationEngine can be used upstream to compute the
         allocation_amount across multiple jobs; this method records the
@@ -332,6 +382,18 @@ class WipService:
         Profile: wip.overhead_applied -> WipOverheadApplied
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                WIP_OVERHEAD_WORKFLOW,
+                "wip_overhead",
+                uuid4(),
+                actor_id=actor_id,
+                amount=allocation_amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
             logger.info("wip_overhead_allocation", extra={
                 "job_id": job_id,
                 "allocation_amount": str(allocation_amount),
@@ -392,7 +454,7 @@ class WipService:
         item_id: str | None = None,
     ) -> ModulePostingResult:
         """
-        Complete a job and transfer WIP to finished goods.
+        Complete a manufacturing order and transfer WIP to finished goods.
 
         Engine: LinkGraphService links production job to finished goods.
         Profile: wip.completion -> WipCompletion
@@ -405,6 +467,18 @@ class WipService:
             raise ValueError("Either total_cost or unit_cost must be provided")
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                WIP_COMPLETION_WORKFLOW,
+                "wip_completion",
+                uuid4(),
+                actor_id=actor_id,
+                amount=total_cost,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
             # Engine: establish completion link (job -> finished goods)
             from finance_kernel.domain.economic_link import EconomicLink, LinkType
 
@@ -492,11 +566,23 @@ class WipService:
         reason: str | None = None,
     ) -> ModulePostingResult:
         """
-        Record scrap on a work order.
+        Record scrap on a manufacturing order.
 
         Profile: wip.scrap -> WipScrap
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                WIP_SCRAP_WORKFLOW,
+                "wip_scrap",
+                scrap_id,
+                actor_id=actor_id,
+                amount=cost,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
             logger.info("wip_scrap_recorded", extra={
                 "scrap_id": str(scrap_id),
                 "job_id": job_id,
@@ -520,7 +606,7 @@ class WipService:
             )
 
             if result.is_success:
-                # Query for existing work order by order_number to update scrap qty
+                # Query for existing manufacturing order by order_number to update scrap qty
                 existing_wo = (
                     self._session.query(WorkOrderModel)
                     .filter(WorkOrderModel.order_number == job_id)
@@ -556,11 +642,23 @@ class WipService:
         reason: str | None = None,
     ) -> ModulePostingResult:
         """
-        Record rework costs charged to a work order.
+        Record rework costs charged to a manufacturing order.
 
         Profile: wip.rework -> WipRework
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                WIP_REWORK_WORKFLOW,
+                "wip_rework",
+                rework_id,
+                actor_id=actor_id,
+                amount=cost,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
             logger.info("wip_rework_recorded", extra={
                 "rework_id": str(rework_id),
                 "job_id": job_id,
@@ -626,6 +724,18 @@ class WipService:
                 "is_favorable": variance_result.is_favorable,
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                WIP_LABOR_VARIANCE_WORKFLOW,
+                "wip_labor_variance",
+                uuid4(),
+                actor_id=actor_id,
+                amount=abs(variance_result.variance.amount),
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return variance_result, failure
             result = self._poster.post_event(
                 event_type="wip.labor_variance",
                 payload={
@@ -682,6 +792,18 @@ class WipService:
                 "is_favorable": variance_result.is_favorable,
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                WIP_MATERIAL_VARIANCE_WORKFLOW,
+                "wip_material_variance",
+                uuid4(),
+                actor_id=actor_id,
+                amount=abs(variance_result.variance.amount),
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return variance_result, failure
             result = self._poster.post_event(
                 event_type="wip.material_variance",
                 payload={
@@ -736,6 +858,18 @@ class WipService:
                 "is_favorable": variance_result.is_favorable,
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                WIP_OVERHEAD_VARIANCE_WORKFLOW,
+                "wip_overhead_variance",
+                uuid4(),
+                actor_id=actor_id,
+                amount=abs(variance_result.variance.amount),
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return variance_result, failure
             result = self._poster.post_event(
                 event_type="wip.overhead_variance",
                 payload={
@@ -822,6 +956,28 @@ class WipService:
         """
         byproduct_id = uuid4()
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                WIP_BYPRODUCT_WORKFLOW,
+                "wip_byproduct",
+                byproduct_id,
+                actor_id=actor_id,
+                amount=Decimal(str(value)),
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return (
+                    ByproductRecord(
+                        id=byproduct_id,
+                        job_id=job_id,
+                        item_id=item_id,
+                        description=description,
+                        value=value,
+                        quantity=quantity,
+                    ),
+                    failure,
+                )
             logger.info("wip_byproduct_recorded", extra={
                 "byproduct_id": str(byproduct_id),
                 "job_id": str(job_id),

@@ -13,7 +13,7 @@ Modules:
 - AP: Vendor invoices, payments, accruals
 - AR: Customer invoices, receipts, collections
 - Inventory: Stock items, receipts, issues, valuation
-- WIP: Work orders, labor, overhead, variances
+- WIP: Manufacturing orders, labor, overhead, variances
 - Assets: Fixed assets, depreciation, disposal
 - Expense: Travel & expense reports, corporate cards
 - Tax: Sales/use tax, VAT, reporting

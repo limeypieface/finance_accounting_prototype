@@ -1,0 +1,9 @@
+# Controls for US-GAAP-2026-SINDRI. Events posted from Sindri (producer=sindri) are
+# subject to these guards; validation also runs in finance_services.integration.
+controls:
+- name: positive_amount_required
+  applies_to: '*'
+  action: reject
+  expression: payload.amount <= 0
+  reason_code: INVALID_AMOUNT
+  message: Transaction amount must be positive

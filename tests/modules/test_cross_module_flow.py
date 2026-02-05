@@ -216,19 +216,29 @@ class TestAllServicesPostSuccessfully:
         test_operation,        # depends on test_work_order (auto-resolved)
         test_pay_period,
         test_payroll_employee,  # depends on test_employee_party (auto-resolved)
+        workflow_executor,
+        party_service,
+        test_actor_party,
     ):
         """Instantiate service and call one method through the real pipeline."""
         mod = importlib.import_module(module_path)
         svc_class = getattr(mod, class_name)
-        svc = svc_class(
+        sig = inspect.signature(svc_class.__init__)
+        ctor_kwargs = dict(
             session=session,
             role_resolver=module_role_resolver,
             clock=deterministic_clock,
         )
+        if "workflow_executor" in sig.parameters:
+            ctor_kwargs["workflow_executor"] = workflow_executor
+        if "party_service" in sig.parameters:
+            ctor_kwargs["party_service"] = party_service
+        svc = svc_class(**ctor_kwargs)
 
-        # Resolve uuid4 callables to actual UUIDs
+        # Method kwargs from parametrize (not constructor kwargs)
+        method_kwargs = dict(kwargs)
         resolved_kwargs = {}
-        for k, v in kwargs.items():
+        for k, v in method_kwargs.items():
             if v is uuid4:
                 resolved_kwargs[k] = uuid4()
             else:

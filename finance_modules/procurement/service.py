@@ -43,7 +43,10 @@ Three-way matching results are tracked for SOX compliance.
 
 Usage::
 
-    service = ProcurementService(session, role_resolver, clock)
+    # workflow_executor is required — guards are always enforced.
+    service = ProcurementService(
+        session, role_resolver, orchestrator.workflow_executor, clock=clock,
+    )
     result = service.create_purchase_order(
         po_id=uuid4(), vendor_id="V-001",
         lines=[{"item_code": "WIDGET-001", "quantity": "100", "unit_price": "25.00"}],
@@ -80,10 +83,25 @@ from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
 from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_modules._posting_helpers import run_workflow_guard
+from finance_services.workflow_executor import WorkflowExecutor
+from finance_modules.procurement.workflows import (
+    PROCUREMENT_AMEND_PO_WORKFLOW,
+    PROCUREMENT_CONVERT_REQUISITION_TO_PO_WORKFLOW,
+    PROCUREMENT_CREATE_PO_WORKFLOW,
+    PROCUREMENT_CREATE_REQUISITION_WORKFLOW,
+    PROCUREMENT_MATCH_RECEIPT_TO_PO_WORKFLOW,
+    PROCUREMENT_RECORD_COMMITMENT_WORKFLOW,
+    PROCUREMENT_RECORD_PRICE_VARIANCE_WORKFLOW,
+    PROCUREMENT_RECORD_QUANTITY_VARIANCE_WORKFLOW,
+    PROCUREMENT_RECEIVE_GOODS_WORKFLOW,
+    PROCUREMENT_RELIEVE_COMMITMENT_WORKFLOW,
 )
 from finance_modules.procurement.models import (
     PurchaseOrderVersion,
@@ -91,6 +109,8 @@ from finance_modules.procurement.models import (
     SupplierScore,
 )
 from finance_modules.procurement.orm import (
+    PurchaseOrderLineModel,
+    PurchaseOrderModel,
     PurchaseRequisitionModel,
     ReceivingReportModel,
     RequisitionLineModel,
@@ -137,17 +157,21 @@ class ProcurementService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor  # Required: guards always enforced
 
-        # Kernel posting (auto_commit=False -- we own the boundary)
+        # Kernel posting (auto_commit=False -- we own the boundary). G14: actor validation mandatory.
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
         # Stateful engines (share session for atomicity)
@@ -186,6 +210,19 @@ class ProcurementService:
                 price = Decimal(str(line.get("unit_price", "0")))
                 total_amount += qty * price
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROCUREMENT_CREATE_PO_WORKFLOW,
+                "purchase_order",
+                po_id,
+                actor_id=actor_id,
+                amount=total_amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("procurement_po_started", extra={
                 "po_id": str(po_id),
                 "vendor_id": vendor_id,
@@ -220,6 +257,33 @@ class ProcurementService:
             )
 
             if result.is_success:
+                po_model = PurchaseOrderModel(
+                    id=po_id,
+                    po_number=str(po_id),
+                    vendor_id=vendor_id,
+                    order_date=effective_date,
+                    total_amount=total_amount,
+                    currency=currency,
+                    status="draft",
+                    created_by_id=actor_id,
+                )
+                self._session.add(po_model)
+                for idx, line in enumerate(lines):
+                    qty = Decimal(str(line.get("quantity", "0")))
+                    price = Decimal(str(line.get("unit_price", "0")))
+                    line_total = qty * price
+                    self._session.add(
+                        PurchaseOrderLineModel(
+                            id=uuid4(),
+                            purchase_order_id=po_id,
+                            line_number=idx + 1,
+                            item_code=str(line.get("item_code", "")),
+                            quantity=qty,
+                            unit_price=price,
+                            line_total=line_total,
+                            created_by_id=actor_id,
+                        )
+                    )
                 self._session.commit()
             else:
                 self._session.rollback()
@@ -251,6 +315,19 @@ class ProcurementService:
         Profile: procurement.commitment_recorded -> POCommitment
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROCUREMENT_RECORD_COMMITMENT_WORKFLOW,
+                "procurement_commitment",
+                commitment_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("procurement_commitment_started", extra={
                 "commitment_id": str(commitment_id),
                 "po_id": str(po_id),
@@ -302,6 +379,19 @@ class ProcurementService:
         Profile: procurement.commitment_relieved -> POCommitmentRelief
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROCUREMENT_RELIEVE_COMMITMENT_WORKFLOW,
+                "procurement_commitment",
+                relief_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("procurement_commitment_relief_started", extra={
                 "relief_id": str(relief_id),
                 "commitment_id": str(commitment_id),
@@ -358,12 +448,23 @@ class ProcurementService:
         """
         try:
             # Calculate total receipt amount from lines
-            total_amount = Decimal("0")
+            total_amount_pre = Decimal("0")
             for line in lines:
-                qty = Decimal(str(line.get("quantity", "0")))
-                price = Decimal(str(line.get("unit_price", "0")))
-                total_amount += qty * price
+                total_amount_pre += Decimal(str(line.get("quantity", "0"))) * Decimal(str(line.get("unit_price", "0")))
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROCUREMENT_RECEIVE_GOODS_WORKFLOW,
+                "procurement_receipt",
+                receipt_id,
+                actor_id=actor_id,
+                amount=total_amount_pre,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
 
+            total_amount = total_amount_pre
             logger.info("procurement_receive_started", extra={
                 "receipt_id": str(receipt_id),
                 "po_id": str(po_id),
@@ -480,6 +581,19 @@ class ProcurementService:
                  (variance posted as encumbrance relief adjustment)
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROCUREMENT_RECORD_PRICE_VARIANCE_WORKFLOW,
+                "procurement_price_variance",
+                invoice_id,
+                actor_id=actor_id,
+                amount=abs(variance_amount),
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("procurement_ppv_started", extra={
                 "po_id": str(po_id),
                 "invoice_id": str(invoice_id),
@@ -580,6 +694,19 @@ class ProcurementService:
                 price = Decimal(str(item.get("estimated_unit_cost", "0")))
                 total_amount += qty * price
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROCUREMENT_CREATE_REQUISITION_WORKFLOW,
+                "procurement_requisition",
+                requisition_id,
+                actor_id=actor_id,
+                amount=total_amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("procurement_requisition_started", extra={
                 "requisition_id": str(requisition_id),
                 "requester_id": str(requester_id),
@@ -664,6 +791,19 @@ class ProcurementService:
         Engine: LinkGraphService to create DERIVED_FROM link (PO -> Requisition).
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROCUREMENT_CONVERT_REQUISITION_TO_PO_WORKFLOW,
+                "procurement_requisition",
+                requisition_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("procurement_req_conversion_started", extra={
                 "requisition_id": str(requisition_id),
                 "po_id": str(po_id),
@@ -762,23 +902,35 @@ class ProcurementService:
 
         Profile: procurement.po_amended -> POAmended
         """
+        po_version = PurchaseOrderVersion(
+            po_id=po_id,
+            version=version,
+            amendment_date=effective_date,
+            amendment_reason=amendment_reason,
+            changes=tuple(changes),
+            previous_total=Decimal("0"),
+            new_total=abs(delta_amount),
+            amended_by=actor_id,
+        )
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROCUREMENT_AMEND_PO_WORKFLOW,
+                "purchase_order",
+                po_id,
+                actor_id=actor_id,
+                amount=abs(delta_amount),
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return po_version, failure
+
             logger.info("procurement_po_amendment_started", extra={
                 "po_id": str(po_id),
                 "delta_amount": str(delta_amount),
                 "version": version,
             })
-
-            po_version = PurchaseOrderVersion(
-                po_id=po_id,
-                version=version,
-                amendment_date=effective_date,
-                amendment_reason=amendment_reason,
-                changes=tuple(changes),
-                previous_total=Decimal("0"),
-                new_total=abs(delta_amount),
-                amended_by=actor_id,
-            )
 
             payload: dict[str, Any] = {
                 "amount": str(abs(delta_amount)),
@@ -832,13 +984,7 @@ class ProcurementService:
         Profile: procurement.receipt_matched -> ReceiptMatched
         """
         try:
-            logger.info("procurement_receipt_match_started", extra={
-                "receipt_id": str(receipt_id),
-                "po_id": str(po_id),
-                "matched_amount": str(matched_amount),
-            })
-
-            # Engine: MatchingEngine for validation
+            # Engine: MatchingEngine for validation (pure; run before transition so we have match_result for early return)
             match_result = self._matching.create_match(
                 documents=[
                     MatchCandidate(
@@ -858,6 +1004,25 @@ class ProcurementService:
                 as_of_date=effective_date,
                 tolerance=MatchTolerance(),
             )
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROCUREMENT_MATCH_RECEIPT_TO_PO_WORKFLOW,
+                "procurement_receipt",
+                receipt_id,
+                actor_id=actor_id,
+                amount=matched_amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return match_result, failure
+
+            logger.info("procurement_receipt_match_started", extra={
+                "receipt_id": str(receipt_id),
+                "po_id": str(po_id),
+                "matched_amount": str(matched_amount),
+            })
 
             # Engine: FULFILLED_BY link (PO -> Receipt)
             po_ref = ArtifactRef.purchase_order(po_id)
@@ -979,6 +1144,19 @@ class ProcurementService:
         Profile: procurement.quantity_variance -> QuantityVariance
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROCUREMENT_RECORD_QUANTITY_VARIANCE_WORKFLOW,
+                "procurement_quantity_variance",
+                receipt_id,
+                actor_id=actor_id,
+                amount=abs(variance_amount),
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("procurement_qty_variance_started", extra={
                 "receipt_id": str(receipt_id),
                 "po_id": str(po_id),

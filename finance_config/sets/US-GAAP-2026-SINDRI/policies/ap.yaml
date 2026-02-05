@@ -1,0 +1,313 @@
+policies:
+- name: APInvoiceExpense
+  version: 1
+  module: ap
+  description: Records AP invoice for direct expense (not PO-matched)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.invoice_received
+    where:
+    - field: payload.po_number
+      value: None
+  meaning:
+    economic_type: LIABILITY_INCREASE
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE
+    credit_role: ACCOUNTS_PAYABLE
+  - ledger: AP
+    debit_role: INVOICE
+    credit_role: SUPPLIER_BALANCE
+  guards:
+  - guard_type: reject
+    expression: party.is_frozen
+    reason_code: SUPPLIER_FROZEN
+    message: Supplier is frozen - cannot record invoice
+  - guard_type: reject
+    expression: payload.gross_amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Invoice amount must be positive
+  line_mappings:
+  - role: EXPENSE
+    side: debit
+    foreach: invoice_lines
+  - role: TAX_PAYABLE
+    side: debit
+    from_context: tax_amount
+  - role: ACCOUNTS_PAYABLE
+    side: credit
+  - role: INVOICE
+    side: debit
+    ledger: AP
+  - role: SUPPLIER_BALANCE
+    side: credit
+    ledger: AP
+- name: APInvoicePOMatched
+  version: 1
+  module: ap
+  description: Records AP invoice matched to purchase order, clearing GRNI
+  effective_from: '2024-01-01'
+  required_engines: ["matching"]
+  trigger:
+    event_type: ap.invoice_received
+  meaning:
+    economic_type: LIABILITY_INCREASE
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: GRNI
+    credit_role: ACCOUNTS_PAYABLE
+  - ledger: AP
+    debit_role: INVOICE
+    credit_role: SUPPLIER_BALANCE
+  guards:
+  - guard_type: reject
+    expression: party.is_frozen
+    reason_code: SUPPLIER_FROZEN
+    message: Supplier is frozen - cannot record invoice
+  line_mappings:
+  - role: GRNI
+    side: debit
+  - role: TAX_PAYABLE
+    side: debit
+    from_context: tax_amount
+  - role: ACCOUNTS_PAYABLE
+    side: credit
+  - role: INVOICE
+    side: debit
+    ledger: AP
+  - role: SUPPLIER_BALANCE
+    side: credit
+    ledger: AP
+- name: APInvoiceInventory
+  version: 1
+  module: ap
+  description: Records AP invoice for inventory items
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.invoice_received_inventory
+  meaning:
+    economic_type: LIABILITY_INCREASE
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY
+    credit_role: ACCOUNTS_PAYABLE
+  - ledger: AP
+    debit_role: INVOICE
+    credit_role: SUPPLIER_BALANCE
+  guards:
+  - guard_type: reject
+    expression: party.is_frozen
+    reason_code: SUPPLIER_FROZEN
+    message: Supplier is frozen - cannot record invoice
+  line_mappings:
+  - role: INVENTORY
+    side: debit
+    foreach: invoice_lines
+  - role: TAX_PAYABLE
+    side: debit
+    from_context: tax_amount
+  - role: ACCOUNTS_PAYABLE
+    side: credit
+  - role: INVOICE
+    side: debit
+    ledger: AP
+  - role: SUPPLIER_BALANCE
+    side: credit
+    ledger: AP
+- name: APPayment
+  version: 1
+  module: ap
+  description: Records payment to supplier, reducing AP liability
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.payment
+  meaning:
+    economic_type: LIABILITY_DECREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCOUNTS_PAYABLE
+    credit_role: CASH
+  - ledger: AP
+    debit_role: SUPPLIER_BALANCE
+    credit_role: PAYMENT
+  guards:
+  - guard_type: reject
+    expression: party.is_frozen
+    reason_code: SUPPLIER_FROZEN
+    message: Supplier is frozen - cannot process payment
+  - guard_type: reject
+    expression: payload.payment_amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Payment amount must be positive
+  line_mappings:
+  - role: ACCOUNTS_PAYABLE
+    side: debit
+  - role: CASH
+    side: credit
+  - role: SUPPLIER_BALANCE
+    side: debit
+    ledger: AP
+  - role: PAYMENT
+    side: credit
+    ledger: AP
+- name: APPaymentWithDiscount
+  version: 1
+  module: ap
+  description: Records payment with early payment discount taken
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.payment_with_discount
+  meaning:
+    economic_type: LIABILITY_DECREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCOUNTS_PAYABLE
+    credit_role: CASH
+  - ledger: AP
+    debit_role: SUPPLIER_BALANCE
+    credit_role: PAYMENT
+  line_mappings:
+  - role: ACCOUNTS_PAYABLE
+    side: debit
+  - role: CASH
+    side: credit
+    from_context: payment_amount
+  - role: PURCHASE_DISCOUNT
+    side: credit
+    from_context: discount_amount
+  - role: SUPPLIER_BALANCE
+    side: debit
+    ledger: AP
+  - role: PAYMENT
+    side: credit
+    ledger: AP
+- name: APInvoiceCancelled
+  version: 1
+  module: ap
+  description: Records vendor invoice cancellation/reversal
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.invoice_cancelled
+  meaning:
+    economic_type: LIABILITY_DECREASE
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCOUNTS_PAYABLE
+    credit_role: EXPENSE
+  - ledger: AP
+    debit_role: SUPPLIER_BALANCE
+    credit_role: REVERSAL
+  line_mappings:
+  - role: ACCOUNTS_PAYABLE
+    side: debit
+  - role: EXPENSE
+    side: credit
+    foreach: invoice_lines
+  - role: TAX_PAYABLE
+    side: credit
+    from_context: tax_amount
+  - role: SUPPLIER_BALANCE
+    side: debit
+    ledger: AP
+  - role: REVERSAL
+    side: credit
+    ledger: AP
+- name: APAccrualRecorded
+  version: 1
+  module: ap
+  description: Period-end accrual for uninvoiced receipts
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.accrual_recorded
+  meaning:
+    economic_type: LIABILITY_INCREASE
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE
+    credit_role: ACCRUED_LIABILITY
+  line_mappings:
+  - role: EXPENSE
+    side: debit
+  - role: ACCRUED_LIABILITY
+    side: credit
+- name: APAccrualReversed
+  version: 1
+  module: ap
+  description: Reversal of period-end accrual
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.accrual_reversed
+  meaning:
+    economic_type: LIABILITY_DECREASE
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCRUED_LIABILITY
+    credit_role: EXPENSE
+  line_mappings:
+  - role: ACCRUED_LIABILITY
+    side: debit
+  - role: EXPENSE
+    side: credit
+- name: APPrepaymentRecorded
+  version: 1
+  module: ap
+  description: Records advance payment to vendor
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.prepayment_recorded
+  meaning:
+    economic_type: ASSET_INCREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: PREPAID_EXPENSE
+    credit_role: CASH
+  line_mappings:
+  - role: PREPAID_EXPENSE
+    side: debit
+  - role: CASH
+    side: credit
+- name: APPrepaymentApplied
+  version: 1
+  module: ap
+  description: Records prepayment applied against invoice
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: ap.prepayment_applied
+  meaning:
+    economic_type: LIABILITY_DECREASE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCOUNTS_PAYABLE
+    credit_role: PREPAID_EXPENSE
+  line_mappings:
+  - role: ACCOUNTS_PAYABLE
+    side: debit
+  - role: PREPAID_EXPENSE
+    side: credit

@@ -40,7 +40,7 @@ parameters.  All journal entries feed the kernel audit chain (R11).
 
 Usage::
 
-    service = FixedAssetService(session, role_resolver, clock)
+    service = FixedAssetService(session, role_resolver, workflow_executor, clock=clock)
     result = service.record_asset_acquisition(
         asset_id=uuid4(), cost=Decimal("50000.00"),
         effective_date=date.today(), actor_id=actor_id,
@@ -67,10 +67,25 @@ from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_modules._posting_helpers import commit_or_rollback, run_workflow_guard
+from finance_services.workflow_executor import WorkflowExecutor
+from finance_modules.assets.workflows import (
+    ASSETS_RECORD_ACQUISITION_WORKFLOW,
+    ASSETS_RECORD_ASSET_TRANSFER_WORKFLOW,
+    ASSETS_RECORD_CIP_CAPITALIZED_WORKFLOW,
+    ASSETS_RECORD_COMPONENT_DEPRECIATION_WORKFLOW,
+    ASSETS_RECORD_DEPRECIATION_WORKFLOW,
+    ASSETS_RECORD_DISPOSAL_WORKFLOW,
+    ASSETS_RECORD_IMPAIRMENT_WORKFLOW,
+    ASSETS_RECORD_REVALUATION_WORKFLOW,
+    ASSETS_RECORD_SCRAP_WORKFLOW,
+    ASSETS_RUN_MASS_DEPRECIATION_WORKFLOW,
 )
 from finance_modules.assets.models import AssetRevaluation, AssetTransfer
 from finance_modules.assets.orm import (
@@ -122,17 +137,21 @@ class FixedAssetService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor
 
-        # Kernel posting (auto_commit=False -- we own the boundary)
+        # Kernel posting (auto_commit=False -- we own the boundary). G14: actor validation mandatory.
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
         # Stateless engines
@@ -164,6 +183,19 @@ class FixedAssetService:
             - ON_ACCOUNT -> AssetAcquisitionOnAccount
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                ASSETS_RECORD_ACQUISITION_WORKFLOW,
+                "asset",
+                asset_id,
+                actor_id=actor_id,
+                amount=cost,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
             logger.info("asset_acquisition_started", extra={
                 "asset_id": str(asset_id),
                 "cost": str(cost),
@@ -209,9 +241,7 @@ class FixedAssetService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_asset)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -238,6 +268,19 @@ class FixedAssetService:
         Profile: asset.cip_capitalized -> AssetCIPCapitalized
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                ASSETS_RECORD_CIP_CAPITALIZED_WORKFLOW,
+                "asset",
+                asset_id,
+                actor_id=actor_id,
+                amount=cost,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
             logger.info("asset_cip_capitalized_started", extra={
                 "asset_id": str(asset_id),
                 "cost": str(cost),
@@ -258,10 +301,7 @@ class FixedAssetService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -288,6 +328,19 @@ class FixedAssetService:
         Profile: asset.depreciation -> AssetDepreciation
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                ASSETS_RECORD_DEPRECIATION_WORKFLOW,
+                "asset",
+                asset_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
             logger.info("asset_depreciation_started", extra={
                 "asset_id": str(asset_id),
                 "amount": str(amount),
@@ -320,9 +373,7 @@ class FixedAssetService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_schedule)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -356,6 +407,19 @@ class FixedAssetService:
                 to compute the gain/loss variance.
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                ASSETS_RECORD_DISPOSAL_WORKFLOW,
+                "asset",
+                asset_id,
+                actor_id=actor_id,
+                amount=proceeds,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
             book_value = None
 
             if original_cost is not None and accumulated_depreciation is not None:
@@ -414,9 +478,7 @@ class FixedAssetService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_disposal)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -445,6 +507,26 @@ class FixedAssetService:
         Profile: asset.disposal (disposal_type=WRITE_OFF) -> AssetImpairment
         """
         try:
+            transition_result = self._workflow_executor.execute_transition(
+                workflow=ASSETS_RECORD_IMPAIRMENT_WORKFLOW,
+                entity_type="asset",
+                entity_id=asset_id,
+                current_state="draft",
+                action="post",
+                actor_id=actor_id,
+                actor_role="",
+                amount=impairment_amount,
+                currency=currency,
+                context=None,
+            )
+            if not transition_result.success:
+                status = (
+                    ModulePostingStatus.GUARD_BLOCKED
+                    if transition_result.approval_required
+                    else ModulePostingStatus.GUARD_REJECTED
+                )
+                return None, ModulePostingResult(status=status)
+
             allocation_result = None
 
             if component_targets:
@@ -480,10 +562,7 @@ class FixedAssetService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return allocation_result, result
 
         except Exception:
@@ -510,6 +589,19 @@ class FixedAssetService:
         Profile: asset.scrap -> AssetScrap
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                ASSETS_RECORD_SCRAP_WORKFLOW,
+                "asset",
+                asset_id,
+                actor_id=actor_id,
+                amount=original_cost - accumulated_depreciation,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
             book_value = original_cost - accumulated_depreciation
 
             logger.info("asset_scrap_started", extra={
@@ -533,10 +625,7 @@ class FixedAssetService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -571,6 +660,25 @@ class FixedAssetService:
         """
         results: list[ModulePostingResult] = []
         try:
+            batch_id = uuid4()
+            transition_result = self._workflow_executor.execute_transition(
+                workflow=ASSETS_RUN_MASS_DEPRECIATION_WORKFLOW,
+                entity_type="mass_depreciation",
+                entity_id=batch_id,
+                current_state="draft",
+                action="post",
+                actor_id=actor_id,
+                actor_role="",
+                context=None,
+            )
+            if not transition_result.success:
+                status = (
+                    ModulePostingStatus.GUARD_BLOCKED
+                    if transition_result.approval_required
+                    else ModulePostingStatus.GUARD_REJECTED
+                )
+                return [ModulePostingResult(status=status)]
+
             for asset_data in assets:
                 asset_id = asset_data["asset_id"]
                 amount = Decimal(str(asset_data["amount"]))
@@ -630,6 +738,34 @@ class FixedAssetService:
             Tuple of (AssetTransfer, ModulePostingResult).
         """
         try:
+            transition_result = self._workflow_executor.execute_transition(
+                workflow=ASSETS_RECORD_ASSET_TRANSFER_WORKFLOW,
+                entity_type="asset_transfer",
+                entity_id=asset_id,
+                current_state="draft",
+                action="post",
+                actor_id=actor_id,
+                actor_role="",
+                amount=transfer_value,
+                currency=currency,
+                context=None,
+            )
+            if not transition_result.success:
+                status = (
+                    ModulePostingStatus.GUARD_BLOCKED
+                    if transition_result.approval_required
+                    else ModulePostingStatus.GUARD_REJECTED
+                )
+                placeholder = AssetTransfer(
+                    id=uuid4(),
+                    asset_id=asset_id,
+                    transfer_date=effective_date,
+                    from_cost_center=from_cost_center,
+                    to_cost_center=to_cost_center,
+                    transferred_by=actor_id,
+                )
+                return placeholder, ModulePostingResult(status=status)
+
             logger.info("asset_transfer_started", extra={
                 "asset_id": str(asset_id),
                 "from": from_cost_center,
@@ -661,7 +797,6 @@ class FixedAssetService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_transfer)
-                self._session.commit()
             else:
                 self._session.rollback()
 
@@ -735,6 +870,35 @@ class FixedAssetService:
             Tuple of (AssetRevaluation, ModulePostingResult).
         """
         try:
+            transition_result = self._workflow_executor.execute_transition(
+                workflow=ASSETS_RECORD_REVALUATION_WORKFLOW,
+                entity_type="asset",
+                entity_id=asset_id,
+                current_state="draft",
+                action="post",
+                actor_id=actor_id,
+                actor_role="",
+                amount=abs(new_fair_value - old_carrying_value),
+                currency=currency,
+                context=None,
+            )
+            if not transition_result.success:
+                status = (
+                    ModulePostingStatus.GUARD_BLOCKED
+                    if transition_result.approval_required
+                    else ModulePostingStatus.GUARD_REJECTED
+                )
+                surplus = new_fair_value - old_carrying_value
+                placeholder = AssetRevaluation(
+                    id=uuid4(),
+                    asset_id=asset_id,
+                    revaluation_date=effective_date,
+                    old_carrying_value=old_carrying_value,
+                    new_fair_value=new_fair_value,
+                    revaluation_surplus=surplus,
+                )
+                return placeholder, ModulePostingResult(status=status)
+
             surplus = new_fair_value - old_carrying_value
 
             logger.info("asset_revaluation_started", extra={
@@ -770,7 +934,6 @@ class FixedAssetService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_reval)
-                self._session.commit()
             else:
                 self._session.rollback()
 
@@ -818,6 +981,19 @@ class FixedAssetService:
             ModulePostingResult.
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                ASSETS_RECORD_COMPONENT_DEPRECIATION_WORKFLOW,
+                "asset_component",
+                asset_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
             logger.info("component_depreciation_started", extra={
                 "asset_id": str(asset_id),
                 "component": component_name,
@@ -849,9 +1025,7 @@ class FixedAssetService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_component)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:

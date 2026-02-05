@@ -1,41 +1,12 @@
-"""
-Fixed Assets Workflows.
+"""Fixed Assets Workflows.
 
 State machine for asset lifecycle.
 """
 
-from dataclasses import dataclass
-
 from finance_kernel.logging_config import get_logger
+from finance_kernel.domain.workflow import Guard, Transition, Workflow
 
 logger = get_logger("modules.assets.workflows")
-
-
-@dataclass(frozen=True)
-class Guard:
-    """A condition for a transition."""
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class Transition:
-    """A valid state transition."""
-    from_state: str
-    to_state: str
-    action: str
-    guard: Guard | None = None
-    posts_entry: bool = False
-
-
-@dataclass(frozen=True)
-class Workflow:
-    """A state machine definition."""
-    name: str
-    description: str
-    initial_state: str
-    states: tuple[str, ...]
-    transitions: tuple[Transition, ...]
 
 
 # -----------------------------------------------------------------------------
@@ -66,6 +37,50 @@ logger.info(
             DISPOSAL_APPROVED.name,
         ],
     },
+)
+
+
+def _assets_draft_posted(name: str, description: str) -> Workflow:
+    """Simple draft -> posted lifecycle for asset actions (no guards)."""
+    return Workflow(
+        name=name,
+        description=description,
+        initial_state="draft",
+        states=("draft", "posted"),
+        transitions=(Transition("draft", "posted", action="post", posts_entry=True),),
+    )
+
+
+# Action-specific workflows for posting methods (R28: no generic workflow)
+ASSETS_RECORD_ACQUISITION_WORKFLOW = _assets_draft_posted(
+    "assets_record_acquisition", "Record asset acquisition"
+)
+ASSETS_RECORD_CIP_CAPITALIZED_WORKFLOW = _assets_draft_posted(
+    "assets_record_cip_capitalized", "Capitalize CIP to asset"
+)
+ASSETS_RECORD_DEPRECIATION_WORKFLOW = _assets_draft_posted(
+    "assets_record_depreciation", "Record depreciation"
+)
+ASSETS_RECORD_DISPOSAL_WORKFLOW = _assets_draft_posted(
+    "assets_record_disposal", "Record asset disposal"
+)
+ASSETS_RECORD_IMPAIRMENT_WORKFLOW = _assets_draft_posted(
+    "assets_record_impairment", "Record impairment"
+)
+ASSETS_RECORD_SCRAP_WORKFLOW = _assets_draft_posted(
+    "assets_record_scrap", "Record scrap"
+)
+ASSETS_RUN_MASS_DEPRECIATION_WORKFLOW = _assets_draft_posted(
+    "assets_run_mass_depreciation", "Run mass depreciation"
+)
+ASSETS_RECORD_ASSET_TRANSFER_WORKFLOW = _assets_draft_posted(
+    "assets_record_asset_transfer", "Record asset transfer"
+)
+ASSETS_RECORD_REVALUATION_WORKFLOW = _assets_draft_posted(
+    "assets_record_revaluation", "Record revaluation"
+)
+ASSETS_RECORD_COMPONENT_DEPRECIATION_WORKFLOW = _assets_draft_posted(
+    "assets_record_component_depreciation", "Record component depreciation"
 )
 
 

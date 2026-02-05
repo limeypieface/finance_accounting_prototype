@@ -24,6 +24,13 @@ Invariants
          on success and ``session.rollback()`` on failure.
 - R4  -- Double-entry balance is enforced downstream by ``JournalWriter``.
 - R14 -- Profile dispatch uses where-clause selectors, not ``if/switch``.
+- R25 -- Kernel primitives only: Money, ArtifactRef, Quantity from finance_kernel.
+- R26 -- Journal + link graph are the system of record; inventory ORM is an
+         operational projection, persisted in the same transaction as posting.
+- R27 -- Ledger impact is defined by kernel policy (profiles); this module
+         does not branch on operational results to choose accounts.
+- Workflow executor required; every financial action calls
+  ``execute_transition`` (guards enforced, no bypass).
 
 Failure Modes
 -------------
@@ -39,7 +46,8 @@ receipts to COGS and WIP consumption for full cost-flow traceability.
 
 Usage::
 
-    service = InventoryService(session, role_resolver, clock)
+    # workflow_executor is required — guards are always enforced (no bypass).
+    service = InventoryService(session, role_resolver, workflow_executor, clock=clock)
     result = service.receive_inventory(
         receipt_id=uuid4(), item_id="WIDGET-001",
         quantity=Decimal("100"), unit_cost=Decimal("25.00"),
@@ -65,11 +73,13 @@ from finance_kernel.domain.values import Money, Quantity
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
 from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
 )
+from finance_modules._posting_helpers import commit_or_rollback, run_workflow_guard
 from finance_modules.inventory.helpers import (
     calculate_eoq as _calculate_eoq,
 )
@@ -90,7 +100,18 @@ from finance_modules.inventory.orm import (
     InventoryAdjustmentModel,
     InventoryReceiptModel,
 )
+from finance_modules.inventory.workflows import (
+    INVENTORY_ADJUSTMENT_WORKFLOW,
+    INVENTORY_CYCLE_COUNT_WORKFLOW,
+    INVENTORY_ISSUE_WORKFLOW,
+    INVENTORY_RECEIPT_FROM_PRODUCTION_WORKFLOW,
+    INVENTORY_RECEIPT_VARIANCE_WORKFLOW,
+    INVENTORY_RECEIPT_WORKFLOW,
+    INVENTORY_REVALUATION_WORKFLOW,
+    INVENTORY_TRANSFER_IN_WORKFLOW,
+)
 from finance_services.valuation_service import ValuationLayer
+from finance_services.workflow_executor import WorkflowExecutor
 
 logger = get_logger("modules.inventory.service")
 
@@ -136,17 +157,21 @@ class InventoryService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor  # Required: guards always enforced
 
-        # Kernel posting (auto_commit=False — we own the boundary)
+        # Kernel posting (auto_commit=False — we own the boundary). G14: actor validation mandatory.
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
         # Stateful engines (share session for atomicity)
@@ -193,6 +218,18 @@ class InventoryService:
         """
         total_cost = quantity * unit_cost
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                INVENTORY_RECEIPT_WORKFLOW,
+                "inv_receipt",
+                receipt_id,
+                actor_id=actor_id,
+                amount=total_cost,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
             # Engine: create cost lot
             lot = self._valuation.create_lot(
                 lot_id=uuid4(),
@@ -244,9 +281,7 @@ class InventoryService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_receipt)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -294,7 +329,30 @@ class InventoryService:
                 actual_price=Money.of(actual_unit_cost, currency),
                 quantity=quantity,
             )
-
+            actual_total = actual_unit_cost * quantity
+            transition_result = self._workflow_executor.execute_transition(
+                workflow=INVENTORY_RECEIPT_VARIANCE_WORKFLOW,
+                entity_type="inv_receipt_variance",
+                entity_id=receipt_id,
+                current_state="draft",
+                action="post",
+                actor_id=actor_id,
+                actor_role="",
+                amount=actual_total,
+                currency=currency,
+                context={},
+            )
+            if not transition_result.success:
+                status = (
+                    ModulePostingStatus.GUARD_BLOCKED
+                    if transition_result.approval_required
+                    else ModulePostingStatus.GUARD_REJECTED
+                )
+                return variance_result, ModulePostingResult(
+                    status=status,
+                    event_id=uuid4(),
+                    message=transition_result.reason or "Guard not satisfied",
+                )
             # Engine: create lot at standard cost (variance posted separately)
             standard_total = standard_unit_cost * quantity
             lot = self._valuation.create_lot(
@@ -317,7 +375,6 @@ class InventoryService:
 
             # Kernel: post as inventory.receipt with has_variance flag
             # (where-clause dispatch selects InventoryReceiptWithVariance profile)
-            actual_total = actual_unit_cost * quantity
             result = self._poster.post_event(
                 event_type="inventory.receipt",
                 payload={
@@ -355,7 +412,6 @@ class InventoryService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_receipt)
-                self._session.commit()
             else:
                 self._session.rollback()
             return variance_result, result
@@ -381,7 +437,7 @@ class InventoryService:
 
         Preconditions:
             - ``quantity`` > 0 and ``unit_cost`` >= 0.
-            - ``work_order_id`` references a valid production work order.
+            - ``work_order_id`` references a valid manufacturing order.
 
         Postconditions:
             - A finished-goods cost lot is created.
@@ -396,6 +452,18 @@ class InventoryService:
         """
         total_cost = quantity * unit_cost
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                INVENTORY_RECEIPT_FROM_PRODUCTION_WORKFLOW,
+                "inv_receipt_from_production",
+                receipt_id,
+                actor_id=actor_id,
+                amount=total_cost,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
             lot = self._valuation.create_lot(
                 lot_id=uuid4(),
                 source_ref=ArtifactRef.receipt(receipt_id),
@@ -423,10 +491,7 @@ class InventoryService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -465,6 +530,18 @@ class InventoryService:
         """
         total_cost = quantity * unit_cost
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                INVENTORY_TRANSFER_IN_WORKFLOW,
+                "inv_transfer_in",
+                transfer_id,
+                actor_id=actor_id,
+                amount=total_cost,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
             result = self._poster.post_event(
                 event_type="inventory.transfer_in",
                 payload={
@@ -480,10 +557,7 @@ class InventoryService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -701,6 +775,18 @@ class InventoryService:
         (where-clause dispatch based on quantity_change sign)
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                INVENTORY_ADJUSTMENT_WORKFLOW,
+                "inv_adjustment",
+                adjustment_id,
+                actor_id=actor_id,
+                amount=abs(value_change),
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
             result = self._poster.post_event(
                 event_type="inventory.adjustment",
                 payload={
@@ -729,9 +815,7 @@ class InventoryService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_adjustment)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -782,6 +866,29 @@ class InventoryService:
             })
 
             revaluation_amount = abs(new_value - old_value)
+            transition_result = self._workflow_executor.execute_transition(
+                workflow=INVENTORY_REVALUATION_WORKFLOW,
+                entity_type="inv_revaluation",
+                entity_id=uuid4(),
+                current_state="draft",
+                action="post",
+                actor_id=actor_id,
+                actor_role="",
+                amount=revaluation_amount,
+                currency=currency,
+                context={},
+            )
+            if not transition_result.success:
+                status = (
+                    ModulePostingStatus.GUARD_BLOCKED
+                    if transition_result.approval_required
+                    else ModulePostingStatus.GUARD_REJECTED
+                )
+                return variance_result, ModulePostingResult(
+                    status=status,
+                    event_id=uuid4(),
+                    message=transition_result.reason or "Guard not satisfied",
+                )
             result = self._poster.post_event(
                 event_type="inventory.revaluation",
                 payload={
@@ -798,10 +905,7 @@ class InventoryService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return variance_result, result
 
         except Exception:
@@ -857,7 +961,7 @@ class InventoryService:
                 })
                 # No posting needed when count matches
                 return ModulePostingResult(
-                    status=ModulePostingStatus.POSTED,
+                    status=ModulePostingStatus.TRANSITION_APPLIED,
                     event_id=uuid4(),
                     journal_entry_ids=(),
                     profile_name="InventoryCycleCountZero",
@@ -878,6 +982,18 @@ class InventoryService:
                 "variance_amount": str(variance_amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                INVENTORY_CYCLE_COUNT_WORKFLOW,
+                "inv_cycle_count",
+                count_id,
+                actor_id=actor_id,
+                amount=abs(variance_amount),
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
             result = self._poster.post_event(
                 event_type="inventory.cycle_count",
                 payload={
@@ -912,9 +1028,7 @@ class InventoryService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_count)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -1178,6 +1292,29 @@ class InventoryService:
             if to_location:
                 payload["to_location"] = to_location
 
+            transition_result = self._workflow_executor.execute_transition(
+                workflow=INVENTORY_ISSUE_WORKFLOW,
+                entity_type="inv_issue",
+                entity_id=issue_id,
+                current_state="draft",
+                action="post",
+                actor_id=actor_id,
+                actor_role="",
+                amount=consumption.total_cost.amount,
+                currency=consumption.total_cost.currency.code,
+                context={},
+            )
+            if not transition_result.success:
+                status = (
+                    ModulePostingStatus.GUARD_BLOCKED
+                    if transition_result.approval_required
+                    else ModulePostingStatus.GUARD_REJECTED
+                )
+                return consumption, ModulePostingResult(
+                    status=status,
+                    event_id=uuid4(),
+                    message=transition_result.reason or "Guard not satisfied",
+                )
             # Kernel: post with engine-computed amount
             result = self._poster.post_event(
                 event_type="inventory.issue",
@@ -1188,10 +1325,7 @@ class InventoryService:
                 currency=consumption.total_cost.currency.code,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return consumption, result
 
         except Exception:

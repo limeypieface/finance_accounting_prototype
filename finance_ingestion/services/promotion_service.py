@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import ResourceClosedError
 from sqlalchemy.orm import Session
 
 from finance_kernel.domain.clock import Clock, SystemClock
@@ -85,11 +86,21 @@ class PromotionService:
         promoters: dict[str, EntityPromoter],
         clock: Clock | None = None,
         auditor_service: Any | None = None,
+        module_posting_service: Any | None = None,
+        account_key_to_role: Any | None = None,
+        account_key_to_target_code: dict[str, str] | None = None,
+        account_key_to_target_name: dict[str, str] | None = None,
+        account_id_for_code: Any | None = None,
     ):
         self._session = session
         self._promoters = promoters
         self._clock = clock or SystemClock()
         self._auditor = auditor_service
+        self._module_posting_service = module_posting_service
+        self._account_key_to_role = account_key_to_role
+        self._account_key_to_target_code = account_key_to_target_code
+        self._account_key_to_target_name = account_key_to_target_name
+        self._account_id_for_code = account_id_for_code
 
     def compute_preflight_graph(self, batch_id: UUID) -> PreflightGraph:
         """
@@ -173,7 +184,25 @@ class PromotionService:
                     skipped += 1
                     logger.info("record_skipped", extra={"record_id": str(rec.id), "source_row": rec.source_row, "reason": "duplicate"})
                     continue
-                result = promoter.promote(mapped, self._session, actor_id, self._clock)
+                kwargs: dict[str, Any] = {
+                    "module_posting_service": self._module_posting_service,
+                    "account_key_to_role": self._account_key_to_role,
+                    "batch_id": batch_id,
+                    "source_row": rec.source_row,
+                }
+                if self._account_key_to_target_code is not None:
+                    kwargs["account_key_to_target_code"] = self._account_key_to_target_code
+                if self._account_key_to_target_name is not None:
+                    kwargs["account_key_to_target_name"] = self._account_key_to_target_name
+                if self._account_id_for_code is not None:
+                    kwargs["account_id_for_code"] = self._account_id_for_code
+                result = promoter.promote(
+                    mapped,
+                    self._session,
+                    actor_id,
+                    self._clock,
+                    **kwargs,
+                )
                 if result.success and result.entity_id is not None:
                     savepoint.commit()
                     rec.status = ImportRecordStatus.PROMOTED.value
@@ -189,7 +218,10 @@ class PromotionService:
                         extra={"record_id": str(rec.id), "source_row": rec.source_row, "entity_type": rec.entity_type, "promoted_entity_id": str(result.entity_id)},
                     )
                 else:
-                    savepoint.rollback()
+                    try:
+                        savepoint.rollback()
+                    except ResourceClosedError:
+                        pass  # kernel may have rolled back the session
                     rec.status = ImportRecordStatus.PROMOTION_FAILED.value
                     rec.validation_errors = _validation_errors_json_for_promotion_failure(result.error or "Unknown error")
                     failed += 1
@@ -197,7 +229,10 @@ class PromotionService:
                     errors.append(err)
                     logger.warning("record_promotion_failed", extra={"record_id": str(rec.id), "source_row": rec.source_row, "error_code": err.error_code, "error_msg": err.message})
             except Exception as exc:
-                savepoint.rollback()
+                try:
+                    savepoint.rollback()
+                except ResourceClosedError:
+                    pass  # kernel may have rolled back the session
                 rec.status = ImportRecordStatus.PROMOTION_FAILED.value
                 rec.validation_errors = _validation_errors_json_for_promotion_failure(str(exc))
                 failed += 1

@@ -41,9 +41,14 @@ Usage:
     orchestrator.ingestor
     orchestrator.period_service
     orchestrator.journal_writer
-    orchestrator.interpretation_coordinator
-    orchestrator.engine_dispatcher
+    orchestrator.outcome_recorder
+    orchestrator.retry_service
+    orchestrator.workflow_executor
     ...
+
+    # Module services (AP, AR, etc.) are not created here (finance_services
+    # must not import finance_modules). When constructing them, pass
+    # workflow_executor=orchestrator.workflow_executor so workflow guards run.
 """
 
 from __future__ import annotations
@@ -58,8 +63,12 @@ if TYPE_CHECKING:
     from finance_kernel.domain.accounting_intent import AccountingIntent
     from finance_kernel.services.journal_writer import JournalWriteResult
 
-from finance_config.bridges import build_subledger_registry_from_defs
+from finance_config.bridges import (
+    build_subledger_registry_from_defs,
+    controls_from_compiled,
+)
 from finance_config.compiler import CompiledPolicyPack
+from finance_kernel.domain.policy_source import PolicySource, SelectorPolicySource
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.meaning_builder import MeaningBuilder
 from finance_kernel.domain.policy_authority import PolicyAuthority
@@ -72,10 +81,12 @@ from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
 from finance_kernel.services.link_graph_service import LinkGraphService
 from finance_kernel.services.outcome_recorder import OutcomeRecorder
 from finance_kernel.services.party_service import PartyService
+from finance_kernel.services.retry_service import RetryService
 from finance_kernel.services.period_service import PeriodService
 from finance_kernel.services.reference_snapshot_service import ReferenceSnapshotService
 from finance_kernel.services.reversal_service import ReversalService
 from finance_services.engine_dispatcher import EngineDispatcher
+from finance_services.pack_policy_source import PackPolicySource
 from finance_services.workflow_executor import WorkflowExecutor
 from finance_services.subledger_ap import APSubledgerService
 from finance_services.subledger_ar import ARSubledgerService
@@ -117,6 +128,7 @@ class PostingOrchestrator:
     ) -> None:
         self._session = session
         self._clock = clock or SystemClock()
+        self.role_resolver = role_resolver
 
         # --- Singletons: created once, order matters (dependency graph) ---
         # INVARIANT: single-instance lifecycle -- no duplicate service instances.
@@ -174,9 +186,18 @@ class PostingOrchestrator:
 
         # Outcome recording
         self.outcome_recorder = OutcomeRecorder(session, self._clock)
+        # RetryService: constructed here for future retry flows / worker entrypoint.
+        # No code path currently invokes retry_service.retry(); wire when retries are required.
+        self.retry_service = RetryService(session, self.outcome_recorder, self._clock)
 
         # Engine dispatch (depends on compiled_pack)
         self.engine_dispatcher = EngineDispatcher(compiled_pack)
+
+        # Policy source: from pack (config-driven) when pack present, else Selector (Python-registered)
+        self.policy_source: PolicySource = PackPolicySource(compiled_pack)
+
+        # Control rules from pack (controls.yaml) for posting-path enforcement
+        self.control_rules = controls_from_compiled(compiled_pack.controls)
 
         # Domain components
         self.policy_authority = policy_authority
@@ -367,3 +388,44 @@ def _build_approval_policy_map(
         result[key] = policy
 
     return result
+
+
+def build_posting_orchestrator(
+    session: Session,
+    legal_entity: str,
+    as_of_date: "date",
+    config_dir: "Path | None" = None,
+    clock: "Clock | None" = None,
+) -> PostingOrchestrator:
+    """Build a PostingOrchestrator from config (single entrypoint for production).
+
+    Loads config via get_active_config(legal_entity, as_of_date), builds
+    role_resolver from the pack, and constructs the orchestrator so that
+    policies, controls, approval policies, and role bindings all come
+    from YAML.
+
+    Args:
+        session: SQLAlchemy session.
+        legal_entity: Legal entity for config scope (e.g. "*" or "US-ENTITY").
+        as_of_date: Date for effective config and policies.
+        config_dir: Optional path to config sets directory.
+        clock: Optional clock; default SystemClock.
+
+    Returns:
+        PostingOrchestrator with policy_source, control_rules, and approval
+        policies wired from the compiled pack.
+    """
+    from pathlib import Path
+
+    from finance_config import get_active_config
+    from finance_config.bridges import build_role_resolver
+    from finance_kernel.domain.clock import Clock, SystemClock
+
+    pack = get_active_config(legal_entity, as_of_date, config_dir=config_dir)
+    role_resolver = build_role_resolver(pack)
+    return PostingOrchestrator(
+        session=session,
+        compiled_pack=pack,
+        role_resolver=role_resolver,
+        clock=clock or SystemClock(),
+    )

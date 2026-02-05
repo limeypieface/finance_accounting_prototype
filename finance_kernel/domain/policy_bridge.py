@@ -4,7 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any, ClassVar
+from typing import Any, Callable, ClassVar
 from uuid import UUID, uuid4
 
 from finance_kernel.domain.accounting_intent import (
@@ -20,7 +20,10 @@ from finance_kernel.domain.accounting_policy import (
     PolicyMeaning,
     PolicyTrigger,
 )
-from finance_kernel.domain.policy_selector import PolicySelector
+from finance_kernel.domain.policy_selector import (
+    PolicyAlreadyRegisteredError,
+    PolicySelector,
+)
 from finance_kernel.logging_config import get_logger
 
 logger = get_logger("domain.policy_bridge")
@@ -58,6 +61,20 @@ class ModulePolicyEntry:
 # ---------------------------------------------------------------------------
 
 
+class ModulePolicyAlreadyRegisteredError(Exception):
+    """Profile already registered in ModulePolicyRegistry (same profile name)."""
+
+    code: str = "MODULE_POLICY_ALREADY_REGISTERED"
+
+    def __init__(self, profile_name: str, existing_module: str):
+        self.profile_name = profile_name
+        self.existing_module = existing_module
+        super().__init__(
+            f"Profile '{profile_name}' already registered by module '{existing_module}'; "
+            "duplicate registration is not allowed (use policy_registry_reset fixture or clear())."
+        )
+
+
 class ModulePolicyRegistry:
     """Registry for module profile data including line mappings."""
 
@@ -65,8 +82,12 @@ class ModulePolicyRegistry:
 
     @classmethod
     def register(cls, entry: ModulePolicyEntry) -> None:
-        """Register a module profile entry."""
-        cls._entries[entry.kernel_profile.name] = entry
+        """Register a module profile entry. Fails hard on duplicate (name) to avoid shadowing."""
+        name = entry.kernel_profile.name
+        if name in cls._entries:
+            existing = cls._entries[name]
+            raise ModulePolicyAlreadyRegisteredError(name, existing.module_name)
+        cls._entries[name] = entry
         logger.info(
             "module_profile_registered",
             extra={
@@ -116,7 +137,12 @@ def register_rich_profile(
     profile: AccountingPolicy,
     line_mappings: tuple[ModuleLineMapping, ...],
 ) -> AccountingPolicy:
-    """Register a pre-built kernel AccountingPolicy with line mappings."""
+    """Register a pre-built kernel AccountingPolicy with line mappings.
+
+    Registration order: PolicySelector first, then ModulePolicyRegistry.
+    Duplicate (name, version) raises PolicyAlreadyRegisteredError or
+    ModulePolicyAlreadyRegisteredError — no shadowing or last-writer-wins.
+    """
     entry = ModulePolicyEntry(
         module_name=module_name,
         profile_key=profile.name,
@@ -125,17 +151,16 @@ def register_rich_profile(
         event_type=profile.trigger.event_type,
     )
 
-    # Register in ModulePolicyRegistry (line mappings)
-    ModulePolicyRegistry.register(entry)
+    # Register in kernel PolicySelector first (lookup). Fails hard on duplicate.
+    PolicySelector.register(profile)
 
-    # Register in kernel PolicySelector (lookup)
+    # Register in ModulePolicyRegistry (line mappings). Fails hard on duplicate.
     try:
-        PolicySelector.register(profile)
-    except Exception:
-        logger.debug(
-            "profile_already_in_kernel_registry",
-            extra={"profile": profile.name},
-        )
+        ModulePolicyRegistry.register(entry)
+    except ModulePolicyAlreadyRegisteredError:
+        # Roll back PolicySelector so registries stay in sync
+        PolicySelector.unregister(profile.name, profile.version)
+        raise
 
     return profile
 
@@ -427,3 +452,70 @@ def _create_intent_line(
         return IntentLine.debit(role=role, amount=amount, currency=currency)
     else:
         return IntentLine.credit(role=role, amount=amount, currency=currency)
+
+
+# ---------------------------------------------------------------------------
+# Intent from payload lines (import.historical_journal)
+# ---------------------------------------------------------------------------
+
+def build_accounting_intent_from_payload_lines(
+    profile: AccountingPolicy,
+    source_event_id: UUID,
+    effective_date: date,
+    payload: dict[str, Any],
+    account_key_to_role: Callable[[str], str | None],
+    currency: str = "USD",
+    description: str | None = None,
+    coa_version: int = 1,
+    dimension_schema_version: int = 1,
+) -> AccountingIntent:
+    """Build AccountingIntent from payload.lines (account_key→role per line). Used for import.historical_journal."""
+    lines_data = payload.get("lines")
+    if not isinstance(lines_data, list) or len(lines_data) == 0:
+        raise ValueError("payload.lines must be a non-empty list")
+
+    intent_lines: list[IntentLine] = []
+    for line in lines_data:
+        if not isinstance(line, dict):
+            continue
+        account_key = line.get("account")
+        if account_key is None or (isinstance(account_key, str) and not account_key.strip()):
+            continue
+        key = (account_key if isinstance(account_key, str) else str(account_key)).strip()
+        role = account_key_to_role(key)
+        if not role:
+            raise ValueError(f"Unresolvable account for import line: {key!r}")
+
+        debit_val = line.get("debit")
+        credit_val = line.get("credit")
+        try:
+            d = Decimal(str(debit_val)) if debit_val is not None else Decimal("0")
+            c = Decimal(str(credit_val)) if credit_val is not None else Decimal("0")
+        except Exception:
+            raise ValueError(f"Invalid amount for account {key!r} (debit={debit_val!r}, credit={credit_val!r})")
+        if d > 0 and c > 0:
+            raise ValueError(f"Line cannot have both debit and credit for account {key!r}")
+        if d > 0:
+            intent_lines.append(IntentLine.debit(role=role, amount=d, currency=currency))
+        elif c > 0:
+            intent_lines.append(IntentLine.credit(role=role, amount=c, currency=currency))
+        # else skip zero line
+
+    if not intent_lines:
+        raise ValueError("No valid lines with amount in payload.lines")
+
+    ledger_intent = LedgerIntent(ledger_id="GL", lines=tuple(intent_lines))
+    snapshot = AccountingIntentSnapshot(
+        coa_version=coa_version,
+        dimension_schema_version=dimension_schema_version,
+    )
+    return AccountingIntent(
+        econ_event_id=uuid4(),
+        source_event_id=source_event_id,
+        profile_id=profile.name,
+        profile_version=profile.version,
+        effective_date=effective_date,
+        ledger_intents=(ledger_intent,),
+        snapshot=snapshot,
+        description=description or profile.description,
+    )

@@ -36,6 +36,7 @@ class TestCompiledPolicyPackFieldUsage:
             # Cross-layer services (moved from kernel to finance_services/)
             "finance_services/engine_dispatcher.py",
             "finance_services/posting_orchestrator.py",
+            "finance_services/pack_policy_source.py",
             # Domain components
             "finance_kernel/domain/policy_authority.py",
             "finance_kernel/domain/policy_selector.py",
@@ -47,6 +48,7 @@ class TestCompiledPolicyPackFieldUsage:
             # Config runtime (pack metadata, role resolution)
             "finance_config/__init__.py",
             "finance_config/bridges.py",
+            "finance_config/compiler.py",
             # Integrity checks
             "finance_config/integrity.py",
         ]
@@ -70,11 +72,11 @@ class TestCompiledPolicyPackFieldUsage:
         # - config_version/checksum: read by __init__.py metadata
         # - scope: read by PolicyAuthority
         # - policies: read by __init__.py, bridges, tests
-        # - match_index: built for PolicySelector (pending direct wiring)
+        # - match_index: read by PackPolicySource.get_policy (get_candidates)
         # - role_bindings: read by bridges (RoleResolver)
         # - engine_contracts: read by EngineDispatcher.validate_registration
         # - resolved_engine_params: read by EngineDispatcher.dispatch
-        # - controls: compiled for runtime control eval (pending consumer)
+        # - controls: read by posting_orchestrator (controls_from_compiled) and ModulePostingService
         # - capabilities: read by bridges
         # - canonical_fingerprint: read by integrity
         # - decision_trace: build-time debugging only
@@ -82,11 +84,10 @@ class TestCompiledPolicyPackFieldUsage:
         # Fields that are consumed at build-time only (debugging artifacts)
         BUILD_TIME_ONLY = {"decision_trace"}
 
-        # Fields compiled into the pack but whose runtime consumer is
-        # not yet wired (will be addressed in future phases)
+        # Fields consumed by a different pipeline (import) or build-time only.
+        # BUILD_TIME_ONLY: no posting-path consumer; intentional for debugging/replay.
         PENDING_WIRING = {
-            "controls",      # awaits runtime control evaluator
-            "match_index",   # awaits PolicySelector direct lookup wiring
+            "import_mappings",  # consumed by ingestion/scripts (run_import, import_service, CLI); test only scans posting path
         }
 
         runtime_fields = pack_fields - BUILD_TIME_ONLY - PENDING_WIRING
@@ -120,21 +121,15 @@ class TestCompiledPolicyPackFieldUsage:
         # - effective_from/to: PolicySelector date filtering
         # - scope: PolicySelector scope matching
         # - precedence: PolicySelector precedence resolution
-        # - valuation_model: ValuationRegistry, AccountingPolicy
+        # - valuation_model: bridge + EngineDispatcher (merged into valuation engine params)
         # - line_mappings: PolicyBridge
         # - required_engines: EngineDispatcher
         # - engine_parameters_ref: EngineDispatcher
-        # - variance_disposition: pending EngineDispatcher runtime read
-        # - capability_tags: pending runtime capability gating
         # - description: logging, tracing (cosmetic)
         # - module: tracing, logging
 
-        # Fields whose runtime consumer is pending wiring
-        PENDING_RUNTIME = {
-            "variance_disposition",  # awaits EngineDispatcher runtime read
-            "capability_tags",       # awaits runtime capability gating
-            "valuation_model",       # awaits MeaningBuilder/ValuationLayer read
-        }
+        # All former PENDING_RUNTIME fields (capability_tags, variance_disposition, valuation_model) are wired.
+        PENDING_RUNTIME: set[str] = set()
 
         unaccessed = []
         for field_name in policy_fields:
@@ -175,6 +170,7 @@ class TestOrchestratorServiceUsage:
             "ingestor",
             "journal_writer",
             "outcome_recorder",
+            "retry_service",
             "engine_dispatcher",
             "policy_authority",
             "meaning_builder",
@@ -203,6 +199,7 @@ class TestOrchestratorServiceUsage:
             "ingestor",
             "journal_writer",
             "outcome_recorder",
+            "retry_service",
             "engine_dispatcher",
             "meaning_builder",
             "interpretation_coordinator",

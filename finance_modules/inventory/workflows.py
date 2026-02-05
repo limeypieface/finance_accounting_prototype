@@ -1,41 +1,12 @@
-"""
-Inventory Workflows.
+"""Inventory Workflows.
 
 State machines for receipt, issue, and transfer processing.
 """
 
-from dataclasses import dataclass
-
 from finance_kernel.logging_config import get_logger
+from finance_kernel.domain.workflow import Guard, Transition, Workflow
 
 logger = get_logger("modules.inventory.workflows")
-
-
-@dataclass(frozen=True)
-class Guard:
-    """A condition for a transition."""
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class Transition:
-    """A valid state transition."""
-    from_state: str
-    to_state: str
-    action: str
-    guard: Guard | None = None
-    posts_entry: bool = False
-
-
-@dataclass(frozen=True)
-class Workflow:
-    """A state machine definition."""
-    name: str
-    description: str
-    initial_state: str
-    states: tuple[str, ...]
-    transitions: tuple[Transition, ...]
 
 
 # -----------------------------------------------------------------------------
@@ -165,3 +136,50 @@ logger.info(
         "initial_state": TRANSFER_WORKFLOW.initial_state,
     },
 )
+
+
+# -----------------------------------------------------------------------------
+# Directive: no generic workflows. Each financial action has its own lifecycle.
+# See docs/WORKFLOW_DIRECTIVE.md.
+# -----------------------------------------------------------------------------
+
+def _inv_draft_posted(name: str, description: str) -> Workflow:
+    return Workflow(
+        name=name,
+        description=description,
+        initial_state="draft",
+        states=("draft", "posted"),
+        transitions=(Transition("draft", "posted", action="post"),),
+    )
+
+INVENTORY_RECEIPT_WORKFLOW = _inv_draft_posted("inv_receipt", "Inventory receipt")
+INVENTORY_RECEIPT_VARIANCE_WORKFLOW = _inv_draft_posted("inv_receipt_variance", "Inventory receipt with variance")
+INVENTORY_RECEIPT_FROM_PRODUCTION_WORKFLOW = _inv_draft_posted(
+    "inv_receipt_from_production", "Receipt from production"
+)
+INVENTORY_TRANSFER_IN_WORKFLOW = _inv_draft_posted("inv_transfer_in", "Transfer in")
+INVENTORY_ADJUSTMENT_WORKFLOW = _inv_draft_posted("inv_adjustment", "Inventory adjustment")
+INVENTORY_REVALUATION_WORKFLOW = _inv_draft_posted("inv_revaluation", "Inventory revaluation")
+INVENTORY_CYCLE_COUNT_WORKFLOW = _inv_draft_posted("inv_cycle_count", "Cycle count")
+INVENTORY_ISSUE_WORKFLOW = _inv_draft_posted("inv_issue", "Inventory issue")
+
+_inv_action_workflows = (
+    INVENTORY_RECEIPT_WORKFLOW,
+    INVENTORY_RECEIPT_VARIANCE_WORKFLOW,
+    INVENTORY_RECEIPT_FROM_PRODUCTION_WORKFLOW,
+    INVENTORY_TRANSFER_IN_WORKFLOW,
+    INVENTORY_ADJUSTMENT_WORKFLOW,
+    INVENTORY_REVALUATION_WORKFLOW,
+    INVENTORY_CYCLE_COUNT_WORKFLOW,
+    INVENTORY_ISSUE_WORKFLOW,
+)
+for wf in _inv_action_workflows:
+    logger.info(
+        "inventory_workflow_registered",
+        extra={
+            "workflow_name": wf.name,
+            "state_count": len(wf.states),
+            "transition_count": len(wf.transitions),
+            "initial_state": wf.initial_state,
+        },
+    )

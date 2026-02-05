@@ -441,6 +441,52 @@ class AuditorService:
 
     # ERP ingestion lifecycle (ERP_INGESTION_PLAN Phase 7)
 
+    def record_import_batch_created(
+        self,
+        batch_id: UUID,
+        actor_id: UUID,
+        mapping_name: str,
+        mapping_version: int,
+        mapping_hash: str,
+        source_filename: str,
+        total_records: int,
+    ) -> AuditEvent:
+        """Record that an import batch was created (load into staging)."""
+        return self._create_audit_event(
+            entity_type="ImportBatch",
+            entity_id=batch_id,
+            action=AuditAction.IMPORT_BATCH_CREATED,
+            actor_id=actor_id,
+            payload={
+                "mapping_name": mapping_name,
+                "mapping_version": mapping_version,
+                "mapping_hash": mapping_hash,
+                "source_filename": source_filename,
+                "total_records": total_records,
+            },
+        )
+
+    def record_import_batch_validated(
+        self,
+        batch_id: UUID,
+        actor_id: UUID,
+        valid_records: int,
+        invalid_records: int,
+        validation_duration_ms: int = 0,
+    ) -> AuditEvent:
+        """Record that an import batch was validated."""
+        return self._create_audit_event(
+            entity_type="ImportBatch",
+            entity_id=batch_id,
+            action=AuditAction.IMPORT_BATCH_VALIDATED,
+            actor_id=actor_id,
+            payload={
+                "valid_records": valid_records,
+                "invalid_records": invalid_records,
+                "validation_duration_ms": validation_duration_ms,
+            },
+        )
+
     def record_import_record_promoted(
         self,
         record_id: UUID,

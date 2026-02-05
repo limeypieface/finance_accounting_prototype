@@ -1,0 +1,18 @@
+ledgers:
+- ledger_id: GL
+  name: General Ledger
+  required_roles: []
+- ledger_id: INVENTORY
+  name: Inventory Subledger
+  required_roles:
+  - STOCK_ON_HAND
+  - IN_TRANSIT
+  - SOLD
+  - IN_PRODUCTION
+  - SCRAPPED
+- ledger_id: AP
+  name: Accounts Payable Subledger
+  required_roles:
+  - INVOICE
+  - SUPPLIER_BALANCE
+  - PAYMENT

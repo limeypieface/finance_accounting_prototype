@@ -453,8 +453,8 @@ class TestActorAuthorizationAtPostingBoundary:
         # Should reach step 1 (period validation) and get PERIOD_CLOSED
         assert result.status == ModulePostingStatus.PERIOD_CLOSED
 
-    def test_no_party_service_skips_actor_validation(self):
-        """When _party_service_ref is not set (legacy path), actor check is skipped."""
+    def test_no_party_service_rejects_before_posting(self):
+        """When _party_service_ref is not set, G14 requires REJECTED (actor validation mandatory)."""
         from finance_kernel.services.module_posting_service import (
             ModulePostingService,
             ModulePostingStatus,
@@ -466,12 +466,7 @@ class TestActorAuthorizationAtPostingBoundary:
         service._auto_commit = False
         # No _party_service_ref attribute set
 
-        # Period service will block to prove we got past step 0
         service._period_service = MagicMock()
-        service._period_service.validate_adjustment_allowed.side_effect = Exception(
-            "Period closed"
-        )
-
         service._ingestor = MagicMock()
         service._meaning_builder = MagicMock()
         service._coordinator = MagicMock()
@@ -493,8 +488,9 @@ class TestActorAuthorizationAtPostingBoundary:
             dimension_schema_version=1,
         )
 
-        # Should skip actor check and reach period validation
-        assert result.status == ModulePostingStatus.PERIOD_CLOSED
+        # G14: Actor validation is mandatory; no PartyService => REJECTED before period check
+        assert result.status == ModulePostingStatus.REJECTED
+        assert "PartyService" in (result.message or "")
 
     def test_actor_check_runs_before_period_validation(self):
         """Actor validation (step 0) runs before period validation (step 1)."""

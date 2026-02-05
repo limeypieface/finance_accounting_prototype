@@ -65,6 +65,7 @@ class PartyPromoter:
         session: Session,
         actor_id: UUID,
         clock: Any,
+        **kwargs: Any,
     ) -> PromoteResult:
         party_code = _str(mapped_data, "party_code") or _str(mapped_data, "code")
         if not party_code:

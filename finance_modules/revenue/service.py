@@ -55,12 +55,22 @@ from sqlalchemy.orm import Session
 
 from finance_engines.allocation import AllocationEngine
 from finance_kernel.domain.clock import Clock, SystemClock
+from finance_kernel.domain.validation import require_decimal
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_modules._posting_helpers import run_workflow_guard
+from finance_services.workflow_executor import WorkflowExecutor
+from finance_modules.revenue.workflows import (
+    REVENUE_ALLOCATE_PRICE_WORKFLOW,
+    REVENUE_MODIFY_CONTRACT_WORKFLOW,
+    REVENUE_RECOGNIZE_REVENUE_WORKFLOW,
+    REVENUE_UPDATE_VARIABLE_CONSIDERATION_WORKFLOW,
 )
 from finance_modules.revenue.helpers import (
     assess_modification_type,
@@ -125,16 +135,20 @@ class RevenueRecognitionService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor
 
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
         self._allocation = AllocationEngine()
@@ -169,8 +183,7 @@ class RevenueRecognitionService:
             TypeError: If total_consideration is not Decimal.
         """
         # INVARIANT: Monetary amounts must be Decimal, never float (R16).
-        assert isinstance(total_consideration, Decimal), \
-            "total_consideration must be Decimal, not float"
+        require_decimal(total_consideration, "total_consideration")
         logger.info("revenue_contract_identified", extra={
             "contract_id": str(contract_id),
             "customer_id": str(customer_id),
@@ -285,7 +298,7 @@ class RevenueRecognitionService:
             No exceptions under normal conditions.
         """
         # INVARIANT: Monetary amounts must be Decimal (R16).
-        assert isinstance(base_price, Decimal), "base_price must be Decimal"
+        require_decimal(base_price, "base_price")
         variable = Decimal("0")
         if variable_scenarios:
             variable = estimate_variable_consideration(
@@ -358,7 +371,21 @@ class RevenueRecognitionService:
         # INVARIANT: At least one obligation required for allocation.
         assert len(obligations) > 0, "obligations must not be empty"
         # INVARIANT: Monetary amounts must be Decimal (R16).
-        assert isinstance(total_price, Decimal), "total_price must be Decimal"
+        require_decimal(total_price, "total_price")
+
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            REVENUE_ALLOCATE_PRICE_WORKFLOW,
+            "revenue_contract",
+            contract_id,
+            actor_id=actor_id,
+            amount=total_price,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return (), failure
+
         # Engine: AllocationEngine for proportional SSP allocation
         from finance_engines.allocation import AllocationMethod, AllocationTarget
         from finance_kernel.domain.values import Money
@@ -483,7 +510,21 @@ class RevenueRecognitionService:
             Exception: Propagated from posting pipeline; session rolled back.
         """
         # INVARIANT: Recognition amount must be Decimal (R16).
-        assert isinstance(amount, Decimal), "amount must be Decimal"
+        require_decimal(amount)
+
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            REVENUE_RECOGNIZE_REVENUE_WORKFLOW,
+            "revenue_obligation",
+            obligation_id,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         event_type_map = {
             RecognitionMethod.POINT_IN_TIME: "revenue.recognize_point_in_time",
             RecognitionMethod.OVER_TIME_INPUT: "revenue.recognize_over_time_input",
@@ -562,7 +603,30 @@ class RevenueRecognitionService:
             Exception: Propagated from posting pipeline; session rolled back.
         """
         # INVARIANT: Monetary amounts must be Decimal (R16).
-        assert isinstance(price_change, Decimal), "price_change must be Decimal"
+        require_decimal(price_change, "price_change")
+
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            REVENUE_MODIFY_CONTRACT_WORKFLOW,
+            "revenue_contract",
+            contract_id,
+            actor_id=actor_id,
+            amount=abs(price_change),
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            placeholder = ContractModification(
+                id=uuid4(),
+                contract_id=contract_id,
+                modification_date=modification_date,
+                modification_type=ModificationType.CUMULATIVE_CATCH_UP,
+                description=description,
+                price_change=price_change,
+                actor_id=actor_id,
+            )
+            return placeholder, failure
+
         mod_type_str = assess_modification_type(
             adds_distinct_goods=adds_distinct_goods,
             price_reflects_ssp=price_reflects_ssp,
@@ -651,8 +715,21 @@ class RevenueRecognitionService:
             Exception: Propagated from posting pipeline; session rolled back.
         """
         # INVARIANT: Monetary amounts must be Decimal (R16).
-        assert isinstance(new_estimate, Decimal), "new_estimate must be Decimal"
+        require_decimal(new_estimate, "new_estimate")
         posting_amount = abs(new_estimate)
+
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            REVENUE_UPDATE_VARIABLE_CONSIDERATION_WORKFLOW,
+            "revenue_contract",
+            contract_id,
+            actor_id=actor_id,
+            amount=posting_amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
 
         logger.info("revenue_variable_consideration_update", extra={
             "contract_id": str(contract_id),

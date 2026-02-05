@@ -304,7 +304,7 @@ class TestIntercompanyJournal:
     """Cross-company journal entries."""
 
     @pytest.fixture
-    def ic_service(self):
+    def ic_service(self, register_modules):
         service = IntercompanyService()
         service.register_company(Company("CO-A", "Company A", "USD"))
         service.register_company(Company("CO-B", "Company B", "USD"))
@@ -371,7 +371,7 @@ class TestIntercompanyCancellation:
     """Intercompany entry cancellation."""
 
     @pytest.fixture
-    def ic_service(self):
+    def ic_service(self, register_modules):
         service = IntercompanyService()
         service.register_company(Company("CO-A", "Company A", "USD"))
         service.register_company(Company("CO-B", "Company B", "USD"))
@@ -433,7 +433,7 @@ class TestIntercompanyCurrencyConversion:
     """Handle different functional currencies."""
 
     @pytest.fixture
-    def ic_service(self):
+    def ic_service(self, register_modules):
         service = IntercompanyService()
         service.register_company(Company("CO-US", "US Company", "USD"))
         service.register_company(Company("CO-EU", "EU Company", "EUR"))
@@ -497,7 +497,7 @@ class TestIntercompanyBalance:
     """Verify intercompany entries balance."""
 
     @pytest.fixture
-    def ic_service(self):
+    def ic_service(self, register_modules):
         service = IntercompanyService()
         service.register_company(Company("CO-A", "Company A", "USD"))
         service.register_company(Company("CO-B", "Company B", "USD"))
@@ -573,7 +573,7 @@ class TestIntercompanyValidation:
     """Validate intercompany transactions."""
 
     @pytest.fixture
-    def ic_service(self):
+    def ic_service(self, register_modules):
         service = IntercompanyService()
         service.register_company(Company("CO-A", "Company A", "USD"))
         return service
@@ -699,12 +699,17 @@ class TestIntercompanyIntegration:
     """Real integration tests using GeneralLedgerService.record_intercompany_transfer()."""
 
     @pytest.fixture
-    def gl_service(self, session, module_role_resolver, deterministic_clock, register_modules):
+    def gl_service(
+        self, session, module_role_resolver, deterministic_clock, register_modules, workflow_executor,
+        party_service, test_actor_party,
+    ):
         from finance_modules.gl.service import GeneralLedgerService
         return GeneralLedgerService(
             session=session,
             role_resolver=module_role_resolver,
+            workflow_executor=workflow_executor,
             clock=deterministic_clock,
+            party_service=party_service,
         )
 
     def test_intercompany_transfer_posts(

@@ -29,7 +29,7 @@ from finance_modules.procurement.workflows import (
     REQUISITION_WORKFLOW,
 )
 from finance_modules.tax.workflows import TAX_RETURN_WORKFLOW
-from finance_modules.wip.workflows import WORK_ORDER_WORKFLOW
+from finance_modules.wip.workflows import MANUFACTURING_ORDER_WORKFLOW
 
 ALL_WORKFLOWS = [
     ("AP Invoice", AP_INVOICE_WORKFLOW),
@@ -39,7 +39,7 @@ ALL_WORKFLOWS = [
     ("Inventory Receipt", INV_RECEIPT_WORKFLOW),
     ("Inventory Issue", INV_ISSUE_WORKFLOW),
     ("Inventory Transfer", INV_TRANSFER_WORKFLOW),
-    ("Work Order", WORK_ORDER_WORKFLOW),
+    ("Work Order", MANUFACTURING_ORDER_WORKFLOW),
     ("Fixed Asset", ASSET_WORKFLOW),
     ("Expense Report", EXPENSE_REPORT_WORKFLOW),
     ("Tax Return", TAX_RETURN_WORKFLOW),

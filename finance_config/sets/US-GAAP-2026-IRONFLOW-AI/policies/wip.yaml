@@ -1,0 +1,261 @@
+policies:
+- name: WipMaterialIssued
+  version: 1
+  module: wip
+  description: Raw materials issued to work order
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: wip.material_issued
+  meaning:
+    economic_type: WIP_MATERIAL_ISSUE
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+    - work_order
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP
+    credit_role: RAW_MATERIALS
+  guards:
+  - guard_type: reject
+    expression: payload.quantity <= 0
+    reason_code: INVALID_QUANTITY
+    message: Material issue quantity must be positive
+  line_mappings:
+  - role: WIP
+    side: debit
+  - role: RAW_MATERIALS
+    side: credit
+- name: WipLaborCharged
+  version: 1
+  module: wip
+  description: Direct labor charged to work order
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: wip.labor_charged
+  meaning:
+    economic_type: WIP_LABOR_CHARGE
+    quantity_field: payload.hours
+    dimensions:
+    - org_unit
+    - cost_center
+    - work_order
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP
+    credit_role: LABOR_CLEARING
+  guards:
+  - guard_type: reject
+    expression: payload.hours <= 0
+    reason_code: INVALID_HOURS
+    message: Labor hours must be positive
+  line_mappings:
+  - role: WIP
+    side: debit
+  - role: LABOR_CLEARING
+    side: credit
+- name: WipOverheadApplied
+  version: 1
+  module: wip
+  description: Overhead applied to work order
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: wip.overhead_applied
+  meaning:
+    economic_type: WIP_OVERHEAD_APPLICATION
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+    - work_order
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP
+    credit_role: OVERHEAD_APPLIED
+  line_mappings:
+  - role: WIP
+    side: debit
+  - role: OVERHEAD_APPLIED
+    side: credit
+- name: WipCompletion
+  version: 1
+  module: wip
+  description: Finished goods completed from work order
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: wip.completion
+  meaning:
+    economic_type: WIP_COMPLETION
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+    - work_order
+  ledger_effects:
+  - ledger: GL
+    debit_role: FINISHED_GOODS
+    credit_role: WIP
+  guards:
+  - guard_type: reject
+    expression: payload.quantity <= 0
+    reason_code: INVALID_QUANTITY
+    message: Completion quantity must be positive
+  line_mappings:
+  - role: FINISHED_GOODS
+    side: debit
+  - role: WIP
+    side: credit
+- name: WipScrap
+  version: 1
+  module: wip
+  description: Scrap recorded on work order
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: wip.scrap
+  meaning:
+    economic_type: WIP_SCRAP
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+    - work_order
+  ledger_effects:
+  - ledger: GL
+    debit_role: SCRAP_EXPENSE
+    credit_role: WIP
+  guards:
+  - guard_type: reject
+    expression: payload.quantity <= 0
+    reason_code: INVALID_QUANTITY
+    message: Scrap quantity must be positive
+  line_mappings:
+  - role: SCRAP_EXPENSE
+    side: debit
+  - role: WIP
+    side: credit
+- name: WipRework
+  version: 1
+  module: wip
+  description: Rework costs charged to work order
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: wip.rework
+  meaning:
+    economic_type: WIP_REWORK
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+    - work_order
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP
+    credit_role: LABOR_CLEARING
+  guards:
+  - guard_type: reject
+    expression: payload.quantity <= 0
+    reason_code: INVALID_QUANTITY
+    message: Rework quantity must be positive
+  line_mappings:
+  - role: WIP
+    side: debit
+  - role: LABOR_CLEARING
+    side: credit
+- name: WipLaborVariance
+  version: 1
+  module: wip
+  description: Labor efficiency variance at close
+  effective_from: '2024-01-01'
+  required_engines: ["variance"]
+  engine_parameters_ref: variance
+  variance_disposition: post
+  trigger:
+    event_type: wip.labor_variance
+  meaning:
+    economic_type: WIP_LABOR_VARIANCE
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+    - work_order
+  ledger_effects:
+  - ledger: GL
+    debit_role: LABOR_VARIANCE
+    credit_role: WIP
+  line_mappings:
+  - role: LABOR_VARIANCE
+    side: debit
+  - role: WIP
+    side: credit
+- name: WipMaterialVariance
+  version: 1
+  module: wip
+  description: Material usage variance at close
+  effective_from: '2024-01-01'
+  required_engines: ["variance"]
+  engine_parameters_ref: variance
+  variance_disposition: post
+  trigger:
+    event_type: wip.material_variance
+  meaning:
+    economic_type: WIP_MATERIAL_VARIANCE
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+    - work_order
+  ledger_effects:
+  - ledger: GL
+    debit_role: MATERIAL_VARIANCE
+    credit_role: WIP
+  line_mappings:
+  - role: MATERIAL_VARIANCE
+    side: debit
+  - role: WIP
+    side: credit
+- name: WipOverheadVariance
+  version: 1
+  module: wip
+  description: Overhead over/under applied variance
+  effective_from: '2024-01-01'
+  required_engines: ["variance"]
+  engine_parameters_ref: variance
+  variance_disposition: post
+  trigger:
+    event_type: wip.overhead_variance
+  meaning:
+    economic_type: WIP_OVERHEAD_VARIANCE
+    quantity_field: payload.quantity
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: OVERHEAD_APPLIED
+    credit_role: OVERHEAD_VARIANCE
+  line_mappings:
+  - role: OVERHEAD_APPLIED
+    side: debit
+  - role: OVERHEAD_VARIANCE
+    side: credit
+- name: WIPByproductRecorded
+  version: 1
+  module: wip
+  description: Byproduct value recognition from production
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: wip.byproduct
+  meaning:
+    economic_type: WIP_BYPRODUCT
+    dimensions:
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: INVENTORY
+    credit_role: WIP
+  line_mappings:
+  - role: INVENTORY
+    side: debit
+  - role: WIP
+    side: credit

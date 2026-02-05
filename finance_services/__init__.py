@@ -36,6 +36,11 @@ logger = get_logger("services")
 
 from finance_services.correction_service import CorrectionEngine
 from finance_services.engine_dispatcher import EngineDispatcher
+from finance_services.integration import (
+    IntegrationPostResult,
+    post_event_from_external,
+    validate_contract,
+)
 from finance_services.invokers import register_standard_engines
 from finance_services.posting_orchestrator import PostingOrchestrator
 from finance_services.reconciliation_service import ReconciliationManager
@@ -55,11 +60,14 @@ __all__ = [
     "ContractSubledgerService",
     "CorrectionEngine",
     "EngineDispatcher",
+    "IntegrationPostResult",
     "InventorySubledgerService",
     "PostingOrchestrator",
     "ReconciliationManager",
     "SubledgerPeriodService",
     "SubledgerService",
     "ValuationLayer",
+    "post_event_from_external",
     "register_standard_engines",
+    "validate_contract",
 ]

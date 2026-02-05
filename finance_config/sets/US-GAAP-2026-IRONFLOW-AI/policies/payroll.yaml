@@ -1,0 +1,339 @@
+policies:
+- name: PayrollAccrual
+  version: 1
+  module: payroll
+  description: Payroll expense accrued with withholding liabilities
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.accrual
+  meaning:
+    economic_type: PAYROLL_ACCRUAL
+    dimensions:
+    - org_unit
+    - department
+  ledger_effects:
+  - ledger: GL
+    debit_role: SALARY_EXPENSE
+    credit_role: ACCRUED_PAYROLL
+  guards:
+  - guard_type: reject
+    expression: payload.gross_amount <= 0
+    reason_code: INVALID_GROSS
+    message: Gross payroll amount must be positive
+  line_mappings:
+  - role: SALARY_EXPENSE
+    side: debit
+  - role: WAGE_EXPENSE
+    side: debit
+    from_context: wage_amount
+  - role: PAYROLL_TAX_EXPENSE
+    side: debit
+    from_context: tax_expense_amount
+  - role: FEDERAL_TAX_PAYABLE
+    side: credit
+    from_context: federal_tax_amount
+  - role: STATE_TAX_PAYABLE
+    side: credit
+    from_context: state_tax_amount
+  - role: FICA_PAYABLE
+    side: credit
+    from_context: fica_amount
+  - role: BENEFITS_PAYABLE
+    side: credit
+    from_context: benefits_amount
+  - role: ACCRUED_PAYROLL
+    side: credit
+    from_context: net_pay_amount
+- name: PayrollPayment
+  version: 1
+  module: payroll
+  description: Net payroll paid to employees
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.payment
+  meaning:
+    economic_type: PAYROLL_DISBURSEMENT
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCRUED_PAYROLL
+    credit_role: CASH
+  guards:
+  - guard_type: reject
+    expression: payload.net_amount <= 0
+    reason_code: INVALID_NET
+    message: Net pay amount must be positive
+  line_mappings:
+  - role: ACCRUED_PAYROLL
+    side: debit
+  - role: CASH
+    side: credit
+- name: PayrollTaxDeposit
+  version: 1
+  module: payroll
+  description: Payroll taxes deposited with taxing authorities
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.tax_deposit
+  meaning:
+    economic_type: TAX_REMITTANCE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: FEDERAL_TAX_PAYABLE
+    credit_role: CASH
+  guards:
+  - guard_type: reject
+    expression: payload.deposit_amount <= 0
+    reason_code: INVALID_DEPOSIT
+    message: Tax deposit amount must be positive
+  line_mappings:
+  - role: FEDERAL_TAX_PAYABLE
+    side: debit
+    from_context: federal_tax_amount
+  - role: STATE_TAX_PAYABLE
+    side: debit
+    from_context: state_tax_amount
+  - role: FICA_PAYABLE
+    side: debit
+    from_context: fica_amount
+  - role: CASH
+    side: credit
+- name: PayrollBenefitsPayment
+  version: 1
+  module: payroll
+  description: Employee benefits paid to providers
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.benefits_payment
+  meaning:
+    economic_type: BENEFITS_DISBURSEMENT
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: BENEFITS_PAYABLE
+    credit_role: CASH
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Benefits payment amount must be positive
+  line_mappings:
+  - role: BENEFITS_PAYABLE
+    side: debit
+  - role: CASH
+    side: credit
+- name: TimesheetRegular
+  version: 1
+  module: payroll
+  description: Records regular hourly wages accrual
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: timesheet.regular
+    where:
+    - field: payload.pay_code
+      value: REGULAR
+  meaning:
+    economic_type: LABOR_ACCRUAL
+    quantity_field: payload.hours
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+    - department
+  ledger_effects:
+  - ledger: GL
+    debit_role: WAGE_EXPENSE
+    credit_role: ACCRUED_PAYROLL
+  guards:
+  - guard_type: reject
+    expression: payload.hours <= 0
+    reason_code: INVALID_HOURS
+    message: Hours must be positive
+  - guard_type: reject
+    expression: payload.hours > 24
+    reason_code: EXCESSIVE_HOURS
+    message: Hours cannot exceed 24 per day
+  line_mappings:
+  - role: WAGE_EXPENSE
+    side: debit
+  - role: ACCRUED_PAYROLL
+    side: credit
+- name: TimesheetOvertime
+  version: 1
+  module: payroll
+  description: Records overtime wages accrual
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: timesheet.overtime
+    where:
+    - field: payload.pay_code
+      value: OVERTIME
+  meaning:
+    economic_type: LABOR_ACCRUAL
+    quantity_field: payload.hours
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+    - department
+  ledger_effects:
+  - ledger: GL
+    debit_role: OVERTIME_EXPENSE
+    credit_role: ACCRUED_PAYROLL
+  guards:
+  - guard_type: reject
+    expression: payload.hours <= 0
+    reason_code: INVALID_HOURS
+    message: Hours must be positive
+  line_mappings:
+  - role: OVERTIME_EXPENSE
+    side: debit
+  - role: ACCRUED_PAYROLL
+    side: credit
+- name: TimesheetPTO
+  version: 1
+  module: payroll
+  description: Records paid time off accrual
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: timesheet.pto
+  meaning:
+    economic_type: LABOR_ACCRUAL
+    quantity_field: payload.hours
+    dimensions:
+    - org_unit
+    - department
+  ledger_effects:
+  - ledger: GL
+    debit_role: PTO_EXPENSE
+    credit_role: ACCRUED_PAYROLL
+  line_mappings:
+  - role: PTO_EXPENSE
+    side: debit
+  - role: ACCRUED_PAYROLL
+    side: credit
+- name: LaborDistributionDirect
+  version: 1
+  module: payroll
+  description: Records direct labor cost distribution to WIP
+  effective_from: '2024-01-01'
+  required_engines: ["allocation"]
+  trigger:
+    event_type: labor.distribution_direct
+    where:
+    - field: payload.labor_type
+      value: DIRECT
+  meaning:
+    economic_type: LABOR_ALLOCATION
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP
+    credit_role: LABOR_CLEARING
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Distribution amount must be positive
+  line_mappings:
+  - role: WIP
+    side: debit
+  - role: LABOR_CLEARING
+    side: credit
+- name: LaborDistributionIndirect
+  version: 1
+  module: payroll
+  description: Records indirect labor cost distribution to overhead pool
+  effective_from: '2024-01-01'
+  required_engines: ["allocation"]
+  trigger:
+    event_type: labor.distribution_indirect
+    where:
+    - field: payload.labor_type
+      value: INDIRECT
+  meaning:
+    economic_type: OVERHEAD_ALLOCATION
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: OVERHEAD_POOL
+    credit_role: LABOR_CLEARING
+  line_mappings:
+  - role: OVERHEAD_POOL
+    side: debit
+  - role: LABOR_CLEARING
+    side: credit
+- name: LaborDistributionOverhead
+  version: 1
+  module: payroll
+  description: Records overhead labor cost allocation
+  effective_from: '2024-01-01'
+  required_engines: ["allocation"]
+  trigger:
+    event_type: labor.distribution_overhead
+    where:
+    - field: payload.labor_type
+      value: OVERHEAD
+  meaning:
+    economic_type: OVERHEAD_ALLOCATION
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: OVERHEAD_EXPENSE
+    credit_role: LABOR_CLEARING
+  line_mappings:
+  - role: OVERHEAD_EXPENSE
+    side: debit
+  - role: LABOR_CLEARING
+    side: credit
+- name: PayrollBenefitsDeducted
+  version: 1
+  module: payroll
+  description: Employee benefits deduction from paycheck
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.benefits_deduction
+  meaning:
+    economic_type: PAYROLL_BENEFITS_DEDUCTION
+    dimensions:
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: SALARY_EXPENSE
+    credit_role: BENEFITS_PAYABLE
+  line_mappings:
+  - role: SALARY_EXPENSE
+    side: debit
+  - role: BENEFITS_PAYABLE
+    side: credit
+- name: PayrollEmployerContribution
+  version: 1
+  module: payroll
+  description: Employer contribution to benefits plan
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: payroll.employer_contribution
+  meaning:
+    economic_type: PAYROLL_EMPLOYER_CONTRIBUTION
+    dimensions:
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: PAYROLL_TAX_EXPENSE
+    credit_role: BENEFITS_PAYABLE
+  line_mappings:
+  - role: PAYROLL_TAX_EXPENSE
+    side: debit
+  - role: BENEFITS_PAYABLE
+    side: credit

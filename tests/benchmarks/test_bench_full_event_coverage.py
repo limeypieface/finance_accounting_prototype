@@ -57,6 +57,8 @@ REQUIRES_PRIOR_STATE: frozenset[str] = frozenset({
     "CashReconciliation",
     "CashAutoReconciled",
     "CashNSFReturn",
+    # BANK subledger: make_available needs prior bank balance for reconciliation
+    "CashMakeAvailable",
     # BANK subledger: deposit/withdrawal need prior bank balance
     "CashDeposit",
     "CashWithdrawalExpense",

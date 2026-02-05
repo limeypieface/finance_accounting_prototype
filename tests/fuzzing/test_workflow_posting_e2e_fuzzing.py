@@ -73,8 +73,8 @@ def _get_postable_transition_strategy():
 
 
 @pytest.fixture
-def module_posting_service(session, module_role_resolver, deterministic_clock, register_modules):
-    """ModulePostingService with auto_commit=False so fuzzing does not persist between examples."""
+def module_posting_service(session, module_role_resolver, deterministic_clock, register_modules, party_service, test_actor_party):
+    """ModulePostingService with auto_commit=False so fuzzing does not persist between examples. G14: party_service required."""
     from finance_kernel.services.module_posting_service import ModulePostingService
 
     return ModulePostingService(
@@ -82,6 +82,7 @@ def module_posting_service(session, module_role_resolver, deterministic_clock, r
         role_resolver=module_role_resolver,
         clock=deterministic_clock,
         auto_commit=False,
+        party_service=party_service,
     )
 
 
@@ -151,8 +152,11 @@ class TestWorkflowPostingE2EFuzzing:
         known_statuses = (
             ModulePostingStatus.POSTED,
             ModulePostingStatus.ALREADY_POSTED,
+            ModulePostingStatus.REJECTED,
             ModulePostingStatus.PERIOD_CLOSED,
             ModulePostingStatus.ADJUSTMENTS_NOT_ALLOWED,
+            ModulePostingStatus.INVALID_ACTOR,
+            ModulePostingStatus.ACTOR_FROZEN,
             ModulePostingStatus.INGESTION_FAILED,
             ModulePostingStatus.PROFILE_NOT_FOUND,
             ModulePostingStatus.MEANING_FAILED,

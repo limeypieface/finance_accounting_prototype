@@ -47,9 +47,8 @@ from finance_modules.wip.models import Operation, WorkOrder
 class TestAPInvoiceAmountInvariants:
     """Test AP Invoice amount consistency invariants."""
 
-    @pytest.mark.xfail(reason="Subtotal vs line sum requires cross-entity validation")
     def test_invoice_subtotal_must_equal_sum_of_lines(self):
-        """Invoice subtotal should equal sum of line amounts."""
+        """Invoice with lines rejects subtotal != sum of line amounts (cross-entity)."""
         invoice_id = uuid4()
         lines = (
             InvoiceLine(
@@ -73,20 +72,60 @@ class TestAPInvoiceAmountInvariants:
                 gl_account_code="5000-000",
             ),
         )
-        # Line sum = 250, but subtotal = 300 (wrong!)
+        line_sum = sum(line.amount for line in lines)  # 250
+        with pytest.raises(ValueError, match="subtotal.*must equal.*line amounts"):
+            Invoice(
+                id=invoice_id,
+                vendor_id=uuid4(),
+                invoice_number="INV-001",
+                invoice_date=date.today(),
+                due_date=date.today(),
+                currency="USD",
+                subtotal=Decimal("300"),  # Wrong: should be 250
+                tax_amount=Decimal("25"),
+                total_amount=Decimal("325"),  # subtotal + tax so first invariant passes
+                lines=lines,
+            )
+
+    def test_invoice_subtotal_accepts_matching_line_sum(self):
+        """Invoice with lines accepts when subtotal equals sum of line amounts."""
+        invoice_id = uuid4()
+        lines = (
+            InvoiceLine(
+                id=uuid4(),
+                invoice_id=invoice_id,
+                line_number=1,
+                description="Item 1",
+                quantity=Decimal("2"),
+                unit_price=Decimal("100"),
+                amount=Decimal("200"),
+                gl_account_code="5000-000",
+            ),
+            InvoiceLine(
+                id=uuid4(),
+                invoice_id=invoice_id,
+                line_number=2,
+                description="Item 2",
+                quantity=Decimal("1"),
+                unit_price=Decimal("50"),
+                amount=Decimal("50"),
+                gl_account_code="5000-000",
+            ),
+        )
+        line_sum = sum(line.amount for line in lines)  # 250
         invoice = Invoice(
             id=invoice_id,
             vendor_id=uuid4(),
-            invoice_number="INV-001",
+            invoice_number="INV-002",
             invoice_date=date.today(),
             due_date=date.today(),
             currency="USD",
-            subtotal=Decimal("300"),  # Should be 250
+            subtotal=line_sum,
             tax_amount=Decimal("25"),
-            total_amount=Decimal("325"),
+            total_amount=line_sum + Decimal("25"),
+            lines=lines,
         )
-        line_sum = sum(line.amount for line in lines)
-        assert invoice.subtotal == line_sum, f"Subtotal {invoice.subtotal} ≠ line sum {line_sum}"
+        assert invoice.subtotal == line_sum
 
     def test_invoice_total_must_equal_subtotal_plus_tax(self):
         """Invoice total should equal subtotal + tax."""
@@ -273,19 +312,41 @@ class TestInventoryQuantityInvariants:
         )
         assert stock.quantity_available == stock.quantity_on_hand - stock.quantity_reserved
 
-    @pytest.mark.xfail(reason="Item standard cost validation requires business context")
-    def test_item_standard_cost_must_be_positive_for_standard_costing(self):
-        """Items using standard costing should have positive standard cost."""
+    def test_item_standard_cost_must_be_positive_rejects_zero(self):
+        """Item rejects standard_cost <= 0 (business rule for standard costing)."""
+        with pytest.raises(ValueError, match="standard_cost must be positive"):
+            Item(
+                id=uuid4(),
+                code="ITEM-001",
+                description="Widget",
+                item_type=ItemType.FINISHED_GOODS,
+                unit_of_measure="EA",
+                standard_cost=Decimal("0"),
+            )
+
+    def test_item_standard_cost_must_be_positive_rejects_negative(self):
+        """Item rejects negative standard_cost."""
+        with pytest.raises(ValueError, match="standard_cost must be positive"):
+            Item(
+                id=uuid4(),
+                code="ITEM-002",
+                description="Widget",
+                item_type=ItemType.FINISHED_GOODS,
+                unit_of_measure="EA",
+                standard_cost=Decimal("-10.00"),
+            )
+
+    def test_item_standard_cost_accepts_positive(self):
+        """Item accepts positive standard_cost."""
         item = Item(
             id=uuid4(),
-            code="ITEM-001",
+            code="ITEM-003",
             description="Widget",
             item_type=ItemType.FINISHED_GOODS,
             unit_of_measure="EA",
-            standard_cost=Decimal("0"),  # Zero cost will cause COGS issues
+            standard_cost=Decimal("25.50"),
         )
-        # If standard costing is used, standard_cost should be > 0
-        assert item.standard_cost > 0, "Standard cost must be positive"
+        assert item.standard_cost == Decimal("25.50")
 
 
 # =============================================================================
@@ -495,17 +556,17 @@ class TestModelInvariantSummary:
         Documents model invariant validation status.
 
         Validations now enforced:
-        - AP Invoice: total = subtotal + tax, credit memo consistency
+        - AP Invoice: total = subtotal + tax, credit memo consistency;
+          when lines provided: subtotal must equal sum of line amounts (cross-entity)
         - AR Receipt: amount > 0, unallocated >= 0, unallocated <= amount
         - PO Line: received <= ordered, invoiced <= received
         - Stock Level: on_hand >= 0, available = on_hand - reserved
+        - Item: standard_cost must be positive (standard costing business rule)
         - Work Order: ordered > 0, completed <= ordered
         - Employee: base_pay >= 0, salaried must have positive pay
         - Fiscal Period: end > start, period 1-13
 
         Complex rules still marked xfail:
-        - Invoice subtotal vs line sum (cross-entity)
-        - Item standard cost (business context dependent)
         - Expense line amount vs qty*price (optional fields)
         - Expense amount > 0 (zero may be valid)
         - Payment batch count (field doesn't exist)

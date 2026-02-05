@@ -245,9 +245,11 @@ class ReversalService:
             EntryNotPostedError: If entry not found or not POSTED.
             EntryAlreadyReversedError: If a reversal entry already exists.
         """
-        # Load original entry
+        # Load original entry with row lock to serialize concurrent reversals (idempotency at service layer)
         original = self._session.execute(
-            select(JournalEntry).where(JournalEntry.id == original_entry_id)
+            select(JournalEntry)
+            .where(JournalEntry.id == original_entry_id)
+            .with_for_update()
         ).scalar_one_or_none()
 
         if original is None:
@@ -336,13 +338,17 @@ class ReversalService:
             },
         )
 
-        # Step 2: Create reversal journal entry via JournalWriter
+        # Step 2: Create reversal journal entry via JournalWriter (same ledger as original — R4 ledger boundary)
+        original_ledger_id = (
+            (original.entry_metadata or {}).get("ledger_id", "GL")
+        )
         reversal_entry = self._journal_writer.write_reversal(
             original_entry=original,
             source_event_id=event_id,
             actor_id=actor_id,
             effective_date=effective_date,
             reason=reason,
+            expected_ledger_id=original_ledger_id,
         )
 
         logger.info(

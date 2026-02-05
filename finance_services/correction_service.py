@@ -59,7 +59,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -68,6 +68,7 @@ from sqlalchemy.orm import Session
 
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
+from finance_kernel.domain.clock import Clock, SystemClock
 
 logger = get_logger("services.correction")
 from finance_engines.correction.unwind import (
@@ -157,6 +158,7 @@ class CorrectionEngine:
         link_graph: LinkGraphService,
         gl_entry_lookup: GLEntryLookup | None = None,
         period_service: PeriodService | None = None,
+        clock: Clock | None = None,
     ):
         """
         Initialize the correction engine.
@@ -169,11 +171,21 @@ class CorrectionEngine:
             period_service: Optional PeriodService for period lock enforcement (G12).
                            When provided, corrections are blocked for artifacts in
                            closed periods.
+            clock: Optional clock for deterministic time (tests/replay).
         """
         self.session = session
         self.link_graph = link_graph
         self._gl_entry_lookup = gl_entry_lookup or self._default_gl_lookup
         self._period_service = period_service
+        self._clock = clock or SystemClock()
+
+    def _now(self) -> datetime:
+        """Get current time from injected clock."""
+        return self._clock.now_utc()
+
+    def _today(self) -> date:
+        """Get current date from injected clock."""
+        return self._clock.now_utc().date()
 
     # =========================================================================
     # Plan Building
@@ -211,8 +223,8 @@ class CorrectionEngine:
         """
         t0 = time.monotonic()
         max_depth = max_depth or self.DEFAULT_MAX_DEPTH
-        posting_date = posting_date or date.today()
-        effective_date = effective_date or date.today()
+        posting_date = posting_date or self._today()
+        effective_date = effective_date or self._today()
 
         logger.info("unwind_plan_build_started", extra={
             "root_ref": str(root_ref),
@@ -299,7 +311,7 @@ class CorrectionEngine:
             correction_type=correction_type,
             affected=affected,
             entries=entries,
-            created_at=datetime.now(UTC),
+            created_at=self._now(),
             warnings=warnings,
         )
 
@@ -628,7 +640,7 @@ class CorrectionEngine:
                 parent_ref=artifact.ref,
                 child_ref=correction_doc_ref,
                 creating_event_id=creating_event_id,
-                created_at=datetime.now(UTC),
+                created_at=self._now(),
                 metadata={
                     "correction_type": plan.correction_type.value,
                     "depth": artifact.depth,
@@ -655,7 +667,7 @@ class CorrectionEngine:
             links=links,
             actor_id=actor_id,
             execution_event_id=creating_event_id,
-            executed_at=datetime.now(UTC),
+            executed_at=self._now(),
         )
 
     def void_document(
@@ -747,7 +759,7 @@ class CorrectionEngine:
             correction_type=CorrectionType.ADJUST,
             affected=[AffectedArtifact.root(document_ref, ())],
             entries=list(adjustment_entries),
-            created_at=datetime.now(UTC),
+            created_at=self._now(),
         )
 
         return self.execute_correction(

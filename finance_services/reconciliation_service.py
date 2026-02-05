@@ -62,7 +62,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -83,6 +83,7 @@ from finance_engines.matching import (
 from finance_engines.matching import (
     MatchType as MatchingMatchType,
 )
+from finance_kernel.domain.clock import Clock, SystemClock
 from finance_engines.reconciliation.domain import (
     BankReconciliationLine,
     BankReconciliationStatus,
@@ -107,6 +108,12 @@ from finance_kernel.exceptions import (
 )
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.link_graph_service import LinkGraphService
+
+from finance_services.observability import (
+    log_guard_failure,
+    log_match_accepted,
+    log_match_suggested,
+)
 
 logger = get_logger("services.reconciliation")
 
@@ -139,6 +146,7 @@ class ReconciliationManager:
         self,
         session: Session,
         link_graph: LinkGraphService,
+        clock: Clock | None = None,
     ):
         """
         Initialize the reconciliation manager.
@@ -146,11 +154,21 @@ class ReconciliationManager:
         Args:
             session: SQLAlchemy session for database operations.
             link_graph: LinkGraphService for link operations.
+            clock: Optional clock for deterministic time (tests/replay).
         """
         self.session = session
         self.link_graph = link_graph
+        self._clock = clock or SystemClock()
         self.allocation = AllocationEngine()
         self.matching = MatchingEngine()
+
+    def _now(self) -> datetime:
+        """Get current time (UTC) from injected clock."""
+        return self._clock.now_utc()
+
+    def _today(self) -> date:
+        """Get current date from injected clock."""
+        return self._clock.now_utc().date()
 
     # =========================================================================
     # State Queries
@@ -284,6 +302,11 @@ class ReconciliationManager:
         # INVARIANT: Over-application guard -- applied amount must not
         # exceed remaining balance.
         if state.is_fully_matched:
+            log_guard_failure(
+                guard_type="DOCUMENT_ALREADY_MATCHED",
+                exc_code="DOCUMENT_ALREADY_MATCHED",
+                document_ref=str(invoice_ref),
+            )
             logger.warning("payment_application_already_matched", extra={
                 "invoice_ref": str(invoice_ref),
             })
@@ -292,6 +315,14 @@ class ReconciliationManager:
         # INVARIANT: Amount cannot exceed remaining balance.
         assert amount.amount >= 0, "Payment amount must be non-negative"
         if amount.amount > state.remaining_amount.amount:
+            log_guard_failure(
+                guard_type="OVERAPPLICATION",
+                exc_code="OVERAPPLICATION",
+                document_ref=str(invoice_ref),
+                remaining_amount=str(state.remaining_amount.amount),
+                attempted_amount=str(amount.amount),
+                currency=amount.currency.code,
+            )
             logger.warning("payment_application_overapplication", extra={
                 "invoice_ref": str(invoice_ref),
                 "remaining_amount": str(state.remaining_amount.amount),
@@ -311,7 +342,7 @@ class ReconciliationManager:
             parent_ref=invoice_ref,
             child_ref=payment_ref,
             creating_event_id=creating_event_id,
-            created_at=datetime.now(UTC),
+            created_at=self._now(),
             metadata={
                 "amount_applied": str(amount.amount),
                 "currency": amount.currency.code,
@@ -321,6 +352,13 @@ class ReconciliationManager:
         result = self.link_graph.establish_link(link, allow_duplicate=False)
 
         duration_ms = round((time.monotonic() - t0) * 1000, 2)
+        log_match_accepted(
+            context="payment",
+            duration_ms=duration_ms,
+            invoice_ref=str(invoice_ref),
+            payment_ref=str(payment_ref),
+            amount=str(amount.amount),
+        )
         logger.info("payment_application_completed", extra={
             "invoice_ref": str(invoice_ref),
             "payment_ref": str(payment_ref),
@@ -333,7 +371,7 @@ class ReconciliationManager:
             source_ref=invoice_ref,
             payment_ref=payment_ref,
             applied_amount=amount,
-            applied_date=applied_date or date.today(),
+            applied_date=applied_date or self._today(),
             link=result.link,
             metadata=metadata,
         )
@@ -377,7 +415,7 @@ class ReconciliationManager:
                 target_id=str(inv_ref),
                 target_type="invoice",
                 eligible_amount=remaining,
-                date=applied_date or date.today(),
+                date=applied_date or self._today(),
             )
             for inv_ref, original, remaining in invoices
         ]
@@ -481,6 +519,14 @@ class ReconciliationManager:
         # must be within configured thresholds.
         if tolerance.quantity_tolerance_type.value == "absolute":
             if abs(quantity_variance) > tolerance.quantity_tolerance:
+                log_guard_failure(
+                    guard_type="MATCH_VARIANCE_EXCEEDED",
+                    exc_code="MATCH_VARIANCE_EXCEEDED",
+                    variance_type="quantity",
+                    match_type="THREE_WAY",
+                    variance_amount=str(quantity_variance),
+                    tolerance=str(tolerance.quantity_tolerance),
+                )
                 raise MatchVarianceExceededError(
                     match_type="THREE_WAY",
                     variance_type="quantity",
@@ -491,6 +537,14 @@ class ReconciliationManager:
             if po_quantity > 0:
                 pct_var = abs(quantity_variance) / po_quantity * 100
                 if pct_var > tolerance.quantity_tolerance:
+                    log_guard_failure(
+                        guard_type="MATCH_VARIANCE_EXCEEDED",
+                        exc_code="MATCH_VARIANCE_EXCEEDED",
+                        variance_type="quantity",
+                        match_type="THREE_WAY",
+                        variance_amount=f"{pct_var:.2f}%",
+                        tolerance=f"{tolerance.quantity_tolerance}%",
+                    )
                     raise MatchVarianceExceededError(
                         match_type="THREE_WAY",
                         variance_type="quantity",
@@ -500,6 +554,15 @@ class ReconciliationManager:
 
         if tolerance.amount_tolerance_type.value == "absolute":
             if abs(price_variance.amount) > tolerance.amount_tolerance:
+                log_guard_failure(
+                    guard_type="MATCH_VARIANCE_EXCEEDED",
+                    exc_code="MATCH_VARIANCE_EXCEEDED",
+                    variance_type="price",
+                    match_type="THREE_WAY",
+                    variance_amount=str(price_variance.amount),
+                    tolerance=str(tolerance.amount_tolerance),
+                    currency=price_variance.currency.code,
+                )
                 raise MatchVarianceExceededError(
                     match_type="THREE_WAY",
                     variance_type="price",
@@ -512,6 +575,15 @@ class ReconciliationManager:
             if expected_total > 0:
                 pct_var = abs(price_variance.amount) / expected_total * 100
                 if pct_var > tolerance.amount_tolerance:
+                    log_guard_failure(
+                        guard_type="MATCH_VARIANCE_EXCEEDED",
+                        exc_code="MATCH_VARIANCE_EXCEEDED",
+                        variance_type="price",
+                        match_type="THREE_WAY",
+                        variance_amount=f"{pct_var:.2f}%",
+                        tolerance=f"{tolerance.amount_tolerance}%",
+                        currency=price_variance.currency.code,
+                    )
                     raise MatchVarianceExceededError(
                         match_type="THREE_WAY",
                         variance_type="price",
@@ -529,7 +601,7 @@ class ReconciliationManager:
             parent_ref=po_ref,
             child_ref=receipt_ref,
             creating_event_id=creating_event_id,
-            created_at=datetime.now(UTC),
+            created_at=self._now(),
             metadata={
                 "match_type": "three_way",
                 "po_quantity": str(po_quantity),
@@ -547,7 +619,7 @@ class ReconciliationManager:
             parent_ref=receipt_ref,
             child_ref=invoice_ref,
             creating_event_id=creating_event_id,
-            created_at=datetime.now(UTC),
+            created_at=self._now(),
             metadata={
                 "match_type": "three_way",
                 "receipt_quantity": str(receipt_quantity),
@@ -569,12 +641,20 @@ class ReconciliationManager:
             match_type=MatchType.THREE_WAY,
             documents=(po_ref, receipt_ref, invoice_ref),
             matched_amount=matched_amount,
-            match_date=date.today(),
+            match_date=self._today(),
             variance=price_variance if not price_variance.is_zero else None,
             links_created=tuple(links),
         )
 
         duration_ms = round((time.monotonic() - t0) * 1000, 2)
+        log_match_accepted(
+            context="three_way",
+            duration_ms=duration_ms,
+            match_type="THREE_WAY",
+            match_id=str(match.match_id),
+            matched_amount=str(matched_amount.amount),
+            links_created=len(links),
+        )
         logger.info("three_way_match_completed", extra={
             "match_id": str(match.match_id),
             "matched_amount": str(matched_amount.amount),
@@ -665,6 +745,12 @@ class ReconciliationManager:
             )
             result.append((original_ref, suggestion.score))
 
+        log_match_suggested(
+            context="bank",
+            suggestion_count=len(result),
+            statement_line_id=str(statement_line.line_id),
+            candidate_count=len(gl_candidates),
+        )
         logger.info("bank_match_suggestion_completed", extra={
             "statement_line_id": str(statement_line.line_id),
             "suggestions_found": len(result),
@@ -702,6 +788,12 @@ class ReconciliationManager:
         })
 
         if statement_line.is_reconciled:
+            log_guard_failure(
+                guard_type="BANK_RECONCILIATION_ERROR",
+                exc_code="BANK_RECONCILIATION_ERROR",
+                statement_line_id=str(statement_line.line_id),
+                reason="Line is already reconciled",
+            )
             logger.warning("bank_transaction_already_reconciled", extra={
                 "statement_line_id": str(statement_line.line_id),
             })
@@ -719,7 +811,7 @@ class ReconciliationManager:
                 parent_ref=statement_line.statement_ref,
                 child_ref=gl_ref,
                 creating_event_id=creating_event_id,
-                created_at=datetime.now(UTC),
+                created_at=self._now(),
                 metadata={
                     "statement_line_id": str(statement_line.line_id),
                     "amount": str(statement_line.amount.amount),
@@ -731,6 +823,12 @@ class ReconciliationManager:
             if not result.was_duplicate:
                 links.append(result.link)
 
+        log_match_accepted(
+            context="bank",
+            statement_line_id=str(statement_line.line_id),
+            matched_gl_count=len(gl_refs),
+            links_created=len(links),
+        )
         logger.info("bank_transaction_match_completed", extra={
             "statement_line_id": str(statement_line.line_id),
             "matched_gl_count": len(gl_refs),

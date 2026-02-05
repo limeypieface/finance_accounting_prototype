@@ -1,0 +1,24 @@
+{
+  "rows": [
+    {
+      "date": "06/15/2025",
+      "transaction_type": "Journal Entry",
+      "num": "JE-001",
+      "name": "Test import entry",
+      "lines": [
+        {
+          "account": "Mercury Checking (3820) - 1",
+          "memo": "Debit cash",
+          "debit": "100.00",
+          "credit": null
+        },
+        {
+          "account": "Sales",
+          "memo": "Credit revenue",
+          "debit": null,
+          "credit": "100.00"
+        }
+      ]
+    }
+  ]
+}

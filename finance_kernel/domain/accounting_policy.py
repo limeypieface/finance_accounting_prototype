@@ -250,6 +250,9 @@ class AccountingPolicy:
     required_engines: tuple[str, ...] = ()
     engine_parameters_ref: str | None = None
 
+    # Intent construction (e.g. "payload_lines" = build from event payload.lines)
+    intent_source: str | None = None
+
     # Metadata
     description: str = ""
 

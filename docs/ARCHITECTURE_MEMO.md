@@ -1,6 +1,4 @@
-Understood. I will write the memo around those sections and preserve them exactly as written.
 
----
 
 # Architecture memo: prototype event-sourced double-entry accounting system
 
@@ -299,7 +297,7 @@ These six rules are enforced unconditionally. No configuration or policy may ove
 5. **Sequence monotonicity** — Sequences are strictly monotonic, gap-safe.
 6. **Idempotency** — N retries of the same event produce exactly one journal entry.
 
-### B.2 Full rule registry (R1–R24)
+### B.2 Full rule registry (R1–R27)
 
 | Rule | Name | Summary |
 |------|------|---------|
@@ -327,6 +325,9 @@ These six rules are enforced unconditionally. No configuration or policy may ove
 | R22 | Rounding line isolation | Only the core posting engine may create rounding lines |
 | R23 | Strategy lifecycle governance | Version ranges + replay policy per strategy |
 | R24 | Canonical ledger hash | Deterministic hash over sorted entries |
+| R25 | Kernel primitives only | All monetary/quantity/rate/artifact types from finance_kernel; no parallel types in modules |
+| R26 | Journal is the system of record | Module ORM is operational projection only; derivable from journal + link graph |
+| R27 | Matching is operational | Variance treatment and ledger impact defined by kernel policy, not module logic |
 
 ### B.3 Subledger rules (SL-G1–SL-G10)
 
@@ -428,7 +429,7 @@ Services are the imperative shell — they perform I/O, own transaction boundari
 
 **EngineDispatcher.** Runtime engine dispatch. When a policy declares `required_engines`, the dispatcher resolves parameters from the compiled pack, validates inputs against the engine contract's schema, invokes the engine, and collects trace records. Wired into InterpretationCoordinator — engine invocation happens after policy selection, before intent construction.
 
-**InterpretationCoordinator.** The primary posting pipeline. Accepts a business event, selects a policy, extracts meaning, dispatches engines, builds an accounting intent, writes journal entries, records the outcome, and persists the decision journal.
+**InterpretationCoordinator.** The primary posting pipeline. Accepts a business event, selects a policy, extracts meaning, dispatches engines, builds an accounting intent, writes journal entries, records the outcome, and persists the decision journal. **Invariant:** When a policy declares `required_engines`, success requires one success trace per required engine — no engine run implies no `all_succeeded=True` (prevents silent no-op postings from a mocked dispatcher).
 
 **JournalWriter.** Resolves account roles to COA codes (L1), validates balance per currency, allocates sequence numbers, creates journal lines, verifies R21 reference snapshots, and enforces subledger reconciliation contracts. Multi-ledger postings are atomic (P11).
 

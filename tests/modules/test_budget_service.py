@@ -42,12 +42,17 @@ from tests.modules.conftest import TEST_BUDGET_VERSION_ID
 
 
 @pytest.fixture
-def budget_service(session, module_role_resolver, deterministic_clock, register_modules):
-    """Provide BudgetService for integration testing."""
+def budget_service(
+    session, module_role_resolver, deterministic_clock, register_modules, workflow_executor,
+    party_service, test_actor_party,
+):
+    """Provide BudgetService for integration testing. party_service + test_actor_party for G14."""
     return BudgetService(
         session=session,
         role_resolver=module_role_resolver,
+        workflow_executor=workflow_executor,
         clock=deterministic_clock,
+        party_service=party_service,
     )
 
 

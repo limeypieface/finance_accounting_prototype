@@ -32,61 +32,13 @@ Audit relevance:
       price determination) are met before state advancement.
 """
 
-from dataclasses import dataclass
 
 from finance_kernel.logging_config import get_logger
 
 logger = get_logger("modules.revenue.workflows")
 
 
-@dataclass(frozen=True)
-class Guard:
-    """
-    A condition that must be met before a transition may fire.
-
-    Contract:
-        Frozen dataclass -- immutable.
-    Guarantees:
-        - ``name`` and ``description`` are non-empty strings.
-    """
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class Transition:
-    """
-    A valid state transition in a workflow state machine.
-
-    Contract:
-        Frozen dataclass -- immutable.
-    Guarantees:
-        - ``from_state`` and ``to_state`` are valid state names.
-        - ``posts_entry=True`` means this transition generates a journal entry.
-    """
-    from_state: str
-    to_state: str
-    action: str
-    guard: Guard | None = None
-    posts_entry: bool = False
-
-
-@dataclass(frozen=True)
-class Workflow:
-    """
-    A state machine definition for a module lifecycle.
-
-    Contract:
-        Frozen dataclass -- immutable.
-    Guarantees:
-        - ``initial_state`` is one of ``states``.
-        - All transition from/to states are members of ``states``.
-    """
-    name: str
-    description: str
-    initial_state: str
-    states: tuple[str, ...]
-    transitions: tuple[Transition, ...]
+from finance_kernel.domain.workflow import Guard, Transition, Workflow
 
 
 # Guards
@@ -116,6 +68,31 @@ CONTRACT_LIFECYCLE_WORKFLOW = Workflow(
         Transition("identified", "terminated", action="terminate"),
         Transition("obligations_identified", "terminated", action="terminate"),
     ),
+)
+
+def _revenue_draft_posted(name: str, description: str) -> Workflow:
+    """Simple draft -> posted lifecycle for revenue posting actions (R28)."""
+    return Workflow(
+        name=name,
+        description=description,
+        initial_state="draft",
+        states=("draft", "posted"),
+        transitions=(Transition("draft", "posted", action="post", posts_entry=True),),
+    )
+
+
+# Action-specific workflows for posting methods (R28: no generic workflow)
+REVENUE_ALLOCATE_PRICE_WORKFLOW = _revenue_draft_posted(
+    "revenue_allocate_price", "Allocate transaction price to obligations (Step 4)"
+)
+REVENUE_RECOGNIZE_REVENUE_WORKFLOW = _revenue_draft_posted(
+    "revenue_recognize_revenue", "Recognize revenue (Step 5)"
+)
+REVENUE_MODIFY_CONTRACT_WORKFLOW = _revenue_draft_posted(
+    "revenue_modify_contract", "Record contract modification"
+)
+REVENUE_UPDATE_VARIABLE_CONSIDERATION_WORKFLOW = _revenue_draft_posted(
+    "revenue_update_variable_consideration", "Update variable consideration estimate"
 )
 
 logger.info(

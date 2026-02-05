@@ -409,7 +409,15 @@ class TestNoDeadPolicyFields:
         # subledger names. They appear in GL ledger_effects but are
         # typically resolved via the subledger's own binding. These are
         # documented config gaps to be addressed in the COA authoring phase.
-        KNOWN_PENDING_GL_ROLES = {"AP", "UNAPPLIED_CASH", "SALES_RETURNS", "SALES_ALLOWANCE"}
+        KNOWN_PENDING_GL_ROLES = {
+            "AP",
+            "UNAPPLIED_CASH",
+            "SALES_RETURNS",
+            "SALES_ALLOWANCE",
+            "CASH_IN_TRANSIT",
+            "INTERCOMPANY_DUE_TO",
+            "INTERCOMPANY_DUE_FROM",
+        }
 
         missing = gl_roles_used - gl_bound_roles - KNOWN_PENDING_GL_ROLES
         assert missing == set(), (

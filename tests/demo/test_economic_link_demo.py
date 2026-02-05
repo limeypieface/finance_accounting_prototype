@@ -8,7 +8,7 @@ The -s flag is important to see all the print output!
 
 Requirements:
     - PostgreSQL must be running (uses the standard test fixtures from conftest.py)
-    - Database 'finance_kernel_test' must exist
+    - Pytest DB (finance_kernel_pytest by default) must exist
 """
 
 from datetime import datetime

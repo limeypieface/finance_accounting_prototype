@@ -1173,3 +1173,64 @@ policies:
     side: debit
   - role: WIP_DIRECT_LABOR
     side: credit
+# --- Rate Reconciliation Profiles (DCAA D8) ---
+- name: ContractRateReconciliationUnderapplied
+  version: 1
+  module: contracts
+  description: "Underapplied rate adjustment: actual indirect costs exceeded provisional rates"
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.rate_reconciliation
+    schema_version: 3
+    where:
+    - field: payload.direction
+      value: UNDERAPPLIED
+  meaning:
+    economic_type: RATE_RECONCILIATION
+    dimensions:
+    - org_unit
+    - rate_type
+  ledger_effects:
+  - ledger: GL
+    debit_role: WIP_RATE_ADJUSTMENT
+    credit_role: INDIRECT_RATE_VARIANCE
+  guards:
+  - guard_type: reject
+    expression: payload.adjustment_amount <= 0
+    reason_code: INVALID_ADJUSTMENT
+    message: Underapplied adjustment amount must be positive
+  line_mappings:
+  - role: WIP_RATE_ADJUSTMENT
+    side: debit
+  - role: INDIRECT_RATE_VARIANCE
+    side: credit
+- name: ContractRateReconciliationOverapplied
+  version: 1
+  module: contracts
+  description: "Overapplied rate adjustment: provisional rates exceeded actual indirect costs"
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: contract.rate_reconciliation
+    schema_version: 3
+    where:
+    - field: payload.direction
+      value: OVERAPPLIED
+  meaning:
+    economic_type: RATE_RECONCILIATION
+    dimensions:
+    - org_unit
+    - rate_type
+  ledger_effects:
+  - ledger: GL
+    debit_role: INDIRECT_RATE_VARIANCE
+    credit_role: WIP_RATE_ADJUSTMENT
+  guards:
+  - guard_type: reject
+    expression: payload.adjustment_amount <= 0
+    reason_code: INVALID_ADJUSTMENT
+    message: Overapplied adjustment amount must be positive
+  line_mappings:
+  - role: INDIRECT_RATE_VARIANCE
+    side: debit
+  - role: WIP_RATE_ADJUSTMENT
+    side: credit

@@ -53,10 +53,19 @@ from sqlalchemy.orm import Session
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_modules._posting_helpers import commit_or_rollback, run_workflow_guard
+from finance_services.workflow_executor import WorkflowExecutor
+from finance_modules.credit_loss.workflows import (
+    CREDIT_LOSS_ADJUST_PROVISION_WORKFLOW,
+    CREDIT_LOSS_RECORD_PROVISION_WORKFLOW,
+    CREDIT_LOSS_RECORD_RECOVERY_WORKFLOW,
+    CREDIT_LOSS_RECORD_WRITE_OFF_WORKFLOW,
 )
 from finance_modules.credit_loss.calculations import (
     apply_forward_looking_adjustment,
@@ -107,15 +116,19 @@ class CreditLossService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
     # =========================================================================
@@ -167,12 +180,26 @@ class CreditLossService:
         description: str | None = None,
     ) -> ModulePostingResult:
         """Record credit loss provision (Dr Bad Debt Expense / Cr Allowance)."""
-        payload: dict[str, Any] = {
-            "segment": segment,
-            "amount": str(amount),
-        }
-
         try:
+            entity_id = uuid4()
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CREDIT_LOSS_RECORD_PROVISION_WORKFLOW,
+                "credit_loss_provision",
+                entity_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            payload: dict[str, Any] = {
+                "segment": segment,
+                "amount": str(amount),
+            }
+
             result = self._poster.post_event(
                 event_type="credit_loss.provision",
                 payload=payload,
@@ -182,10 +209,7 @@ class CreditLossService:
                 currency=currency,
                 description=description,
             )
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
         except Exception:
             self._session.rollback()
@@ -201,12 +225,25 @@ class CreditLossService:
         description: str | None = None,
     ) -> ModulePostingResult:
         """Adjust credit loss provision."""
-        payload: dict[str, Any] = {
-            "segment": segment,
-            "amount": str(amount),
-        }
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CREDIT_LOSS_ADJUST_PROVISION_WORKFLOW,
+                "credit_loss_adjustment",
+                uuid4(),
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            payload: dict[str, Any] = {
+                "segment": segment,
+                "amount": str(amount),
+            }
+
             result = self._poster.post_event(
                 event_type="credit_loss.adjustment",
                 payload=payload,
@@ -216,10 +253,7 @@ class CreditLossService:
                 currency=currency,
                 description=description,
             )
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
         except Exception:
             self._session.rollback()
@@ -240,6 +274,19 @@ class CreditLossService:
         description: str | None = None,
     ) -> ModulePostingResult:
         """Write off against allowance (Dr Allowance / Cr AR)."""
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CREDIT_LOSS_RECORD_WRITE_OFF_WORKFLOW,
+            "credit_loss_write_off",
+            customer_id,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         payload: dict[str, Any] = {
             "customer_id": str(customer_id),
             "segment": segment,
@@ -256,10 +303,7 @@ class CreditLossService:
                 currency=currency,
                 description=description,
             )
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
         except Exception:
             self._session.rollback()
@@ -276,13 +320,26 @@ class CreditLossService:
         description: str | None = None,
     ) -> ModulePostingResult:
         """Record recovery of previously written-off amount (Dr AR / Cr Allowance)."""
-        payload: dict[str, Any] = {
-            "customer_id": str(customer_id),
-            "segment": segment,
-            "amount": str(amount),
-        }
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CREDIT_LOSS_RECORD_RECOVERY_WORKFLOW,
+                "credit_loss_recovery",
+                customer_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            payload: dict[str, Any] = {
+                "customer_id": str(customer_id),
+                "segment": segment,
+                "amount": str(amount),
+            }
+
             result = self._poster.post_event(
                 event_type="credit_loss.recovery",
                 payload=payload,
@@ -292,10 +349,7 @@ class CreditLossService:
                 currency=currency,
                 description=description,
             )
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
         except Exception:
             self._session.rollback()

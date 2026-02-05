@@ -1,0 +1,4 @@
+# Custom import mappings (add your own here).
+# For QBO converter JSON use qbo_json.yaml (qbo_json_accounts, qbo_json_vendors, qbo_json_customers, qbo_json_journal).
+
+import_mappings: []

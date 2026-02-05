@@ -75,6 +75,60 @@ def random_uuid():
 
 
 # ---------------------------------------------------------------------------
+# Workflow executor (for guard-in-production tests)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def approval_service(session, auditor_service, deterministic_clock):
+    """ApprovalService for WorkflowExecutor (used when testing guards in production path)."""
+    from finance_kernel.services.approval_service import ApprovalService
+    return ApprovalService(session, auditor_service, deterministic_clock)
+
+
+@pytest.fixture
+def workflow_executor(approval_service, deterministic_clock):
+    """WorkflowExecutor with default guard evaluators (used when testing guards in production path)."""
+    from finance_services.workflow_executor import WorkflowExecutor
+    return WorkflowExecutor(
+        approval_service=approval_service,
+        approval_policies={},
+        clock=deterministic_clock,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PartyService and actor party (required for G14 actor validation in posting)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def party_service(session):
+    """PartyService for module services that validate actor_id at posting (G14)."""
+    from finance_kernel.services.party_service import PartyService
+    return PartyService(session)
+
+
+@pytest.fixture
+def test_actor_party(session, test_actor_id):
+    """Create the Party that represents the test actor (G14). Without this, posting fails INVALID_ACTOR."""
+    from finance_kernel.models.party import Party, PartyStatus, PartyType
+    existing = session.get(Party, test_actor_id)
+    if existing is not None:
+        return existing
+    party = Party(
+        id=test_actor_id,
+        party_type=PartyType.EMPLOYEE,
+        party_code="TEST-ACTOR",
+        name="Test Actor",
+        status=PartyStatus.ACTIVE,
+        is_active=True,
+        created_by_id=test_actor_id,
+    )
+    session.add(party)
+    session.flush()
+    return party
+
+
+# ---------------------------------------------------------------------------
 # Kernel Party fixtures (opt-in, individual)
 #
 # Tests that need a vendor Party explicitly request `test_vendor_party`.

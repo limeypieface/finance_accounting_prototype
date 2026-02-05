@@ -5,42 +5,33 @@ This guide explains how to build new modules (AP, AR, Inventory, WIP) on top of 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│            Your Module (AP, AR, Inventory, etc.)                 │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
-│  │  Event Schemas  │  │ AccountingPolicy│  │  Module Service  │  │
-│  │  (your events)  │  │  Definitions    │  │  (orchestrator)  │  │
-│  └────────┬────────┘  └────────┬────────┘  └───────┬─────────┘  │
-└───────────┼────────────────────┼───────────────────┼────────────┘
-            │                    │                   │
-            ▼                    ▼                   ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                       finance_config                             │
-│  AccountingConfigurationSet → CompiledPolicyPack                │
-│  get_active_config() — the ONLY configuration entrypoint         │
-└─────────────────────────────────┬───────────────────────────────┘
-                                  │
-                                  ▼
-┌──────────────────────────────────┬──────────────────────────────┐
-│      finance_engines             │     finance_services          │
-│  (Pure — no I/O, no session)    │  (Stateful — session, I/O)   │
-│  VarianceCalculator              │  ValuationService             │
-│  AllocationEngine                │  ReconciliationService        │
-│  AllocationCascade               │  CorrectionService            │
-│  MatchingEngine                  │  SubledgerService             │
-│  AgingCalculator                 │                               │
-│  TaxCalculator                   │                               │
-│  BillingEngine                   │                               │
-│  ICEEngine                       │                               │
-└──────────────────────────────────┴──────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                       finance_kernel                             │
-│  Value Objects │ AccountingPolicy │ InterpretationCoordinator    │
-│  Bookkeeper    │ MeaningBuilder   │ JournalWriter                │
-│  (pure)        │   (pure)         │ OutcomeRecorder              │
-└─────────────────────────────────────────────────────────────────┘
+Command / API / Job
+        │
+        ▼
+┌───────────────────────────────┐
+│     Module Service           │
+│  (Orchestration + Tx)       │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌───────────────────────────────┐
+│   WorkflowExecutor           │  ← Authority Plane
+│   Guards / Approvals        │
+│   State Transitions         │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌───────────────────────────────┐
+│  Engines / Services          │
+│  (Meaning + Links)          │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌───────────────────────────────┐
+│  finance_kernel             │
+│  (Posting + Audit)         │
+└───────────────────────────────┘
+
 ```
 
 **Your module provides**: Event schemas, accounting policy definitions, module service (orchestrator)
@@ -710,7 +701,28 @@ class APService:
             event = self._build_invoice_event(invoice_data)
 
             # 2. Post via ModulePostingService
-            result = self._poster.post(event)
+            r# 1. Authority check
+transition = self._workflow_executor.execute_transition(
+    workflow=INVOICE_WORKFLOW,
+    entity_type="ap_invoice",
+    entity_id=invoice_id,
+    current_state="draft",
+    action="submit",
+    actor_id=actor_id,
+    amount=amount,
+    currency=currency,
+    context=payload,
+)
+
+if not transition.success:
+    return ModulePostingResult.guard_result(transition)
+
+# 2. Engines / links
+self._reconciliation.apply_payment(...)
+
+# 3. Kernel posting
+result = self._poster.post_event(...)
+
 
             # 3. Establish economic links
             self._link_to_purchase_order(invoice_data, result)
@@ -1081,7 +1093,11 @@ pytest tests/security/ tests/database_security/ tests/adversarial/ -v
 
 ### Module Service
 - [ ] Create a `service.py` in your module following the standard pattern
-- [ ] Service constructor takes (session, role_resolver, clock)
+- [ ] Service constructor takes:
+- session: SQLAlchemy Session
+- role_resolver: RoleResolver
+- workflow_executor: WorkflowExecutor (required, no bypass)
+- clock: Clock (optional, injectable)
 - [ ] Service creates `ModulePostingService` with `auto_commit=False`
 - [ ] Import pure engines from `finance_engines/`
 - [ ] Import stateful services from `finance_services/`

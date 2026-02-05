@@ -4,7 +4,7 @@ Work-in-Process Module (``finance_modules.wip``).
 Responsibility
 --------------
 Thin ERP glue for manufacturing cost accounting: material issues, labor
-charges, overhead application, work-order completion, scrap, rework,
+charges, overhead application, manufacturing-order completion, scrap, rework,
 byproduct recording, and period-end variance analysis (labor, material,
 overhead).
 
@@ -52,7 +52,10 @@ from finance_modules.wip.models import (
     WorkOrderLine,
 )
 from finance_modules.wip.profiles import WIP_PROFILES
-from finance_modules.wip.workflows import WORK_ORDER_WORKFLOW
+from finance_modules.wip.workflows import MANUFACTURING_ORDER_WORKFLOW
+
+# Backward compatibility: we use manufacturing orders only (no work orders).
+WORK_ORDER_WORKFLOW = MANUFACTURING_ORDER_WORKFLOW
 
 __all__ = [
     "WorkOrder",
@@ -64,6 +67,7 @@ __all__ = [
     "ByproductRecord",
     "UnitCostBreakdown",
     "WIP_PROFILES",
+    "MANUFACTURING_ORDER_WORKFLOW",
     "WORK_ORDER_WORKFLOW",
     "WIPConfig",
 ]

@@ -114,8 +114,25 @@ def _print_bs_section(section) -> None:
     print(_blank())
 
 
+def _print_bs_equity_section(bs) -> None:
+    """Print equity section with explicit Net Income line so Total Equity is clear."""
+    section = bs.equity
+    print(f"  {section.label}")
+    for line in section.lines:
+        print(_row(f"{line.account_code}  {line.account_name}", line.net_balance, indent=1))
+    equity_accounts_sum = sum(line.net_balance for line in section.lines)
+    net_income = bs.total_equity - equity_accounts_sum
+    if net_income != 0:
+        print(_row("Net Income", net_income, indent=1))
+    print(_sep())
+    print(_row(f"Total {section.label}", bs.total_equity, indent=1))
+    print(_blank())
+
+
 def print_balance_sheet(bs) -> None:
-    print(_hdr("BALANCE SHEET", f"As of {FY_END}  —  {ENTITY}"))
+    as_of = getattr(bs.metadata, "as_of_date", None) or FY_END
+    entity = getattr(bs.metadata, "entity_name", None) or ENTITY
+    print(_hdr("BALANCE SHEET", f"As of {as_of}  —  {entity}"))
 
     print()
     print("  ASSETS")
@@ -131,7 +148,7 @@ def print_balance_sheet(bs) -> None:
 
     print()
     print("  EQUITY")
-    _print_bs_section(bs.equity)
+    _print_bs_equity_section(bs)
     print(_bold_row("Total Equity", bs.total_equity))
 
     print()

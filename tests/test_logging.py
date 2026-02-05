@@ -33,15 +33,41 @@ def _make_handler() -> tuple[logging.Handler, StringIO]:
     return handler, stream
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _logger_with_capture(name: str = "test"):
+    """Attach a capture handler to the test logger so we don't depend on global configure_logging.
+    Yields (logger, handler, stream).
+    """
+    handler, stream = _make_handler()
+    logger = get_logger(name)
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    try:
+        yield logger, handler, stream
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = True
+
+
 def _parse_log(stream: StringIO) -> dict:
     """Parse the first JSON log line from a stream."""
-    line = stream.getvalue().strip().split("\n")[0]
-    return json.loads(line)
+    value = stream.getvalue().strip()
+    if not value:
+        raise ValueError("No log output captured; stream is empty")
+    lines = value.split("\n")
+    return json.loads(lines[0])
 
 
 def _parse_all_logs(stream: StringIO) -> list[dict]:
     """Parse all JSON log lines from a stream."""
-    lines = stream.getvalue().strip().split("\n")
+    value = stream.getvalue().strip()
+    if not value:
+        return []
+    lines = value.split("\n")
     return [json.loads(line) for line in lines if line]
 
 
@@ -54,11 +80,8 @@ class TestStructuredFormatter:
     """Tests for JSON log output format."""
 
     def test_basic_json_output(self):
-        handler, stream = _make_handler()
-        configure_logging(handler=handler)
-        logger = get_logger("test")
-        logger.info("hello")
-
+        with _logger_with_capture() as (logger, _handler, stream):
+            logger.info("hello")
         record = _parse_log(stream)
         assert record["level"] == "INFO"
         assert record["message"] == "hello"
@@ -66,35 +89,26 @@ class TestStructuredFormatter:
         assert "ts" in record
 
     def test_extra_fields_included(self):
-        handler, stream = _make_handler()
-        configure_logging(handler=handler)
-        logger = get_logger("test")
-        logger.info("posted", extra={"seq": 42, "status": "posted"})
-
+        with _logger_with_capture() as (logger, _handler, stream):
+            logger.info("posted", extra={"seq": 42, "status": "posted"})
         record = _parse_log(stream)
         assert record["seq"] == 42
         assert record["status"] == "posted"
 
     def test_context_fields_included(self):
-        handler, stream = _make_handler()
-        configure_logging(handler=handler)
-        logger = get_logger("test")
-        LogContext.set(correlation_id="abc-123", event_id="evt-456")
-        logger.info("test_msg")
-
+        with _logger_with_capture() as (logger, _handler, stream):
+            LogContext.set(correlation_id="abc-123", event_id="evt-456")
+            logger.info("test_msg")
         record = _parse_log(stream)
         assert record["correlation_id"] == "abc-123"
         assert record["event_id"] == "evt-456"
 
     def test_exception_fields(self):
-        handler, stream = _make_handler()
-        configure_logging(handler=handler)
-        logger = get_logger("test")
-        try:
-            raise ValueError("boom")
-        except ValueError:
-            logger.error("failed", exc_info=True)
-
+        with _logger_with_capture() as (logger, _handler, stream):
+            try:
+                raise ValueError("boom")
+            except ValueError:
+                logger.error("failed", exc_info=True)
         record = _parse_log(stream)
         assert record["exc_type"] == "ValueError"
         assert record["exc_message"] == "boom"
@@ -102,16 +116,13 @@ class TestStructuredFormatter:
 
     def test_finance_exception_code_extracted(self):
         """Finance kernel exceptions carry .code attribute."""
-        handler, stream = _make_handler()
-        configure_logging(handler=handler)
-        logger = get_logger("test")
         from finance_kernel.exceptions import ClosedPeriodError
 
-        try:
-            raise ClosedPeriodError("2026-01", "2026-01-15")
-        except ClosedPeriodError:
-            logger.error("period_error", exc_info=True)
-
+        with _logger_with_capture() as (logger, _handler, stream):
+            try:
+                raise ClosedPeriodError("2026-01", "2026-01-15")
+            except ClosedPeriodError:
+                logger.error("period_error", exc_info=True)
         record = _parse_log(stream)
         assert record["exc_code"] == "CLOSED_PERIOD"
         assert record["exc_type"] == "ClosedPeriodError"
@@ -119,36 +130,26 @@ class TestStructuredFormatter:
         assert record["exc_effective_date"] == "2026-01-15"
 
     def test_no_context_fields_when_empty(self):
-        handler, stream = _make_handler()
-        configure_logging(handler=handler)
-        logger = get_logger("test")
-        logger.info("bare_message")
-
+        with _logger_with_capture() as (logger, _handler, stream):
+            logger.info("bare_message")
         record = _parse_log(stream)
         assert "correlation_id" not in record
         assert "event_id" not in record
 
     def test_uuid_serialized(self):
-        handler, stream = _make_handler()
-        configure_logging(handler=handler)
-        logger = get_logger("test")
-        uid = uuid4()
-        logger.info("with_uuid", extra={"entry_id": uid})
-
+        with _logger_with_capture() as (logger, _handler, stream):
+            uid = uuid4()
+            logger.info("with_uuid", extra={"entry_id": uid})
         record = _parse_log(stream)
         assert record["entry_id"] == str(uid)
 
     def test_valid_json_every_line(self):
-        handler, stream = _make_handler()
-        configure_logging(handler=handler)
-        logger = get_logger("test")
-        logger.info("first")
-        logger.warning("second", extra={"k": "v"})
-        logger.debug("third")
-
+        with _logger_with_capture() as (logger, _handler, stream):
+            logger.setLevel(logging.INFO)  # DEBUG won't appear
+            logger.info("first")
+            logger.warning("second", extra={"k": "v"})
+            logger.debug("third")
         logs = _parse_all_logs(stream)
-        # debug should not appear at INFO level, but configure_logging was called with default INFO
-        # actually we set level=INFO by default, so debug won't appear
         assert len(logs) == 2
         for record in logs:
             assert "ts" in record
@@ -219,6 +220,7 @@ class TestConfigureLogging:
     """Tests for initialization."""
 
     def test_idempotent(self):
+        reset_logging()
         h1, _ = _make_handler()
         configure_logging(handler=h1)
         h2, _ = _make_handler()
@@ -232,11 +234,8 @@ class TestConfigureLogging:
 
     def test_logger_hierarchy(self):
         """Child loggers inherit the finance_kernel root config."""
-        handler, stream = _make_handler()
-        configure_logging(handler=handler, level=logging.DEBUG)
-        child = get_logger("deep.nested.module")
-        child.debug("hierarchy_test")
-
+        with _logger_with_capture("deep.nested.module") as (child, _handler, stream):
+            child.debug("hierarchy_test")
         record = _parse_log(stream)
         assert record["message"] == "hierarchy_test"
         assert record["logger"] == "finance_kernel.deep.nested.module"

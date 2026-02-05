@@ -66,10 +66,22 @@ from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_modules._posting_helpers import run_workflow_guard
+from finance_services.workflow_executor import WorkflowExecutor
+from finance_modules.tax.workflows import (
+    TAX_RECORD_ADJUSTMENT_WORKFLOW,
+    TAX_RECORD_DEFERRED_ASSET_WORKFLOW,
+    TAX_RECORD_DEFERRED_LIABILITY_WORKFLOW,
+    TAX_RECORD_MULTI_JURISDICTION_WORKFLOW,
+    TAX_RECORD_OBLIGATION_WORKFLOW,
+    TAX_RECORD_PAYMENT_WORKFLOW,
+    TAX_RECORD_VAT_SETTLEMENT_WORKFLOW,
 )
 from finance_modules.tax.helpers import (
     aggregate_multi_jurisdiction,
@@ -124,17 +136,21 @@ class TaxService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor
 
-        # Kernel posting (auto_commit=False -- we own the boundary)
+        # Kernel posting (auto_commit=False -- we own the boundary). G14: actor validation mandatory.
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
         # Stateless engine
@@ -182,6 +198,19 @@ class TaxService:
         - "vat_settlement"      -> tax.vat_settlement (VatSettlement)
         - "refund_received"     -> tax.refund_received (TaxRefundReceived)
         """
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            TAX_RECORD_OBLIGATION_WORKFLOW,
+            "tax_obligation",
+            obligation_id,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         event_type = f"tax.{tax_type}"
 
         payload: dict[str, Any] = {
@@ -263,6 +292,19 @@ class TaxService:
 
         Profile dispatch: tax.payment -> TaxPayment.
         """
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            TAX_RECORD_PAYMENT_WORKFLOW,
+            "tax_payment",
+            payment_id,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         payload: dict[str, Any] = {
             "payment_id": str(payment_id),
             "tax_type": tax_type,
@@ -344,6 +386,19 @@ class TaxService:
         Debits TAX_PAYABLE (output_vat), credits TAX_RECEIVABLE (input_vat)
         and CASH (net_payment = output_vat - input_vat).
         """
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            TAX_RECORD_VAT_SETTLEMENT_WORKFLOW,
+            "vat_settlement",
+            settlement_id,
+            actor_id=actor_id,
+            amount=output_vat,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         net_payment = output_vat - input_vat
 
         payload: dict[str, Any] = {
@@ -489,12 +544,33 @@ class TaxService:
         Raises:
             Any exception from ``post_event`` after session rollback.
         """
-        from uuid import uuid4
+        from uuid import uuid4 as _uuid4
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            TAX_RECORD_DEFERRED_ASSET_WORKFLOW,
+            "deferred_tax_asset",
+            _uuid4(),
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            allowance = calculate_dta_valuation_allowance(amount, realizability_percentage)
+            dta_placeholder = DeferredTaxAsset(
+                id=_uuid4(),
+                source=source,
+                amount=amount,
+                valuation_allowance=allowance,
+                net_amount=amount - allowance,
+            )
+            return dta_placeholder, failure
+
         valuation_allowance = calculate_dta_valuation_allowance(amount, realizability_percentage)
         net_amount = amount - valuation_allowance
 
         dta = DeferredTaxAsset(
-            id=uuid4(),
+            id=_uuid4(),
             source=source,
             amount=amount,
             valuation_allowance=valuation_allowance,
@@ -548,9 +624,23 @@ class TaxService:
         Raises:
             Any exception from ``post_event`` after session rollback.
         """
-        from uuid import uuid4
+        from uuid import uuid4 as _uuid4
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            TAX_RECORD_DEFERRED_LIABILITY_WORKFLOW,
+            "deferred_tax_liability",
+            _uuid4(),
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            dtl_placeholder = DeferredTaxLiability(id=_uuid4(), source=source, amount=amount)
+            return dtl_placeholder, failure
+
         dtl = DeferredTaxLiability(
-            id=uuid4(),
+            id=_uuid4(),
             source=source,
             amount=amount,
         )
@@ -638,6 +728,19 @@ class TaxService:
         Uses helpers to aggregate across jurisdictions, then posts total.
         """
         summary = aggregate_multi_jurisdiction(jurisdictions)
+
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            TAX_RECORD_MULTI_JURISDICTION_WORKFLOW,
+            "multi_jurisdiction_tax",
+            uuid4(),
+            actor_id=actor_id,
+            amount=summary["total_tax"],
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return summary, failure
 
         payload: dict[str, Any] = {
             "jurisdiction_count": summary["jurisdiction_count"],
@@ -741,6 +844,19 @@ class TaxService:
         Raises:
             Any exception from ``post_event`` after session rollback.
         """
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            TAX_RECORD_ADJUSTMENT_WORKFLOW,
+            "tax_adjustment",
+            uuid4(),
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         payload: dict[str, Any] = {
             "period": period,
             "amount": str(amount),

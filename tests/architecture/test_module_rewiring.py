@@ -179,6 +179,7 @@ class TestEngineDispatcherWiring:
             precedence=None,
             valuation_model=None,
             line_mappings=(),
+            intent_source=None,
             required_engines=(),
             engine_parameters_ref=None,
             variance_disposition=None,

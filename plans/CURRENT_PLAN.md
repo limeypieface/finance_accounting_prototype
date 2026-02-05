@@ -7,7 +7,7 @@
 ## 1. Modular Approval Engine
 
 **Status:** PHASE 10 COMPLETE -- Module workflow migration (AP first) done
-**Full plan:** `plans/APPROVAL_ENGINE_PLAN.md`
+**Full plan (archived):** `plans/archive/2026-02-04_approval-engine-plan.md`
 
 Design and implement a fully modular, configuration-driven approval engine that
 governs all state transitions across the system -- both human approval gates and
@@ -50,7 +50,7 @@ config time.
 ## 2. ERP Data Ingestion System
 
 **Status:** IN PROGRESS -- Phase 0 and Phase 1 done
-**Full plan:** `plans/ERP_INGESTION_PLAN.md`
+**Full plan (archived):** `plans/archive/2026-02-04_erp-ingestion-plan.md`
 
 Design and implement a configuration-driven ERP data ingestion system with
 staging, per-record validation, and granular visibility into processing status.
@@ -98,7 +98,26 @@ config/domain types, removes transient statuses and per-record mapping snapshots
 
 ---
 
-## 3. Reversal System -- Deferred Items & Improvements
+## 3. QuickBooks Loader — One-Command Onboarding
+
+**Status:** Phase 1 done; Phases 2–5 not yet implemented  
+**Full plan:** `plans/QBO_LOADER_PLAN.md`
+
+A single flow so a QuickBooks user can: (1) put XLSX exports in a folder, (2) run one command, (3) align their Chart of Accounts with the system (system recommends which config COA matches; user maps input accounts to target COA), (4) have the system construct accounts, vendors, customers, and journal with correct dates and key fields (TBD placeholders or assigned codes), (5) get data that passes validation and promotes — no “fix 123 errors” cycles. The XLSX layout is fixed (standard QBO export), so one loader serves any QBO user.
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | CoA extraction + recommendation (input CoA vs config COA options; score and recommend) | **done** |
+| 2 | CoA mapping UI (user maps each input account → target code or TBD; persist mapping) | not started |
+| 3 | Construct journal and entities using mapping (resolve accounts, format dates, assign codes/TBD) | not started |
+| 4 | One command: convert → recommend → map → construct → validate → promote | not started |
+| 5 | Hardening, error messages, docs, E2E test | not started |
+
+**Phase 1 completed:** `scripts/qbo/coa_extract.py`, `coa_config.py`, `coa_recommend.py`; CLI `scripts/recommend_coa.py --input path/to/qbo_accounts.json`; tests `tests/ingestion/test_qbo_coa_recommend.py` (16 tests). **Current building blocks:** `scripts/qbo/` (detect, read XLSX, CoA extract/recommend), `run_qbo_convert.py` (folder → JSON), `qbo_json.yaml` (import mappings), `finance_ingestion` (stage, validate, promote). **Gap:** CoA mapping step (Phase 2), single-command orchestration (Phase 4).
+
+---
+
+## 4. Reversal System -- Deferred Items & Improvements
 
 **Source:** `plans/archive/2026-02-01_reversal-implementation.md` (completed)
 **Status:** Open items from completed reversal implementation
@@ -388,12 +407,206 @@ Full regression shows 144 failed + 121 errors, all pre-existing (DB schema issue
 
 ---
 
+## 8. DCAA Compliance Gap Closure (Streams A/B/C)
+
+**Status:** COMPLETE -- All 6 phases done across 3 streams, 147 new tests passing
+**Full plan:** `.claude/plans/lively-skipping-biscuit.md`
+
+Closed all DCAA (Defense Contract Audit Agency) compliance gaps across three
+streams: timekeeping controls, expense controls, and rate controls. Implements
+9 new invariants (D1-D9) covering FAR 31.201-2(d), DCAA CAM 6-406, CAS 418,
+FAR 31.205-46, FAR 31.201-3, and JTR requirements.
+
+### 9 DCAA Invariants
+
+| ID | Name | FAR/CAS Ref | Stream |
+|----|------|-------------|--------|
+| D1 | DAILY_RECORDING -- entries submitted within N days | FAR 31.201-2(d) | A |
+| D2 | SUPERVISOR_APPROVAL -- no labor charges without approval | DCAA CAM 6-406 | A |
+| D3 | TOTAL_TIME_BALANCE -- all hours account for expected total | CAS 418 | A |
+| D4 | NO_CONCURRENT_OVERLAP -- no overlapping charges | CAS 418 | A |
+| D5 | CORRECTION_BY_REVERSAL -- corrections via reversal + new entry | R10 | A |
+| D6 | PRE_TRAVEL_AUTH -- travel expenses require pre-authorization | FAR 31.205-46 | B |
+| D7 | GSA_RATE_CAP -- per diem/lodging capped at GSA rates | JTR/FAR 31.205-46 | B |
+| D8 | RATE_CEILING -- labor rates capped at contract maximums | FAR 31.201-3 | C |
+| D9 | FLOOR_CHECK_AUDIT -- floor checks are append-only audit artifacts | DCAA CAM 6-406.3 | A |
+
+### Phases (All Streams)
+
+| Phase | Description | Status |
+|-------|------------|--------|
+| 0 | Domain types (frozen dataclasses, all 3 streams) | done |
+| 1 | ORM models (all 3 streams) | done |
+| 2 | Pure engines (zero I/O, all 3 streams) | done |
+| 3 | Schemas + profiles + config (all 3 streams) | done |
+| 4 | Service + workflow wiring (all 3 streams) | done |
+| 5 | Tests + architecture boundary (all 3 streams) | done |
+
+### Stream A: Timesheet Controls
+
+- **Domain types:** `finance_modules/payroll/dcaa_types.py` -- TimesheetEntry, TimesheetSubmission, FloorCheck, TotalTimeRecord, TimesheetCorrection, ConcurrentWorkCheck + enums
+- **ORM:** `finance_modules/payroll/dcaa_orm.py` -- TimesheetSubmissionModel, TimesheetEntryModel, FloorCheckModel, TimesheetCorrectionModel
+- **Engine:** `finance_engines/timesheet_compliance.py` -- validate_daily_recording, validate_total_time_accounting, detect_concurrent_overlaps, compute_total_time_record, validate_correction_reversal (all pure)
+- **Service:** `finance_modules/payroll/service.py` -- submit_timesheet (D1/D3/D4), approve_timesheet (D2 -- sole posting gate for labor charges), reject_timesheet, correct_timesheet_entry (D5), record_floor_check (D9)
+- **Workflow:** `finance_modules/payroll/workflows.py` -- TIMESHEET_WORKFLOW (6 transitions, 5 guards)
+
+### Stream B: Expense Controls
+
+- **Domain types:** `finance_modules/expense/dcaa_types.py` -- TravelAuthorization, TravelCostEstimate, GSARate, GSARateTable, GSAComplianceResult, GSAViolation + enums
+- **ORM:** `finance_modules/expense/dcaa_orm.py` -- TravelAuthorizationModel, TravelAuthLineModel
+- **Engine:** `finance_engines/expense_compliance.py` -- validate_pre_travel_authorization, validate_expense_within_authorization, validate_gsa_compliance, validate_lodging_against_gsa, compute_allowable_per_diem, lookup_gsa_rate (all pure)
+- **Service:** `finance_modules/expense/service.py` -- submit_travel_authorization (D6), approve_travel_authorization (D6), record_expense_report_with_gsa_check (D6/D7)
+- **Workflow:** `finance_modules/expense/workflows.py` -- TRAVEL_AUTH_WORKFLOW (5 transitions, 2 guards)
+
+### Stream C: Rate Controls
+
+- **Domain types:** `finance_modules/contracts/rate_types.py` -- LaborRateSchedule, ContractRateCeiling, RateVerificationResult, IndirectRateRecord, RateReconciliationRecord + enums
+- **ORM:** `finance_modules/contracts/rate_orm.py` -- LaborRateScheduleModel, ContractRateCeilingModel, IndirectRateModel, RateReconciliationModel
+- **Engine:** `finance_engines/rate_compliance.py` -- verify_labor_rate, find_applicable_rate, find_contract_ceiling, compute_rate_reconciliation, compute_all_reconciliations (all pure)
+- **Service:** `finance_modules/contracts/service.py` -- verify_and_record_labor_rate (D8), record_indirect_rate, run_fiscal_year_rate_reconciliation (GL posting via underapplied/overapplied profiles)
+
+### Key Design Decisions
+
+1. **Timesheet approval gates labor charges (D2):** `approve_timesheet()` is the ONLY path that posts labor cost events. Maps pay_code to event_type (regular/overtime/pto) and posts for each entry.
+2. **GSA enforcement is pre-posting validation (D7):** Pure engine computes violations before the posting pipeline. When enabled, violations block posting.
+3. **Floor checks are append-only audit artifacts (D9):** Never modify existing records. Discrepancies trigger human review.
+4. **Rate verification at service layer (D8):** Pure engine computes result, service decides whether to reject based on config.
+5. **All corrections use reversal pattern (D5/R10):** `TimesheetCorrection` models the chain: original -> reversal -> new entry.
+6. **GSA rate table is config-driven (YAML):** Follows existing config pattern.
+
+### Files Created (16 new)
+
+**Source (9):**
+- `finance_modules/payroll/dcaa_types.py`
+- `finance_modules/payroll/dcaa_orm.py`
+- `finance_modules/expense/dcaa_types.py`
+- `finance_modules/expense/dcaa_orm.py`
+- `finance_modules/contracts/rate_types.py`
+- `finance_modules/contracts/rate_orm.py`
+- `finance_engines/timesheet_compliance.py`
+- `finance_engines/expense_compliance.py`
+- `finance_engines/rate_compliance.py`
+
+**Tests (7):**
+- `tests/modules/test_dcaa_timesheet_types.py` (19 tests)
+- `tests/modules/test_dcaa_expense_types.py` (17 tests)
+- `tests/modules/test_dcaa_rate_types.py` (16 tests)
+- `tests/engines/test_timesheet_compliance.py` (30 tests)
+- `tests/engines/test_expense_compliance.py` (26 tests)
+- `tests/engines/test_rate_compliance.py` (22 tests)
+- `tests/architecture/test_dcaa_boundary.py` (7 tests -- engine purity, type purity, ORM boundary)
+
+### Files Modified (6)
+
+| File | Change |
+|------|--------|
+| `finance_modules/payroll/workflows.py` | Added TIMESHEET_WORKFLOW (5 guards, 6 transitions) |
+| `finance_modules/payroll/service.py` | Added 5 DCAA service methods (submit/approve/reject/correct/floor_check) |
+| `finance_modules/expense/workflows.py` | Added TRAVEL_AUTH_WORKFLOW (2 guards, 5 transitions) |
+| `finance_modules/expense/service.py` | Added 3 DCAA service methods (submit_auth/approve_auth/gsa_check) |
+| `finance_modules/contracts/service.py` | Added 3 DCAA service methods (verify_rate/record_rate/reconciliation) |
+| `finance_modules/_orm_registry.py` | Registered DCAA ORM models (phases 0-1) |
+
+### Test Results
+
+| Suite | File | Count |
+|-------|------|-------|
+| Timesheet types | `tests/modules/test_dcaa_timesheet_types.py` | 19 |
+| Expense types | `tests/modules/test_dcaa_expense_types.py` | 17 |
+| Rate types | `tests/modules/test_dcaa_rate_types.py` | 16 |
+| Timesheet engine | `tests/engines/test_timesheet_compliance.py` | 30 |
+| Expense engine | `tests/engines/test_expense_compliance.py` | 26 |
+| Rate engine | `tests/engines/test_rate_compliance.py` | 22 |
+| Architecture boundary | `tests/architecture/test_dcaa_boundary.py` | 7 |
+| **Total new** | | **147** |
+
+Full regression: 4831 passed, no new failures introduced.
+
+### Architecture Boundary Enforcement
+
+- **Engine purity:** All 3 DCAA engines have zero forbidden imports (no ORM, no services, no config, no I/O, no datetime.now/date.today)
+- **Type purity:** All 3 DCAA type files have zero forbidden imports
+- **ORM boundary:** All 3 DCAA ORM files only import from kernel.db and own module types
+
+---
+
+## 9. Guard Wiring — All Modules
+
+**Status:** DONE for AR, AP, Cash, GL, Inventory, WIP — all use action-specific workflows; no generic *_OTHER_WORKFLOW
+**Directive:** `docs/WORKFLOW_DIRECTIVE.md` — **No generic workflows.** Every financial action must bind to a **specific lifecycle workflow** (R28). Enforcement: `tests/architecture/test_no_generic_workflow.py` (passes for AR, AP, Cash, GL, Inventory, WIP).
+
+**Migrated modules:** AR, AP, Cash, GL, Inventory, WIP now define action-specific workflows and map each service method to exactly one workflow. Generic workflows (AR_OTHER_WORKFLOW, AP_OTHER_WORKFLOW, CASH_OTHER_WORKFLOW, GL_OTHER_WORKFLOW, INVENTORY_OTHER_WORKFLOW, WIP_OTHER_WORKFLOW) removed. Full plan: `plans/GUARD_WIRING_PLAN.md`.
+
+**Scope:** 13 modules, ~45 guarded transitions, ~35 new guard evaluators, ~183 new tests.
+
+| Phase | Description | Status |
+|-------|------------|--------|
+| 0 | Foundation: migrate workflow types, create guard helpers, register ~35 evaluators | pending |
+| 1 | Simple modules: Cash, Budget, Lease, Tax, WIP, Assets (6 modules, 13 guards) | pending |
+| 2 | Medium complexity: AR, GL, Inventory, Revenue (4 modules, 13 guards) | pending |
+| 3 | High complexity / DCAA: Payroll, Expense, Procurement (3 modules, 18 guards) | pending |
+| 4 | Tests (~183 new across ~14 test files) | pending |
+| 5 | Documentation update (GUARD_WIRING_GAP.md) | pending |
+
+**Key decisions:**
+1. Helper extraction (`check_transition_result()`) over AP's repeated if/else branching
+2. Boolean-passthrough for DCAA guards (service pre-computes, evaluator reads boolean)
+3. Canonical type migration (Phase 0A) enables `requires_approval` and `approval_policy`
+4. All constructors backward-compatible (`workflow_executor=None` default)
+5. Guard evaluators default to False for missing context (fail-closed)
+
+---
+
+## 10. Manufacturing Order Cleanup (To Do)
+
+**Status:** PLANNED
+**Context:** We use **manufacturing orders** only (no work orders). Docstrings, workflow names, and user-facing text were updated to "manufacturing order"; code and DB names were left as-is to avoid a large refactor.
+
+| Item | Description | Priority |
+|------|-------------|----------|
+| Python/ORM naming | Rename `WorkOrderModel` → `ManufacturingOrderModel`, `WorkOrder` / `WorkOrderLine` → `ManufacturingOrder` / `ManufacturingOrderLine` in `finance_modules/wip/` (models, orm, service, profiles); keep `WORK_ORDER_WORKFLOW` alias for backward compat | Medium |
+| Parameter names | Rename `work_order_id` → `manufacturing_order_id` in WIP and inventory APIs (breaking; consider deprecation window or optional alias) | Low |
+| DB schema | Optionally rename table `wip_work_orders` → `wip_manufacturing_orders` and related FKs/columns via migration; or keep table name and document as "legacy name" | Low |
+| Payroll / inventory | Align `work_order_id` references in payroll and inventory modules with manufacturing-order terminology in docs only, or rename if doing full cleanup | Low |
+
+**Done so far:** Workflow `MANUFACTURING_ORDER_WORKFLOW` (name `wip_manufacturing_order`), all docstrings/comments and GUARD_WIRING_GAP.md use "manufacturing order"; `WORK_ORDER_WORKFLOW` retained as alias.
+
+---
+
+## 11. Reconciliation Tooling — Future Efforts
+
+**Status:** Observability hooks **done** (2026-02-04); remaining items planned as future work.
+
+Reconciliation tooling was scoped as four features. One is implemented; the other three are captured here for future phases.
+
+### Completed
+
+| Feature | Description | Location |
+|--------|-------------|----------|
+| **Observability hooks** | Metrics/logs for match hit-rate, duplicate suggestion rate, time-to-clear, guard failures. Structured log events (`match_suggested`, `match_accepted`, `guard_failure`) from ReconciliationManager, invokers, and cash auto_reconcile. Not persisted to DB; consumed by log aggregators. | `finance_services/observability.py`; wired in `reconciliation_service.py`, `invokers.py`, `finance_modules/cash/service.py` |
+
+### Future Efforts
+
+| Feature | Description | Est. |
+|--------|-------------|------|
+| **Investigation views** | Prebuilt, one-click bundles per artifact (e.g. invoice, statement line) with all related links, suggestions, and state; exportable to CSV for audit or support. | 3–5 days |
+| **Inline diff & why-not** | When a suggestion is rejected, show which guard/tolerance failed (e.g. variance type, threshold) and optional "approve with exception" flow for controlled override. | 2–4 days |
+| **Batch assist (shadow mode)** | Run auto-match without committing; return a ranked decision queue (suggested matches + confidence) for human or system review before apply. | 3–5 days |
+
+These can be tackled in any order; investigation views and batch assist are independent; inline diff/why-not can build on the same guard-failure metadata already emitted by observability.
+
+---
+
 ## Next Steps
 
 When resuming, check which plan the user wants to work on:
-- **Approval Engine:** Read `plans/APPROVAL_ENGINE_PLAN.md` -- Phase 10 complete
-- **ERP Ingestion:** Read `plans/ERP_INGESTION_PLAN.md` -- Phase 9 complete
+- **Reconciliation Tooling (future):** Section 11 — investigation views, inline diff/why-not, batch assist (shadow mode); observability hooks already done
+- **Manufacturing Order Cleanup:** Section 10 above — rename WorkOrder/WorkOrderModel/work_order_id to manufacturing order naming (Python, APIs, optional DB migration)
+- **Guard Wiring:** Read `plans/GUARD_WIRING_PLAN.md` -- planned, not started
+- **Approval Engine:** Read `plans/archive/2026-02-04_approval-engine-plan.md` -- Phase 10 complete
+- **ERP Ingestion:** Read `plans/archive/2026-02-04_erp-ingestion-plan.md` -- Phase 9 complete
 - **Batch Processing:** GAP-03 complete, 289 tests passing
 - **Lifecycle Reconciliation:** GAP-REC complete, 101 tests passing
 - **Bank Reconciliation Checks:** GAP-BRC complete, 65 tests passing
+- **DCAA Compliance:** All 3 streams complete, 147 tests passing
 - **Reversal Hardening:** Pick items from section 3 above

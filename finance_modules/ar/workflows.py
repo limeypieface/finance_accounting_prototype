@@ -1,41 +1,12 @@
-"""
-Accounts Receivable Workflows.
+"""Accounts Receivable Workflows.
 
 State machines for invoice and receipt processing.
 """
 
-from dataclasses import dataclass
-
 from finance_kernel.logging_config import get_logger
+from finance_kernel.domain.workflow import Guard, Transition, Workflow
 
 logger = get_logger("modules.ar.workflows")
-
-
-@dataclass(frozen=True)
-class Guard:
-    """A condition for a transition."""
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class Transition:
-    """A valid state transition."""
-    from_state: str
-    to_state: str
-    action: str
-    guard: Guard | None = None
-    posts_entry: bool = False
-
-
-@dataclass(frozen=True)
-class Workflow:
-    """A state machine definition."""
-    name: str
-    description: str
-    initial_state: str
-    states: tuple[str, ...]
-    transitions: tuple[Transition, ...]
 
 
 # -----------------------------------------------------------------------------
@@ -88,6 +59,7 @@ INVOICE_WORKFLOW = Workflow(
     ),
     transitions=(
         Transition("draft", "issued", action="issue", guard=CREDIT_CHECK_PASSED, posts_entry=True),
+        Transition("draft", "issued", action="post", guard=CREDIT_CHECK_PASSED, posts_entry=True),
         Transition("draft", "cancelled", action="cancel"),
         Transition("issued", "delivered", action="mark_delivered"),
         Transition("issued", "partially_paid", action="apply_payment"),
@@ -127,6 +99,7 @@ RECEIPT_WORKFLOW = Workflow(
         "fully_allocated",
     ),
     transitions=(
+        Transition("unallocated", "unallocated", action="post", posts_entry=True),
         Transition("unallocated", "partially_allocated", action="allocate", posts_entry=True),
         Transition("unallocated", "fully_allocated", action="allocate", posts_entry=True),
         Transition("partially_allocated", "fully_allocated", action="allocate", posts_entry=True),
@@ -142,5 +115,165 @@ logger.info(
         "state_count": len(RECEIPT_WORKFLOW.states),
         "transition_count": len(RECEIPT_WORKFLOW.transitions),
         "initial_state": RECEIPT_WORKFLOW.initial_state,
+    },
+)
+
+
+# -----------------------------------------------------------------------------
+# Directive: no generic workflows. Each financial action has its own lifecycle.
+# See docs/WORKFLOW_DIRECTIVE.md.
+# -----------------------------------------------------------------------------
+
+# Aliases for directive naming (AR_INVOICE_WORKFLOW, AR_RECEIPT_WORKFLOW)
+AR_INVOICE_WORKFLOW = INVOICE_WORKFLOW
+AR_RECEIPT_WORKFLOW = RECEIPT_WORKFLOW
+
+
+# -----------------------------------------------------------------------------
+# Receipt application (applying cash to open receivables)
+# -----------------------------------------------------------------------------
+
+AR_RECEIPT_APPLICATION_WORKFLOW = Workflow(
+    name="ar_receipt_application",
+    description="Applying cash to open receivables",
+    initial_state="draft",
+    states=("draft", "posted"),
+    transitions=(
+        Transition("draft", "posted", action="post"),
+    ),
+)
+
+logger.info(
+    "ar_receipt_application_workflow_registered",
+    extra={
+        "workflow_name": AR_RECEIPT_APPLICATION_WORKFLOW.name,
+        "state_count": len(AR_RECEIPT_APPLICATION_WORKFLOW.states),
+        "transition_count": len(AR_RECEIPT_APPLICATION_WORKFLOW.transitions),
+        "initial_state": AR_RECEIPT_APPLICATION_WORKFLOW.initial_state,
+    },
+)
+
+
+# -----------------------------------------------------------------------------
+# Credit memo (revenue reversal and customer credit)
+# -----------------------------------------------------------------------------
+
+AR_CREDIT_MEMO_WORKFLOW = Workflow(
+    name="ar_credit_memo",
+    description="Revenue reversal and customer credit",
+    initial_state="draft",
+    states=("draft", "posted"),
+    transitions=(
+        Transition("draft", "posted", action="post"),
+    ),
+)
+
+logger.info(
+    "ar_credit_memo_workflow_registered",
+    extra={
+        "workflow_name": AR_CREDIT_MEMO_WORKFLOW.name,
+        "state_count": len(AR_CREDIT_MEMO_WORKFLOW.states),
+        "transition_count": len(AR_CREDIT_MEMO_WORKFLOW.transitions),
+        "initial_state": AR_CREDIT_MEMO_WORKFLOW.initial_state,
+    },
+)
+
+
+# -----------------------------------------------------------------------------
+# Write-off (bad debt governance)
+# -----------------------------------------------------------------------------
+
+AR_WRITE_OFF_WORKFLOW = Workflow(
+    name="ar_write_off",
+    description="Bad debt governance",
+    initial_state="draft",
+    states=("draft", "posted"),
+    transitions=(
+        Transition("draft", "posted", action="post"),
+    ),
+)
+
+logger.info(
+    "ar_write_off_workflow_registered",
+    extra={
+        "workflow_name": AR_WRITE_OFF_WORKFLOW.name,
+        "state_count": len(AR_WRITE_OFF_WORKFLOW.states),
+        "transition_count": len(AR_WRITE_OFF_WORKFLOW.transitions),
+        "initial_state": AR_WRITE_OFF_WORKFLOW.initial_state,
+    },
+)
+
+
+# -----------------------------------------------------------------------------
+# Deferred revenue (cash vs revenue timing)
+# -----------------------------------------------------------------------------
+
+AR_DEFERRED_REVENUE_WORKFLOW = Workflow(
+    name="ar_deferred_revenue",
+    description="Cash vs revenue timing",
+    initial_state="draft",
+    states=("draft", "posted"),
+    transitions=(
+        Transition("draft", "posted", action="post"),
+    ),
+)
+
+logger.info(
+    "ar_deferred_revenue_workflow_registered",
+    extra={
+        "workflow_name": AR_DEFERRED_REVENUE_WORKFLOW.name,
+        "state_count": len(AR_DEFERRED_REVENUE_WORKFLOW.states),
+        "transition_count": len(AR_DEFERRED_REVENUE_WORKFLOW.transitions),
+        "initial_state": AR_DEFERRED_REVENUE_WORKFLOW.initial_state,
+    },
+)
+
+
+# -----------------------------------------------------------------------------
+# Refund (cash outflow control)
+# -----------------------------------------------------------------------------
+
+AR_REFUND_WORKFLOW = Workflow(
+    name="ar_refund",
+    description="Cash outflow control",
+    initial_state="draft",
+    states=("draft", "posted"),
+    transitions=(
+        Transition("draft", "posted", action="post"),
+    ),
+)
+
+logger.info(
+    "ar_refund_workflow_registered",
+    extra={
+        "workflow_name": AR_REFUND_WORKFLOW.name,
+        "state_count": len(AR_REFUND_WORKFLOW.states),
+        "transition_count": len(AR_REFUND_WORKFLOW.transitions),
+        "initial_state": AR_REFUND_WORKFLOW.initial_state,
+    },
+)
+
+
+# -----------------------------------------------------------------------------
+# Finance charge (penalty and interest policy)
+# -----------------------------------------------------------------------------
+
+AR_FINANCE_CHARGE_WORKFLOW = Workflow(
+    name="ar_finance_charge",
+    description="Penalty and interest policy",
+    initial_state="draft",
+    states=("draft", "posted"),
+    transitions=(
+        Transition("draft", "posted", action="post"),
+    ),
+)
+
+logger.info(
+    "ar_finance_charge_workflow_registered",
+    extra={
+        "workflow_name": AR_FINANCE_CHARGE_WORKFLOW.name,
+        "state_count": len(AR_FINANCE_CHARGE_WORKFLOW.states),
+        "transition_count": len(AR_FINANCE_CHARGE_WORKFLOW.transitions),
+        "initial_state": AR_FINANCE_CHARGE_WORKFLOW.initial_state,
     },
 )

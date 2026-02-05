@@ -55,10 +55,21 @@ from sqlalchemy.orm import Session
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_modules._posting_helpers import commit_or_rollback, run_workflow_guard
+from finance_services.workflow_executor import WorkflowExecutor
+from finance_modules.project.workflows import (
+    PROJECT_BILL_MILESTONE_WORKFLOW,
+    PROJECT_BILL_TIME_MATERIALS_WORKFLOW,
+    PROJECT_COMPLETE_PHASE_WORKFLOW,
+    PROJECT_RECORD_COST_WORKFLOW,
+    PROJECT_RECOGNIZE_REVENUE_WORKFLOW,
+    PROJECT_REVISE_BUDGET_WORKFLOW,
 )
 from finance_modules.project.evm import (
     calculate_acwp,
@@ -114,15 +125,19 @@ class ProjectService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
     # =========================================================================
@@ -170,14 +185,27 @@ class ProjectService:
         description: str | None = None,
     ) -> ModulePostingResult:
         """Record a cost against a project WBS element."""
-        payload: dict[str, Any] = {
-            "project_id": str(project_id),
-            "wbs_code": wbs_code,
-            "cost_type": cost_type,
-            "amount": str(amount),
-        }
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROJECT_RECORD_COST_WORKFLOW,
+                "project_cost",
+                project_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            payload: dict[str, Any] = {
+                "project_id": str(project_id),
+                "wbs_code": wbs_code,
+                "cost_type": cost_type,
+                "amount": str(amount),
+            }
+
             result = self._poster.post_event(
                 event_type="project.cost_recorded",
                 payload=payload,
@@ -202,9 +230,7 @@ class ProjectService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_cost)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
         except Exception:
             self._session.rollback()
@@ -235,13 +261,26 @@ class ProjectService:
             billed_date=effective_date,
         )
 
-        payload: dict[str, Any] = {
-            "project_id": str(project_id),
-            "milestone_name": milestone_name,
-            "amount": str(amount),
-        }
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROJECT_BILL_MILESTONE_WORKFLOW,
+                "project_milestone",
+                milestone.id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return milestone, failure
+
+            payload: dict[str, Any] = {
+                "project_id": str(project_id),
+                "milestone_name": milestone_name,
+                "amount": str(amount),
+            }
+
             result = self._poster.post_event(
                 event_type="project.billing_milestone",
                 payload=payload,
@@ -251,10 +290,7 @@ class ProjectService:
                 currency=currency,
                 description=description,
             )
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return milestone, result
         except Exception:
             self._session.rollback()
@@ -272,14 +308,27 @@ class ProjectService:
         description: str | None = None,
     ) -> ModulePostingResult:
         """Bill time and materials for a period."""
-        payload: dict[str, Any] = {
-            "project_id": str(project_id),
-            "period": period,
-            "amount": str(amount),
-            "hours": str(hours),
-        }
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROJECT_BILL_TIME_MATERIALS_WORKFLOW,
+                "project_billing",
+                project_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            payload: dict[str, Any] = {
+                "project_id": str(project_id),
+                "period": period,
+                "amount": str(amount),
+                "hours": str(hours),
+            }
+
             result = self._poster.post_event(
                 event_type="project.billing_tm",
                 payload=payload,
@@ -289,10 +338,7 @@ class ProjectService:
                 currency=currency,
                 description=description,
             )
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
         except Exception:
             self._session.rollback()
@@ -314,14 +360,27 @@ class ProjectService:
         description: str | None = None,
     ) -> ModulePostingResult:
         """Recognize project revenue."""
-        payload: dict[str, Any] = {
-            "project_id": str(project_id),
-            "method": method,
-            "amount": str(amount),
-            "period": period,
-        }
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROJECT_RECOGNIZE_REVENUE_WORKFLOW,
+                "project_revenue",
+                project_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            payload: dict[str, Any] = {
+                "project_id": str(project_id),
+                "method": method,
+                "amount": str(amount),
+                "period": period,
+            }
+
             result = self._poster.post_event(
                 event_type="project.revenue_recognized",
                 payload=payload,
@@ -331,10 +390,7 @@ class ProjectService:
                 currency=currency,
                 description=description,
             )
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
         except Exception:
             self._session.rollback()
@@ -355,13 +411,26 @@ class ProjectService:
         description: str | None = None,
     ) -> ModulePostingResult:
         """Revise project budget for a WBS element."""
-        payload: dict[str, Any] = {
-            "project_id": str(project_id),
-            "wbs_code": wbs_code,
-            "amount": str(new_amount),
-        }
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROJECT_REVISE_BUDGET_WORKFLOW,
+                "project_budget",
+                project_id,
+                actor_id=actor_id,
+                amount=new_amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            payload: dict[str, Any] = {
+                "project_id": str(project_id),
+                "wbs_code": wbs_code,
+                "amount": str(new_amount),
+            }
+
             result = self._poster.post_event(
                 event_type="project.budget_revised",
                 payload=payload,
@@ -371,10 +440,7 @@ class ProjectService:
                 currency=currency,
                 description=description,
             )
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
         except Exception:
             self._session.rollback()
@@ -395,13 +461,26 @@ class ProjectService:
         description: str | None = None,
     ) -> ModulePostingResult:
         """Complete a project phase (relieves WIP)."""
-        payload: dict[str, Any] = {
-            "project_id": str(project_id),
-            "phase": phase,
-            "amount": str(amount),
-        }
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PROJECT_COMPLETE_PHASE_WORKFLOW,
+                "project_phase",
+                project_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            payload: dict[str, Any] = {
+                "project_id": str(project_id),
+                "phase": phase,
+                "amount": str(amount),
+            }
+
             result = self._poster.post_event(
                 event_type="project.phase_completed",
                 payload=payload,
@@ -411,10 +490,7 @@ class ProjectService:
                 currency=currency,
                 description=description,
             )
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
         except Exception:
             self._session.rollback()

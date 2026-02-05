@@ -74,6 +74,12 @@ class ContractsConfig:
     track_by_clin: bool = True
     track_by_labor_category: bool = True
 
+    # DCAA Rate Controls (D8)
+    enable_rate_verification: bool = True
+    enable_rate_ceiling_enforcement: bool = True
+    enable_provisional_rate_tracking: bool = True
+    rate_verification_on_post: bool = True
+
     def __post_init__(self) -> None:
         if self.default_contract_type not in VALID_CONTRACT_TYPES:
             raise ValueError(

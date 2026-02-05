@@ -1,0 +1,32 @@
+# Ironflow AI — chart derived from QBO Account List; accounts map 1:1 to original.
+config_id: US-GAAP-2026-IRONFLOW-AI
+version: 1
+status: published
+predecessor: US-GAAP-2026-v1
+scope:
+  legal_entity: '*'
+  jurisdiction: US
+  regulatory_regime: GAAP
+  currency: USD
+  effective_from: '2024-01-01'
+  effective_to: null
+capabilities:
+  inventory: true
+  ap: true
+  ar: true
+  cash: true
+  expense: true
+  gl: true
+  payroll: true
+  procurement: true
+  tax: true
+  wip: true
+  assets: true
+  contracts: true
+  dcaa: false
+  ifrs: false
+  multicurrency: false
+precedence_rules:
+- name: specificity_first
+  description: More specific where-clause wins over generic
+  rule_type: specificity

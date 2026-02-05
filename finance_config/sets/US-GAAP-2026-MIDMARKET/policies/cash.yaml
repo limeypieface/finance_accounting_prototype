@@ -2,7 +2,7 @@ policies:
 - name: CashDeposit
   version: 1
   module: cash
-  description: Records bank deposit, moving funds from undeposited to bank
+  description: "Records bank deposit (GL): Dr Bank / Cr Undeposited Funds"
   effective_from: '2024-01-01'
   trigger:
     event_type: cash.deposit
@@ -14,9 +14,6 @@ policies:
   - ledger: GL
     debit_role: BANK
     credit_role: UNDEPOSITED_FUNDS
-  - ledger: BANK
-    debit_role: AVAILABLE
-    credit_role: DEPOSIT
   guards:
   - guard_type: reject
     expression: payload.amount <= 0
@@ -27,6 +24,27 @@ policies:
     side: debit
   - role: UNDEPOSITED_FUNDS
     side: credit
+- name: CashMakeAvailable
+  version: 1
+  module: cash
+  description: Subledger-only reclassify deposit to available (BANK ledger)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: cash.make_available
+  meaning:
+    economic_type: CASH_AVAILABILITY
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: BANK
+    debit_role: AVAILABLE
+    credit_role: DEPOSIT
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Amount must be positive
+  line_mappings:
   - role: AVAILABLE
     side: debit
     ledger: BANK

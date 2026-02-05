@@ -1,44 +1,47 @@
-"""
-Lease Accounting Workflows.
+"""Lease Accounting Workflows.
 
 State machine for lease lifecycle per ASC 842.
 """
 
-from dataclasses import dataclass
-
 from finance_kernel.logging_config import get_logger
+from finance_kernel.domain.workflow import Guard, Transition, Workflow
 
 logger = get_logger("modules.lease.workflows")
 
 
-@dataclass(frozen=True)
-class Guard:
-    """A condition for a transition."""
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class Transition:
-    """A valid state transition."""
-    from_state: str
-    to_state: str
-    action: str
-    guard: Guard | None = None
-    posts_entry: bool = False
-
-
-@dataclass(frozen=True)
-class Workflow:
-    """A state machine definition."""
-    name: str
-    description: str
-    initial_state: str
-    states: tuple[str, ...]
-    transitions: tuple[Transition, ...]
-
-
 CLASSIFICATION_COMPLETE = Guard("classification_complete", "Lease classification determined")
+
+
+def _lease_draft_posted(name: str, description: str) -> Workflow:
+    """Simple draft -> posted lifecycle for lease actions."""
+    return Workflow(
+        name=name,
+        description=description,
+        initial_state="draft",
+        states=("draft", "posted"),
+        transitions=(Transition("draft", "posted", action="post", posts_entry=True),),
+    )
+
+
+LEASE_RECORD_INITIAL_RECOGNITION_WORKFLOW = _lease_draft_posted(
+    "lease_record_initial_recognition", "Record initial recognition"
+)
+LEASE_RECORD_PERIODIC_PAYMENT_WORKFLOW = _lease_draft_posted(
+    "lease_record_periodic_payment", "Record periodic payment"
+)
+LEASE_ACCRUE_INTEREST_WORKFLOW = _lease_draft_posted(
+    "lease_accrue_interest", "Accrue interest"
+)
+LEASE_RECORD_AMORTIZATION_WORKFLOW = _lease_draft_posted(
+    "lease_record_amortization", "Record amortization"
+)
+LEASE_MODIFY_LEASE_WORKFLOW = _lease_draft_posted(
+    "lease_modify_lease", "Modify lease"
+)
+LEASE_TERMINATE_EARLY_WORKFLOW = _lease_draft_posted(
+    "lease_terminate_early", "Terminate early"
+)
+
 
 LEASE_LIFECYCLE_WORKFLOW = Workflow(
     name="lease_lifecycle",

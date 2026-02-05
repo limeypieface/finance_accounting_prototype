@@ -191,6 +191,8 @@ def bench_posting_service(db_engine, db_tables):
     from finance_kernel.db.base import Base
     from finance_kernel.db.engine import get_session
     from finance_kernel.domain.clock import DeterministicClock
+    from finance_kernel.domain.policy_bridge import ModulePolicyRegistry
+    from finance_kernel.domain.policy_selector import PolicySelector
     from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
     from finance_kernel.models.party import Party, PartyStatus, PartyType
     from finance_kernel.services.module_posting_service import ModulePostingService
@@ -201,7 +203,9 @@ def bench_posting_service(db_engine, db_tables):
     # Mute console logging during benchmarks
     logging.disable(logging.CRITICAL)
 
-    # 1. Load config + register profiles
+    # 1. Reset policy registries then load config + register profiles (avoid PolicyAlreadyRegisteredError when run after other tests)
+    PolicySelector.clear()
+    ModulePolicyRegistry.clear()
     config = get_active_config(legal_entity="*", as_of_date=EFFECTIVE)
     register_all_modules()
 

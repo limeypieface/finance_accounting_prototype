@@ -1,0 +1,18 @@
+# Import bootstrap: fiscal periods (and optional bootstrap party) for data migration.
+# Used by reset_db_ironflow.py and run_ironflow_import.py. Any company config set
+# can define this file; periods listed here are created if missing so journal
+# import has open periods for the date range of the source data.
+#
+# period_code: unique id (e.g. FY2025, FY2026)
+# name: display name
+# start_date / end_date: ISO YYYY-MM-DD
+
+fiscal_periods:
+  - period_code: FY2025
+    name: Fiscal Year 2025
+    start_date: "2025-01-01"
+    end_date: "2025-12-31"
+  - period_code: FY2026
+    name: Fiscal Year 2026
+    start_date: "2026-01-01"
+    end_date: "2026-12-31"

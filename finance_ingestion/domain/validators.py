@@ -51,6 +51,8 @@ def validate_field_types(
     errors: list[ValidationError] = []
     for fm in mappings:
         value = record.get(fm.target)
+        if value is None and not fm.required:
+            continue
         err = validate_field_type(value, fm.field_type, fm.target)
         if err:
             errors.append(err)
@@ -235,11 +237,14 @@ def validate_party_type(record: dict[str, Any]) -> list[ValidationError]:
 
 
 def validate_account_code_format(record: dict[str, Any]) -> list[ValidationError]:
-    """Account code must be non-empty and reasonable format."""
+    """Account code or name required; code can be missing when name is present (use auto-assign)."""
     errors: list[ValidationError] = []
     code = record.get("code")
-    if code is None or (isinstance(code, str) and not code.strip()):
-        errors.append(ValidationError(code="MISSING_REQUIRED_FIELD", message="Account code is required", field="code"))
+    name = record.get("name")
+    has_code = code is not None and isinstance(code, str) and code.strip()
+    has_name = name is not None and isinstance(name, str) and name.strip()
+    if not has_code and not has_name:
+        errors.append(ValidationError(code="MISSING_REQUIRED_FIELD", message="Account code or name is required", field="code"))
     return errors
 
 
@@ -257,6 +262,83 @@ def _noop_validator(record: dict[str, Any]) -> list[ValidationError]:
     return []
 
 
+def validate_journal_entry(record: dict[str, Any]) -> list[ValidationError]:
+    """Journal entry: lines must be a non-empty list; each line has account and debit or credit; entry must balance."""
+    errors: list[ValidationError] = []
+    lines = record.get("lines")
+    if not isinstance(lines, list):
+        errors.append(
+            ValidationError(
+                code="INVALID_TYPE",
+                message="Journal entry 'lines' must be an array",
+                field="lines",
+            )
+        )
+        return errors
+    if len(lines) == 0:
+        errors.append(
+            ValidationError(
+                code="MISSING_REQUIRED_FIELD",
+                message="Journal entry must have at least one line",
+                field="lines",
+            )
+        )
+        return errors
+    total_debit = Decimal("0")
+    total_credit = Decimal("0")
+    for i, line in enumerate(lines):
+        if not isinstance(line, dict):
+            errors.append(
+                ValidationError(
+                    code="INVALID_TYPE",
+                    message=f"Line {i + 1} must be an object",
+                    field="lines",
+                )
+            )
+            continue
+        account = line.get("account")
+        if account is None or (isinstance(account, str) and not account.strip()):
+            errors.append(
+                ValidationError(
+                    code="MISSING_REQUIRED_FIELD",
+                    message=f"Line {i + 1} must have 'account'",
+                    field="lines",
+                )
+            )
+        debit = line.get("debit")
+        credit = line.get("credit")
+        try:
+            d = Decimal(str(debit)) if debit is not None else Decimal("0")
+            c = Decimal(str(credit)) if credit is not None else Decimal("0")
+            if d < 0 or c < 0:
+                errors.append(
+                    ValidationError(
+                        code="INVALID_VALUE",
+                        message=f"Line {i + 1}: debit and credit must be non-negative",
+                        field="lines",
+                    )
+                )
+            total_debit += d
+            total_credit += c
+        except (InvalidOperation, ValueError, TypeError):
+            errors.append(
+                ValidationError(
+                    code="INVALID_DECIMAL",
+                    message=f"Line {i + 1}: debit/credit must be numeric",
+                    field="lines",
+                )
+            )
+    if not errors and total_debit != total_credit:
+        errors.append(
+            ValidationError(
+                code="UNBALANCED_ENTRY",
+                message=f"Entry debits ({total_debit}) must equal credits ({total_credit})",
+                field="lines",
+            )
+        )
+    return errors
+
+
 # Pre-packaged profiles per entity type (pure only; referential in service layer)
 ENTITY_VALIDATORS: dict[str, tuple[Any, ...]] = {
     "party": (validate_party_code, validate_party_type),
@@ -268,4 +350,5 @@ ENTITY_VALIDATORS: dict[str, tuple[Any, ...]] = {
     "ap_invoice": (_noop_validator,),  # invoice_total, vendor_exists in service
     "ar_invoice": (_noop_validator,),
     "opening_balance": (_noop_validator,),
+    "journal": (validate_journal_entry,),
 }

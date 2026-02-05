@@ -1,0 +1,151 @@
+policies:
+- name: BudgetEntry
+  version: 1
+  module: budget
+  description: Budget memo posting entry
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: budget.entry
+  meaning:
+    economic_type: BUDGET_POSTING
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: BUDGET_CONTROL
+    credit_role: BUDGET_OFFSET
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Budget entry amount must be positive
+  line_mappings:
+  - role: BUDGET_CONTROL
+    side: debit
+  - role: BUDGET_OFFSET
+    side: credit
+- name: BudgetTransfer
+  version: 1
+  module: budget
+  description: Budget transfer between accounts
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: budget.transfer
+  meaning:
+    economic_type: BUDGET_TRANSFER
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: BUDGET_CONTROL
+    credit_role: BUDGET_CONTROL
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Transfer amount must be positive
+  line_mappings:
+  - role: BUDGET_CONTROL
+    side: debit
+  - role: BUDGET_CONTROL
+    side: credit
+- name: EncumbranceCommit
+  version: 1
+  module: budget
+  description: Encumbrance commitment against budget
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: budget.encumbrance_commit
+  meaning:
+    economic_type: ENCUMBRANCE_COMMITMENT
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ENCUMBRANCE
+    credit_role: RESERVE_FOR_ENCUMBRANCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Encumbrance amount must be positive
+  line_mappings:
+  - role: ENCUMBRANCE
+    side: debit
+  - role: RESERVE_FOR_ENCUMBRANCE
+    side: credit
+- name: EncumbranceRelieve
+  version: 1
+  module: budget
+  description: Encumbrance relief when invoice received
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: budget.encumbrance_relieve
+  meaning:
+    economic_type: ENCUMBRANCE_RELIEF
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: RESERVE_FOR_ENCUMBRANCE
+    credit_role: ENCUMBRANCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Relief amount must be positive
+  line_mappings:
+  - role: RESERVE_FOR_ENCUMBRANCE
+    side: debit
+  - role: ENCUMBRANCE
+    side: credit
+- name: EncumbranceCancel
+  version: 1
+  module: budget
+  description: Encumbrance cancellation
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: budget.encumbrance_cancel
+  meaning:
+    economic_type: ENCUMBRANCE_CANCELLATION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: RESERVE_FOR_ENCUMBRANCE
+    credit_role: ENCUMBRANCE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Cancel amount must be positive
+  line_mappings:
+  - role: RESERVE_FOR_ENCUMBRANCE
+    side: debit
+  - role: ENCUMBRANCE
+    side: credit
+- name: ForecastUpdate
+  version: 1
+  module: budget
+  description: Forecast update memo posting
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: budget.forecast_update
+  meaning:
+    economic_type: BUDGET_FORECAST
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: BUDGET_CONTROL
+    credit_role: BUDGET_OFFSET
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Forecast amount must be positive
+  line_mappings:
+  - role: BUDGET_CONTROL
+    side: debit
+  - role: BUDGET_OFFSET
+    side: credit

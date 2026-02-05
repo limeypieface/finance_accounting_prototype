@@ -116,12 +116,16 @@ class TestConcurrentThroughput:
         from finance_config import get_active_config
         from finance_kernel.db.engine import get_session
         from finance_kernel.domain.clock import DeterministicClock
+        from finance_kernel.domain.policy_bridge import ModulePolicyRegistry
+        from finance_kernel.domain.policy_selector import PolicySelector
         from finance_kernel.models.fiscal_period import FiscalPeriod, PeriodStatus
         from finance_kernel.models.party import Party, PartyStatus, PartyType
         from finance_modules import register_all_modules
 
         logging.disable(logging.CRITICAL)
 
+        PolicySelector.clear()
+        ModulePolicyRegistry.clear()
         config = get_active_config(legal_entity="*", as_of_date=EFFECTIVE)
         register_all_modules()
 

@@ -48,12 +48,17 @@ from tests.modules.conftest import TEST_LEASE_ID, TEST_LESSEE_ID
 
 
 @pytest.fixture
-def lease_service(session, module_role_resolver, deterministic_clock, register_modules):
-    """Provide LeaseAccountingService for integration testing."""
+def lease_service(
+    session, module_role_resolver, deterministic_clock, register_modules, workflow_executor,
+    party_service, test_actor_party,
+):
+    """Provide LeaseAccountingService for integration testing. party_service + test_actor_party for G14."""
     return LeaseAccountingService(
         session=session,
         role_resolver=module_role_resolver,
+        workflow_executor=workflow_executor,
         clock=deterministic_clock,
+        party_service=party_service,
     )
 
 

@@ -1,41 +1,36 @@
-"""
-Budget Workflows.
+"""Budget Workflows.
 
 State machine for budget version lifecycle.
 """
 
-from dataclasses import dataclass
-
 from finance_kernel.logging_config import get_logger
+from finance_kernel.domain.workflow import Guard, Transition, Workflow
 
 logger = get_logger("modules.budget.workflows")
 
 
-@dataclass(frozen=True)
-class Guard:
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class Transition:
-    from_state: str
-    to_state: str
-    action: str
-    guard: Guard | None = None
-    posts_entry: bool = False
-
-
-@dataclass(frozen=True)
-class Workflow:
-    name: str
-    description: str
-    initial_state: str
-    states: tuple[str, ...]
-    transitions: tuple[Transition, ...]
-
-
 APPROVED_BY_AUTHORITY = Guard("approved_by_authority", "Budget approved by authorized approver")
+
+
+def _budget_draft_posted(name: str, description: str) -> Workflow:
+    """Simple draft -> posted lifecycle for budget actions (no guards)."""
+    return Workflow(
+        name=name,
+        description=description,
+        initial_state="draft",
+        states=("draft", "posted"),
+        transitions=(Transition("draft", "posted", action="post", posts_entry=True),),
+    )
+
+
+# Action-specific workflows for posting methods (R28: no generic workflow)
+BUDGET_POST_ENTRY_WORKFLOW = _budget_draft_posted("budget_post_entry", "Post budget entry")
+BUDGET_TRANSFER_WORKFLOW = _budget_draft_posted("budget_transfer", "Transfer budget")
+BUDGET_RECORD_ENCUMBRANCE_WORKFLOW = _budget_draft_posted("budget_record_encumbrance", "Record encumbrance")
+BUDGET_RELIEVE_ENCUMBRANCE_WORKFLOW = _budget_draft_posted("budget_relieve_encumbrance", "Relieve encumbrance")
+BUDGET_CANCEL_ENCUMBRANCE_WORKFLOW = _budget_draft_posted("budget_cancel_encumbrance", "Cancel encumbrance")
+BUDGET_UPDATE_FORECAST_WORKFLOW = _budget_draft_posted("budget_update_forecast", "Update forecast")
+
 
 BUDGET_VERSION_WORKFLOW = Workflow(
     name="budget_version",

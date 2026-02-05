@@ -1,0 +1,9 @@
+Account Number,Account Name,Type
+1000,Cash,Bank
+1100,Accounts Receivable,Accounts Receivable
+1200,Inventory,Other Current Asset
+2000,Accounts Payable,Accounts Payable
+3200,Retained Earnings,Equity
+4000,Sales Revenue,Income
+5000,Cost of Goods Sold,Expense
+6100,Operating Expenses,Expense

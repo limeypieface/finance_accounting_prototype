@@ -1,0 +1,312 @@
+policies:
+- name: AssetAcquisitionCash
+  version: 1
+  module: assets
+  description: Asset acquired for cash
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.acquisition
+    where:
+    - field: payload.payment_method
+      value: CASH
+  meaning:
+    economic_type: FIXED_ASSET_INCREASE
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: FIXED_ASSET
+    credit_role: CASH
+  guards:
+  - guard_type: reject
+    expression: payload.cost <= 0
+    reason_code: INVALID_COST
+    message: Asset cost must be positive
+  - guard_type: reject
+    expression: payload.useful_life_months < 1
+    reason_code: INVALID_USEFUL_LIFE
+    message: Useful life must be at least 1 month
+  line_mappings:
+  - role: FIXED_ASSET
+    side: debit
+  - role: CASH
+    side: credit
+- name: AssetAcquisitionOnAccount
+  version: 1
+  module: assets
+  description: Asset acquired on account (AP)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.acquisition
+    where:
+    - field: payload.payment_method
+      value: ON_ACCOUNT
+  meaning:
+    economic_type: FIXED_ASSET_INCREASE
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: FIXED_ASSET
+    credit_role: AP
+  guards:
+  - guard_type: reject
+    expression: payload.cost <= 0
+    reason_code: INVALID_COST
+    message: Asset cost must be positive
+  - guard_type: reject
+    expression: payload.useful_life_months < 1
+    reason_code: INVALID_USEFUL_LIFE
+    message: Useful life must be at least 1 month
+  line_mappings:
+  - role: FIXED_ASSET
+    side: debit
+  - role: AP
+    side: credit
+- name: AssetCIPCapitalized
+  version: 1
+  module: assets
+  description: Construction in progress capitalized to fixed asset
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.cip_capitalized
+  meaning:
+    economic_type: FIXED_ASSET_INCREASE
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: FIXED_ASSET
+    credit_role: CIP
+  guards:
+  - guard_type: reject
+    expression: payload.cost <= 0
+    reason_code: INVALID_COST
+    message: Capitalized cost must be positive
+  line_mappings:
+  - role: FIXED_ASSET
+    side: debit
+  - role: CIP
+    side: credit
+- name: AssetDepreciation
+  version: 1
+  module: assets
+  description: Records periodic depreciation expense
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.depreciation
+  meaning:
+    economic_type: DEPRECIATION_RECOGNITION
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: DEPRECIATION_EXPENSE
+    credit_role: ACCUMULATED_DEPRECIATION
+  guards:
+  - guard_type: reject
+    expression: payload.depreciation_amount <= 0
+    reason_code: INVALID_DEPRECIATION
+    message: Depreciation amount must be positive
+  line_mappings:
+  - role: DEPRECIATION_EXPENSE
+    side: debit
+  - role: ACCUMULATED_DEPRECIATION
+    side: credit
+- name: AssetDisposalGain
+  version: 1
+  module: assets
+  description: Asset disposed at a gain (sale proceeds exceed book value)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.disposal
+    where:
+    - field: payload.disposal_type
+      value: SALE
+  meaning:
+    economic_type: FIXED_ASSET_DISPOSAL
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: CASH
+    credit_role: FIXED_ASSET
+  line_mappings:
+  - role: CASH
+    side: debit
+    from_context: proceeds
+  - role: ACCUMULATED_DEPRECIATION
+    side: debit
+    from_context: accumulated_depreciation
+  - role: LOSS_ON_DISPOSAL
+    side: debit
+    from_context: loss_amount
+  - role: FIXED_ASSET
+    side: credit
+    from_context: original_cost
+  - role: GAIN_ON_DISPOSAL
+    side: credit
+    from_context: gain_amount
+- name: AssetDisposalLoss
+  version: 1
+  module: assets
+  description: Asset disposed at a loss (retirement of remaining book value)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.disposal
+    where:
+    - field: payload.disposal_type
+      value: RETIREMENT
+  meaning:
+    economic_type: FIXED_ASSET_DISPOSAL
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCUMULATED_DEPRECIATION
+    credit_role: FIXED_ASSET
+  line_mappings:
+  - role: CASH
+    side: debit
+    from_context: proceeds
+  - role: ACCUMULATED_DEPRECIATION
+    side: debit
+    from_context: accumulated_depreciation
+  - role: LOSS_ON_DISPOSAL
+    side: debit
+    from_context: loss_amount
+  - role: FIXED_ASSET
+    side: credit
+    from_context: original_cost
+- name: AssetImpairment
+  version: 1
+  module: assets
+  description: Asset impairment recognized (write-off of impaired value)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.disposal
+    where:
+    - field: payload.disposal_type
+      value: WRITE_OFF
+  meaning:
+    economic_type: FIXED_ASSET_DISPOSAL
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: IMPAIRMENT_LOSS
+    credit_role: FIXED_ASSET
+  line_mappings:
+  - role: IMPAIRMENT_LOSS
+    side: debit
+  - role: ACCUMULATED_DEPRECIATION
+    side: credit
+- name: AssetScrap
+  version: 1
+  module: assets
+  description: Asset scrapped with no proceeds (full write-off of book value)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.scrap
+  meaning:
+    economic_type: FIXED_ASSET_DISPOSAL
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCUMULATED_DEPRECIATION
+    credit_role: FIXED_ASSET
+  line_mappings:
+  - role: ACCUMULATED_DEPRECIATION
+    side: debit
+    from_context: accumulated_depreciation
+  - role: LOSS_ON_DISPOSAL
+    side: debit
+    from_context: book_value
+  - role: FIXED_ASSET
+    side: credit
+    from_context: original_cost
+- name: AssetMassDepreciation
+  version: 1
+  module: assets
+  description: Batch depreciation for multiple assets
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.mass_depreciation
+  meaning:
+    economic_type: ASSET_DEPRECIATION_BATCH
+    dimensions:
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: DEPRECIATION_EXPENSE
+    credit_role: ACCUMULATED_DEPRECIATION
+  line_mappings:
+  - role: DEPRECIATION_EXPENSE
+    side: debit
+  - role: ACCUMULATED_DEPRECIATION
+    side: credit
+- name: AssetTransferred
+  version: 1
+  module: assets
+  description: Asset transfer between cost centers
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.transfer
+  meaning:
+    economic_type: ASSET_TRANSFER
+    dimensions:
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: FIXED_ASSET
+    credit_role: FIXED_ASSET
+  line_mappings:
+  - role: FIXED_ASSET
+    side: debit
+  - role: FIXED_ASSET
+    side: credit
+- name: AssetRevalued
+  version: 1
+  module: assets
+  description: IFRS asset revaluation to fair value
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.revaluation
+  meaning:
+    economic_type: ASSET_REVALUATION
+    dimensions:
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: FIXED_ASSET
+    credit_role: GAIN_ON_DISPOSAL
+  line_mappings:
+  - role: FIXED_ASSET
+    side: debit
+  - role: GAIN_ON_DISPOSAL
+    side: credit
+- name: AssetComponentDepreciation
+  version: 1
+  module: assets
+  description: Component-level depreciation
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: asset.component_depreciation
+  meaning:
+    economic_type: ASSET_COMPONENT_DEPRECIATION
+    dimensions:
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: DEPRECIATION_EXPENSE
+    credit_role: ACCUMULATED_DEPRECIATION
+  line_mappings:
+  - role: DEPRECIATION_EXPENSE
+    side: debit
+  - role: ACCUMULATED_DEPRECIATION
+    side: credit

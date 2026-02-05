@@ -48,12 +48,17 @@ from finance_modules.credit_loss.service import CreditLossService
 
 
 @pytest.fixture
-def credit_loss_service(session, module_role_resolver, deterministic_clock, register_modules):
-    """Provide CreditLossService for integration testing."""
+def credit_loss_service(
+    session, module_role_resolver, deterministic_clock, register_modules, workflow_executor,
+    party_service, test_actor_party,
+):
+    """Provide CreditLossService for integration testing. party_service + test_actor_party for G14."""
     return CreditLossService(
         session=session,
         role_resolver=module_role_resolver,
+        workflow_executor=workflow_executor,
         clock=deterministic_clock,
+        party_service=party_service,
     )
 
 

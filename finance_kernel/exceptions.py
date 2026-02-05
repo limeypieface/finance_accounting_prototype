@@ -483,6 +483,26 @@ class EntryAlreadyReversedError(ReversalError):
         super().__init__(f"Entry {journal_entry_id} has already been reversed")
 
 
+class CrossLedgerReversalError(ReversalError):
+    """Reversal cannot target a different ledger than the original entry."""
+
+    code: str = "CROSS_LEDGER_REVERSAL"
+
+    def __init__(
+        self,
+        journal_entry_id: str,
+        original_ledger_id: str,
+        requested_ledger_id: str,
+    ):
+        self.journal_entry_id = journal_entry_id
+        self.original_ledger_id = original_ledger_id
+        self.requested_ledger_id = requested_ledger_id
+        super().__init__(
+            f"Cannot reverse entry {journal_entry_id} in ledger {requested_ledger_id}: "
+            f"original entry is in ledger {original_ledger_id}"
+        )
+
+
 # Concurrency-related exceptions
 
 

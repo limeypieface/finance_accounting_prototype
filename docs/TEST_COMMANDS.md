@@ -1,269 +1,271 @@
 # Test Commands
 
-Comprehensive test commands for the finance kernel project.
-**122 test files** across **21 test directories**.
+How to run tests for the finance kernel project. Use `python3 -m pytest` (or `pytest`) from the project root.
 
 ---
 
-## Quick Reference
+## Database isolation (tests vs interactive)
+
+Tests use a **separate database** so they never drop or truncate data you create in interactive or scripts.
+
+| Use case | Database | Notes |
+|----------|----------|--------|
+| **interactive.py**, run_import.py, seed_data, scripts | `finance_kernel_test` | Your data; only you can reset it (X in interactive). |
+| **pytest** | `finance_kernel_pytest` (default) | Tests drop/create/truncate only this DB. |
+
+Create the pytest DB once (same user as interactive):
 
 ```bash
-# Run ALL tests
-pytest
+createdb -U finance finance_kernel_pytest
+```
 
-# Run all tests with verbose output
-pytest -v
+Override with `DATABASE_URL` if you want pytest to use a different DB (e.g. for CI). Do not point pytest at `finance_kernel_test` if you want to preserve interactive data.
 
-# Run all tests with coverage
-pytest --cov=finance_kernel --cov=finance_engines --cov=finance_services --cov=finance_modules --cov-report=term-missing
+**If many tests fail with `relation "accounts" does not exist` (or "parties", "contracts", "fiscal_periods"):** the test DB has no schema. Fix:
+
+1. **Use the default test DB** — Unset `DATABASE_URL` or set it to the pytest DB:
+   ```bash
+   export DATABASE_URL="postgresql://finance:finance_test_pwd@localhost:5432/finance_kernel_pytest"
+   ```
+2. **Create the DB if it doesn’t exist:** `createdb -U finance finance_kernel_pytest`
+3. **Ensure PostgreSQL is running** (e.g. `brew services start postgresql@15` or `docker-compose up -d db`). Engine suites (reconciliation, correction, valuation, etc.) and any test that uses DB fixtures will fail with `psycopg2.OperationalError: connection refused` if Postgres is not up; spin up the DB first to get a real signal.
+4. Re-run pytest; the first run that needs the DB will create all tables. If you see a clear error like *"Schema creation did not create 'accounts'"*, the DB is reachable but table creation failed — check the full traceback for the real cause.
+
+---
+
+## Quick reference
+
+```bash
+# Run all tests
+python3 -m pytest
+
+# Verbose
+python3 -m pytest -v
 
 # Stop on first failure
-pytest -x
+python3 -m pytest -x
 
 # Run tests matching a keyword
-pytest -k "idempotency"
+python3 -m pytest -k "idempotency"
 
-# Run in parallel (requires pytest-xdist)
-pytest -n auto
+# With coverage
+python3 -m pytest --cov=finance_kernel --cov=finance_engines --cov=finance_services --cov=finance_modules --cov-report=term-missing
+
+# Parallel (requires pytest-xdist)
+python3 -m pytest -n auto
 ```
 
 ---
 
-## By Category
+## See trace output (decision journal)
 
-### Unit Tests (Pure Logic, No DB)
+To see workflow transitions, interpretation, and journal write for posted events:
+
+**Option 1 — Global (all events in selected tests):**
 
 ```bash
-# Value objects (Money, Currency)
-pytest tests/unit/ -v
-
-# Domain layer purity and logic (20 files)
-pytest tests/domain/ -v
-
-# Engine calculations - variance, allocation, matching, etc. (12 files)
-pytest tests/engines/ -v
-
-# Replay determinism and strategy governance (4 files)
-pytest tests/replay/ -v
-
-# Metamorphic equivalences (post+reverse, split/merge)
-pytest tests/metamorphic/ -v
+python3 -m pytest -T -s tests/modules/test_ar_service.py -k test_record_payment_posts
 ```
 
-### Posting Pipeline
+Use `-T` (or `--show-trace`) and `-s`. Works for any test that posts.
+
+**Option 2 — Trace a single event after the fact (e.g. after `scripts/interactive.py`):**
 
 ```bash
-# Core posting (balance, idempotency, period lock)
-pytest tests/posting/ -v
-
-# Fiscal period rules
-pytest tests/period/ -v
-
-# Multi-currency (FX gain/loss, triangle conversions)
-pytest tests/multicurrency/ -v
+python3 scripts/trace.py --event-id <uuid>
+python3 scripts/trace.py --list
 ```
 
-### Security & Immutability
+**Example commands with trace:**
+
+| Scenario              | Command |
+|-----------------------|---------|
+| AR record invoice     | `python3 -m pytest -T -s tests/modules/test_ar_service.py -k test_record_invoice_posts` |
+| AR record payment     | `python3 -m pytest -T -s tests/modules/test_ar_service.py -k test_record_payment_posts` |
+| AP record invoice     | `python3 -m pytest -T -s tests/modules/test_ap_service.py -k test_record_invoice_posts` |
+| Config-driven posting | `python3 -m pytest -T -s tests/config/test_config_wiring.py -k test_module_posting_service_from_built_orchestrator` |
+| Posting balance       | `python3 -m pytest -T -s tests/posting/test_balance.py -k test_balanced_entry_posts` |
+
+---
+
+## Architecture log matrix (what each test touched)
+
+Log-based summary: which parts of the system (config, db, persistence, etc.) each test triggered. No test markers; derived from actual logs.
+
+**Run tests and print the matrix at the end:**
 
 ```bash
-# Audit trail and immutability - ORM + triggers (9 files)
-pytest tests/audit/ -v
-
-# Adversarial attack vectors (10 files)
-pytest tests/adversarial/ -v
-
-# SQL injection prevention
-pytest tests/security/ -v
-
-# Database-level security (requires PostgreSQL)
-pytest tests/database_security/ -v
+ARCHITECTURE_LOG_SHOW_MATRIX=1 python3 -m pytest tests/modules/ -v --tb=short
 ```
 
-### Concurrency & Crash Safety
+Output: a table (test name | parts touched) and a summary (how many touched nothing vs persistence). Use any path instead of `tests/modules/` (e.g. `tests/`, `tests/config/`, or a single file).
+
+**Larger run (modules + config):**
 
 ```bash
-# Race conditions and concurrent posting (5 files)
-pytest tests/concurrency/ -v
-
-# Crash recovery and durability
-pytest tests/crash/ -v
-
-# Stress tests (high-load, extended timeout recommended)
-pytest tests/concurrency/test_stress.py -v --timeout=600
+ARCHITECTURE_LOG_SHOW_MATRIX=1 python3 -m pytest tests/config/ tests/modules/ -v --tb=short
 ```
 
-### Architecture & Governance
+Details: `tests/architecture_log/README.md`.
+
+---
+
+## Real-infrastructure convention
+
+Checks that module/integration tests use the real policy registry and DB (no unauthorized mocks of the posting pipeline):
 
 ```bash
-# Architecture invariants - import boundaries, open/closed, R20 mapping (8 files)
-pytest tests/architecture/ -v
-
-# Fuzzing (Hypothesis property-based testing)
-pytest tests/fuzzing/ -v
-```
-
-### ERP Modules
-
-```bash
-# All module tests (31 files)
-pytest tests/modules/ -v
-
-# Config validation
-pytest tests/modules/test_config_schemas.py tests/modules/test_config_validation.py tests/modules/test_config_fuzzing.py -v
-
-# Domain models
-pytest tests/modules/test_model_immutability.py tests/modules/test_model_invariants.py tests/modules/test_boundary_conditions.py -v
-
-# Economic profiles and guards
-pytest tests/modules/test_profile_balance.py tests/modules/test_guard_execution.py -v
-
-# Workflows
-pytest tests/modules/test_workflow_transitions.py tests/modules/test_workflow_adversarial.py -v
-
-# Gap coverage (blocked party, depreciation, returns, payment terms, etc.)
-pytest tests/modules/test_blocked_party.py tests/modules/test_asset_depreciation.py tests/modules/test_returns.py tests/modules/test_payment_terms.py tests/modules/test_invoice_status.py tests/modules/test_cost_center.py tests/modules/test_landed_cost.py tests/modules/test_bank_reconciliation.py tests/modules/test_intercompany.py -v
-
-# Module service integration tests
-pytest tests/modules/test_ap_service.py tests/modules/test_ar_service.py tests/modules/test_assets_service.py tests/modules/test_cash_service.py tests/modules/test_contracts_service.py tests/modules/test_expense_service.py tests/modules/test_gl_service.py tests/modules/test_payroll_service.py tests/modules/test_procurement_service.py tests/modules/test_tax_service.py tests/modules/test_wip_service.py tests/modules/test_cross_module_flow.py -v
-```
-
-### Integration & Services
-
-```bash
-# End-to-end integration tests
-pytest tests/integration/ -v
-
-# Service-layer tests (link graph, party, contract)
-pytest tests/services/ -v
-```
-
-### Demo & Logging
-
-```bash
-# Interactive demos (verbose output)
-pytest tests/demo/ -v -s
-
-# Logging configuration
-pytest tests/test_logging.py -v
+python3 -m pytest tests/architecture/test_real_infrastructure_convention.py -v
 ```
 
 ---
 
-## By Invariant
+## Actor required for posting tests (G14)
+
+**Any test that posts to the journal MUST have a valid actor.** Actor validation is mandatory for all POSTED outcomes (G14). Without it, posting returns `REJECTED` ("Actor validation is mandatory for posting; PartyService not configured") or `INVALID_ACTOR`.
+
+- **Root conftest:** Use the `module_posting_service` fixture (it depends on `party_service` and `test_actor_party`). The `test_actor_party` fixture creates a Party for `test_actor_id` so posting succeeds.
+- **Module tests (e.g. AP, AR):** Use the module’s service fixture (e.g. `ap_service`), which already depends on `party_service` and `test_actor_party`. Pass `actor_id=test_actor_id` in posting calls.
+- **New tests that post:** Depend on `party_service` and `test_actor_party` (or the module service fixture that includes them), and use `test_actor_id` as the `actor_id` in the call. Do not use an arbitrary UUID as `actor_id` unless you also create a Party for that UUID.
+
+---
+
+## Mutation audit
+
+Temporarily break a seam (e.g. journal writer, sequence allocation); tests that should fail must fail. If all pass, the script exits 1.
 
 ```bash
-# R1-R2: Event immutability & payload hash
-pytest tests/audit/test_event_protocol_violation.py -v
+# Default: adversarial, posting, integration, architecture, services (~675 tests)
+python scripts/run_mutation_audit.py
 
-# R3: Idempotency
-pytest tests/posting/test_idempotency.py tests/concurrency/test_true_concurrency.py -v
+# Full suite
+python scripts/run_mutation_audit.py tests/
 
-# R4: Balance per currency
-pytest tests/posting/test_balance.py -v
+# One mutation manually
+MUTATION_NAME=JOURNAL_WRITER_RETURN_SUCCESS_WITHOUT_WRITING python3 -m pytest tests/posting/ tests/adversarial/ -v
+```
 
-# R5: Rounding invariants
-pytest tests/adversarial/test_rounding_line_abuse.py tests/adversarial/test_rounding_invariant_gaps.py -v
+Mutations and rationale: `tests/mutation/README.md`.
 
-# R6: Replay safety
-pytest tests/replay/test_r6_replay_safety.py -v
+---
 
-# R7: Transaction boundaries
-pytest tests/domain/test_pure_layer.py tests/crash/test_durability.py -v
+## Serialization firewall
 
-# R8: Idempotency locking
-pytest tests/posting/test_r8_idempotency_locking.py -v
+Validates that values at persistence boundaries (e.g. `decision_log`) are JSON-serializable. Active when running the full suite or any test under `tests/serialization/`.
 
-# R9: Sequence safety
-pytest tests/concurrency/test_r9_sequence_safety.py -v
+```bash
+# Run firewall tests only
+python3 -m pytest tests/serialization/ -v
+```
 
-# R10: Posted record immutability
-pytest tests/audit/test_immutability.py tests/audit/test_database_attacks.py -v
+Disable: `SERIALIZATION_FIREWALL=0 python3 -m pytest ...`
 
-# R11: Audit chain integrity
-pytest tests/audit/test_chain_validation.py -v
+---
 
-# R12-R13: Period enforcement
-pytest tests/posting/test_period_lock.py tests/period/test_period_rules.py -v
+## Run by category
 
-# R14-R15: Open/closed principle
-pytest tests/architecture/test_open_closed.py -v
+**Unit / pure logic (no DB):**
 
-# R16-R17: Currency and precision
-pytest tests/unit/test_currency.py tests/unit/test_money.py -v
+```bash
+python3 -m pytest tests/unit/ tests/domain/ tests/engines/ tests/replay/ tests/metamorphic/ -v
+```
 
-# R18-R19: Error handling
-pytest tests/architecture/test_error_handling.py -v
+**Posting pipeline:**
 
-# R20: Test class mapping
-pytest tests/architecture/test_r20_test_class_mapping.py -v
+```bash
+python3 -m pytest tests/posting/ tests/period/ tests/multicurrency/ -v
+```
 
-# R21-R24: Replay determinism and strategy governance
-pytest tests/replay/test_rule_version.py tests/domain/test_strategy_purity.py -v
+**Security and immutability:**
 
-# L1-L5: Economic link invariants
-pytest tests/domain/test_economic_link.py tests/services/test_link_graph_service.py -v
+```bash
+python3 -m pytest tests/audit/ tests/adversarial/ tests/security/ tests/database_security/ -v
+```
+
+**Concurrency and crash:**
+
+```bash
+python3 -m pytest tests/concurrency/ tests/crash/ -v
+```
+
+**Architecture and fuzzing:**
+
+```bash
+python3 -m pytest tests/architecture/ tests/fuzzing/ -v
+```
+
+**ERP modules (all):**
+
+```bash
+python3 -m pytest tests/modules/ -v
+```
+
+**Integration and services:**
+
+```bash
+python3 -m pytest tests/integration/ tests/services/ -v
 ```
 
 ---
 
-## Smoke Tests
+## Run by invariant
 
-Quick verification before committing:
+| Invariant / area        | Command |
+|-------------------------|---------|
+| R1–R2 Event / payload   | `python3 -m pytest tests/audit/test_event_protocol_violation.py -v` |
+| R3 Idempotency          | `python3 -m pytest tests/posting/test_idempotency.py tests/concurrency/test_true_concurrency.py -v` |
+| R4 Balance              | `python3 -m pytest tests/posting/test_balance.py -v` |
+| R5 Rounding             | `python3 -m pytest tests/adversarial/test_rounding_line_abuse.py tests/adversarial/test_rounding_invariant_gaps.py -v` |
+| R6 Replay               | `python3 -m pytest tests/replay/test_r6_replay_safety.py -v` |
+| R9 Sequence             | `python3 -m pytest tests/concurrency/test_r9_sequence_safety.py -v` |
+| R10 Immutability         | `python3 -m pytest tests/audit/test_immutability.py tests/audit/test_database_attacks.py -v` |
+| R11 Audit chain         | `python3 -m pytest tests/audit/test_chain_validation.py -v` |
+| R12–R13 Period           | `python3 -m pytest tests/posting/test_period_lock.py tests/period/test_period_rules.py -v` |
+| R14–R15 Open/closed      | `python3 -m pytest tests/architecture/test_open_closed.py -v` |
+| R16–R17 Currency         | `python3 -m pytest tests/unit/test_currency.py tests/unit/test_money.py -v` |
+| L1–L5 Economic links    | `python3 -m pytest tests/domain/test_economic_link.py tests/services/test_link_graph_service.py -v` |
+
+---
+
+## Smoke and markers
+
+**Quick smoke:**
 
 ```bash
-# Fast smoke test (~10 seconds)
-pytest tests/unit/ tests/posting/test_balance.py tests/audit/test_immutability.py -v --tb=short
+python3 -m pytest tests/unit/ tests/posting/test_balance.py tests/audit/test_immutability.py -v --tb=short
+```
 
-# Full security audit
-pytest tests/security/ tests/database_security/ tests/adversarial/ -v
+**Markers:**
 
-# Architecture compliance
-pytest tests/architecture/ -v
+```bash
+python3 -m pytest -m "not postgres"    # Skip PostgreSQL-specific
+python3 -m pytest -m postgres         # Only PostgreSQL
+python3 -m pytest -m slow             # Slow tests only
 ```
 
 ---
 
-## Test Directory Summary
+## Test directory summary
 
-| Directory | Files | Focus |
-|-----------|-------|-------|
-| `tests/adversarial/` | 10 | Attack vectors, tamper resistance |
-| `tests/architecture/` | 8 | Import boundaries, governance, R20 |
-| `tests/audit/` | 9 | Immutability, hash chain, triggers |
-| `tests/concurrency/` | 5 | Race conditions, stress, sequence |
-| `tests/crash/` | 2 | Durability, fault injection |
-| `tests/database_security/` | 1 | PostgreSQL-level protection |
-| `tests/demo/` | 1 | Interactive demonstrations |
-| `tests/domain/` | 20 | Pure logic, schemas, profiles |
-| `tests/engines/` | 12 | Calculation engines |
-| `tests/fuzzing/` | 2 | Hypothesis property-based |
-| `tests/integration/` | 2 | End-to-end pipeline |
-| `tests/metamorphic/` | 1 | Mathematical equivalences |
-| `tests/modules/` | 31 | ERP module tests |
-| `tests/multicurrency/` | 2 | FX, triangle conversions |
-| `tests/period/` | 1 | Fiscal period rules |
-| `tests/posting/` | 4 | Core posting pipeline |
-| `tests/replay/` | 4 | Replay determinism |
-| `tests/security/` | 1 | SQL injection prevention |
-| `tests/services/` | 3 | Service-layer tests |
-| `tests/unit/` | 2 | Value objects |
-| **Root** | 1 | Logging |
-| **Total** | **122** | |
-
----
-
-## Markers
-
-```bash
-# Skip PostgreSQL-specific tests
-pytest -m "not postgres"
-
-# Only PostgreSQL tests
-pytest -m postgres
-
-# Only slow tests
-pytest -m slow
-
-# Only stress tests (with extended timeout)
-pytest -m stress --timeout=600
-```
+| Directory                | Focus |
+|--------------------------|--------|
+| `tests/unit/`            | Value objects |
+| `tests/domain/`          | Pure logic, schemas, profiles |
+| `tests/engines/`         | Calculation engines |
+| `tests/posting/`         | Core posting pipeline |
+| `tests/period/`          | Fiscal period rules |
+| `tests/audit/`           | Immutability, hash chain, triggers |
+| `tests/adversarial/`     | Attack vectors, tamper resistance |
+| `tests/architecture/`    | Import boundaries, governance |
+| `tests/concurrency/`     | Race conditions, sequence safety |
+| `tests/crash/`           | Durability |
+| `tests/integration/`     | End-to-end flows |
+| `tests/modules/`         | ERP module tests |
+| `tests/services/`       | Service-layer (approval, reversal, etc.) |
+| `tests/replay/`          | Replay determinism |
+| `tests/multicurrency/`   | FX, conversions |
+| `tests/fuzzing/`         | Hypothesis property-based |
+| `tests/security/`        | SQL injection prevention |
+| `tests/database_security/` | PostgreSQL-level protection |
+| `tests/serialization/`   | JSON firewall at persistence |
+| `tests/demo/`            | Interactive demos |

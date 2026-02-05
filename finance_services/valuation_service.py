@@ -43,16 +43,17 @@ Usage:
     from finance_kernel.services.link_graph_service import LinkGraphService
 
     link_service = LinkGraphService(session)
-    valuation = ValuationLayer(session, link_service)
+    valuation = ValuationLayer(session, link_service, clock=clock)  # inject clock for determinism
 
-    # Create a cost lot
+    # Create a cost lot (use injected clock; do not use date.today())
+    effective_date = valuation._clock.now().date()
     lot = valuation.create_lot(
         lot_id=uuid4(),
         source_ref=ArtifactRef.receipt(receipt_id),
         item_id="WIDGET-001",
         quantity=Quantity(100, "EA"),
         total_cost=Money.of("1000.00", "USD"),
-        lot_date=date.today(),
+        lot_date=effective_date,
         creating_event_id=event_id,
     )
 
@@ -70,7 +71,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -105,6 +106,7 @@ from finance_kernel.exceptions import (
     StandardCostNotFoundError,
 )
 from finance_kernel.logging_config import get_logger
+from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.models.cost_lot import CostLotModel
 from finance_kernel.services.link_graph_service import LinkGraphService
 
@@ -149,6 +151,7 @@ class ValuationLayer:
         session: Session,
         link_graph: LinkGraphService,
         lots_by_item: dict[str, list[CostLot]] | None = None,
+        clock: Clock | None = None,
     ):
         """
         Initialize the valuation layer.
@@ -158,9 +161,11 @@ class ValuationLayer:
             link_graph: LinkGraphService for link operations.
             lots_by_item: Optional in-memory lot storage (for testing).
                          When None, lots are persisted to the cost_lots table.
+            clock: Optional clock for deterministic time (tests/replay).
         """
         self.session = session
         self.link_graph = link_graph
+        self._clock = clock or SystemClock()
         self.allocation = AllocationEngine()
 
         # If lots_by_item is provided, use in-memory mode (for tests that
@@ -170,6 +175,16 @@ class ValuationLayer:
         # Standard costs (item_id -> Money) — in-memory is acceptable here
         # as standard costs are configuration data reloaded per session.
         self._standard_costs: dict[str, Money] = {}
+        # FIFO/LIFO ordering cache (item_id -> list[CostLot])
+        self._lot_order_cache: dict[str, list[CostLot]] = {}
+
+    def _now(self) -> datetime:
+        """Current UTC time from injected clock."""
+        return self._clock.now_utc()
+
+    def _today(self) -> date:
+        """Current date from injected clock."""
+        return self._clock.now_utc().date()
 
     # =========================================================================
     # Lot Creation
@@ -245,7 +260,7 @@ class ValuationLayer:
             parent_ref=source_ref,
             child_ref=lot.lot_ref,
             creating_event_id=creating_event_id,
-            created_at=datetime.now(UTC),
+            created_at=self._now(),
             metadata={
                 "quantity": str(quantity.value),
                 "unit": quantity.unit,
@@ -698,7 +713,7 @@ class ValuationLayer:
             source_event_id=creating_event_id,
             source_artifact_type=lot.source_ref.artifact_type.value,
             source_artifact_id=lot.source_ref.artifact_id,
-            created_at=datetime.now(UTC),
+            created_at=self._now(),
             lot_metadata=dict(lot.metadata) if lot.metadata else None,
         )
         self.session.add(model)
@@ -883,7 +898,7 @@ class ValuationLayer:
             parent_ref=lot.lot_ref,
             child_ref=consuming_ref,
             creating_event_id=creating_event_id,
-            created_at=datetime.now(UTC),
+            created_at=self._now(),
             metadata={
                 "quantity_consumed": str(consumption.quantity_consumed.value),
                 "unit": consumption.quantity_consumed.unit,

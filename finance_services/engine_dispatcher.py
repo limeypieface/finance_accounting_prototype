@@ -222,6 +222,20 @@ class EngineDispatcher:
                     parameters={},
                 )
 
+            # Wire policy.variance_disposition into variance engine params (config-driven disposition)
+            if engine_name == "variance" and getattr(policy, "variance_disposition", None) is not None:
+                frozen_params = FrozenEngineParams(
+                    engine_name=frozen_params.engine_name,
+                    parameters={**frozen_params.parameters, "variance_disposition": policy.variance_disposition},
+                )
+
+            # Wire policy.valuation_model into valuation engine params (config-driven model selection)
+            if engine_name == "valuation" and getattr(policy, "valuation_model", None) is not None:
+                frozen_params = FrozenEngineParams(
+                    engine_name=frozen_params.engine_name,
+                    parameters={**frozen_params.parameters, "valuation_model": policy.valuation_model},
+                )
+
             # Compute input fingerprint
             fingerprint = ""
             if invoker.fingerprint_fields:

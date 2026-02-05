@@ -826,12 +826,17 @@ class TestAssetDepreciationIntegration:
     """Real integration tests using FixedAssetService through the posting pipeline."""
 
     @pytest.fixture
-    def asset_service(self, session, module_role_resolver, deterministic_clock, register_modules):
+    def asset_service(
+        self, session, module_role_resolver, deterministic_clock, register_modules, workflow_executor,
+        party_service, test_actor_party,
+    ):
         from finance_modules.assets.service import FixedAssetService
         return FixedAssetService(
             session=session,
             role_resolver=module_role_resolver,
+            workflow_executor=workflow_executor,
             clock=deterministic_clock,
+            party_service=party_service,
         )
 
     def test_record_asset_acquisition_posts(

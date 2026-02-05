@@ -50,7 +50,7 @@ MATCH_WITHIN_TOLERANCE = Guard(
 
 APPROVAL_THRESHOLD_MET = Guard(
     name="approval_threshold_met",
-    description="Required approval level obtained for invoice amount",
+    description="(Deprecated) approval is enforced via approval engine, not guard",
 )
 
 SUFFICIENT_FUNDS = Guard(
@@ -73,7 +73,6 @@ logger.info(
     extra={
         "guards": [
             MATCH_WITHIN_TOLERANCE.name,
-            APPROVAL_THRESHOLD_MET.name,
             SUFFICIENT_FUNDS.name,
             PAYMENT_APPROVED.name,
         ],
@@ -173,3 +172,58 @@ logger.info(
         "initial_state": PAYMENT_WORKFLOW.initial_state,
     },
 )
+
+
+# -----------------------------------------------------------------------------
+# Directive: no generic workflows. Each financial action has its own lifecycle.
+# See docs/WORKFLOW_DIRECTIVE.md.
+# -----------------------------------------------------------------------------
+
+def _ap_draft_posted_workflow(name: str, description: str) -> Workflow:
+    """Draft -> posted workflow for AP action-specific lifecycles."""
+    return Workflow(
+        name=name,
+        description=description,
+        initial_state="draft",
+        states=("draft", "posted"),
+        terminal_states=("posted",),
+        transitions=(Transition("draft", "posted", action="post"),),
+    )
+
+AP_INVENTORY_INVOICE_WORKFLOW = _ap_draft_posted_workflow(
+    "ap_inventory_invoice",
+    "Inventory (receipt) invoice posting",
+)
+AP_ACCRUAL_WORKFLOW = _ap_draft_posted_workflow(
+    "ap_accrual",
+    "Accrual posting",
+)
+AP_ACCRUAL_REVERSAL_WORKFLOW = _ap_draft_posted_workflow(
+    "ap_accrual_reversal",
+    "Accrual reversal posting",
+)
+AP_PREPAYMENT_WORKFLOW = _ap_draft_posted_workflow(
+    "ap_prepayment",
+    "Prepayment posting",
+)
+AP_PREPAYMENT_APPLICATION_WORKFLOW = _ap_draft_posted_workflow(
+    "ap_prepayment_application",
+    "Prepayment application to invoice",
+)
+
+for wf in (
+    AP_INVENTORY_INVOICE_WORKFLOW,
+    AP_ACCRUAL_WORKFLOW,
+    AP_ACCRUAL_REVERSAL_WORKFLOW,
+    AP_PREPAYMENT_WORKFLOW,
+    AP_PREPAYMENT_APPLICATION_WORKFLOW,
+):
+    logger.info(
+        "ap_workflow_registered",
+        extra={
+            "workflow_name": wf.name,
+            "state_count": len(wf.states),
+            "transition_count": len(wf.transitions),
+            "initial_state": wf.initial_state,
+        },
+    )

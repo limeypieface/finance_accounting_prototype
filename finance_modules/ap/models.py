@@ -21,6 +21,8 @@ Invariants enforced
 * All dataclasses are ``frozen=True`` -- immutable after construction.
 * ``Invoice.__post_init__`` enforces ``total == subtotal + tax`` and
   rejects credit-memo inconsistencies at construction time.
+* When ``Invoice`` is constructed with ``lines``, ``subtotal`` must equal
+  the sum of ``line.amount`` (cross-entity invariant).
 
 Failure modes
 -------------
@@ -165,6 +167,23 @@ class Invoice:
             raise ValueError(
                 "Credit memo (negative subtotal) cannot have positive tax_amount"
             )
+
+        # INVARIANT (cross-entity): when lines are provided, subtotal must equal sum of line amounts
+        if self.lines:
+            line_sum = sum(line.amount for line in self.lines)
+            if self.subtotal != line_sum:
+                logger.warning(
+                    "invoice_subtotal_mismatch_lines",
+                    extra={
+                        "invoice_id": str(self.id),
+                        "subtotal": str(self.subtotal),
+                        "line_sum": str(line_sum),
+                        "line_count": len(self.lines),
+                    },
+                )
+                raise ValueError(
+                    f"subtotal ({self.subtotal}) must equal sum of line amounts ({line_sum})"
+                )
 
         logger.debug(
             "invoice_created",

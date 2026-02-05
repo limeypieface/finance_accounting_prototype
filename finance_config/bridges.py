@@ -54,9 +54,27 @@ from uuid import UUID, uuid5
 from finance_config.compiler import (
     CompiledApprovalPolicy,
     CompiledApprovalRule,
+    CompiledControl,
+    CompiledGuard,
+    CompiledPolicy,
     CompiledPolicyPack,
 )
-from finance_config.schema import SubledgerContractDef
+from finance_config.schema import (
+    LedgerEffectDef,
+    PolicyMeaningDef,
+    PolicyTriggerDef,
+    PrecedenceDef,
+)
+from finance_kernel.domain.accounting_policy import (
+    AccountingPolicy,
+    GuardCondition,
+    GuardType,
+    LedgerEffect,
+    PolicyMeaning,
+    PolicyPrecedence,
+    PolicyTrigger,
+    PrecedenceMode,
+)
 from finance_kernel.domain.approval import ApprovalPolicy, ApprovalRule
 from finance_kernel.domain.subledger_control import (
     ControlAccountBinding,
@@ -73,6 +91,111 @@ from finance_kernel.services.journal_writer import RoleResolver
 # Fixed namespace for deterministic account UUID generation.
 # In production, account IDs would come from the database.
 _COA_UUID_NAMESPACE = UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
+
+# ---------------------------------------------------------------------------
+# Policy bridge: CompiledPolicy -> AccountingPolicy (for config-driven interpretation)
+# ---------------------------------------------------------------------------
+
+
+def policy_from_compiled(cp: CompiledPolicy) -> AccountingPolicy:
+    """Convert a CompiledPolicy to kernel AccountingPolicy.
+
+    Used when the posting path resolves profile from the pack so that
+    guards, trigger, and meaning come from config (policies/*.yaml).
+    """
+    # Guards: CompiledGuard -> GuardCondition
+    guard_type_map = {"reject": GuardType.REJECT, "block": GuardType.BLOCK}
+    guards = tuple(
+        GuardCondition(
+            guard_type=guard_type_map.get(g.guard_type.lower(), GuardType.REJECT),
+            expression=g.expression,
+            reason_code=g.reason_code,
+            message=g.message or "",
+        )
+        for g in cp.guards
+    )
+
+    # Trigger: PolicyTriggerDef -> PolicyTrigger
+    trigger = PolicyTrigger(
+        event_type=cp.trigger.event_type,
+        schema_version=getattr(cp.trigger, "schema_version", 1),
+        where=cp.trigger.where,
+    )
+
+    # Meaning: PolicyMeaningDef -> PolicyMeaning
+    meaning = PolicyMeaning(
+        economic_type=cp.meaning.economic_type,
+        quantity_field=cp.meaning.quantity_field,
+        dimensions=cp.meaning.dimensions,
+    )
+
+    # Ledger effects: LedgerEffectDef -> LedgerEffect
+    ledger_effects = tuple(
+        LedgerEffect(
+            ledger=le.ledger,
+            debit_role=le.debit_role,
+            credit_role=le.credit_role,
+        )
+        for le in cp.ledger_effects
+    )
+
+    # Precedence: PrecedenceDef -> PolicyPrecedence
+    precedence = PolicyPrecedence()
+    if cp.precedence is not None:
+        mode = PrecedenceMode.NORMAL
+        if getattr(cp.precedence, "mode", "").lower() == "override":
+            mode = PrecedenceMode.OVERRIDE
+        precedence = PolicyPrecedence(
+            mode=mode,
+            priority=getattr(cp.precedence, "priority", 0),
+            overrides=getattr(cp.precedence, "overrides", ()),
+        )
+
+    return AccountingPolicy(
+        name=cp.name,
+        version=cp.version,
+        trigger=trigger,
+        meaning=meaning,
+        ledger_effects=ledger_effects,
+        effective_from=cp.effective_from,
+        effective_to=cp.effective_to,
+        scope=cp.scope,
+        precedence=precedence,
+        valuation_model=cp.valuation_model,
+        guards=guards,
+        required_engines=cp.required_engines,
+        engine_parameters_ref=cp.engine_parameters_ref,
+        intent_source=getattr(cp, "intent_source", None),
+        description=cp.description or "",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Controls bridge: CompiledControl -> kernel ControlRule (for config-driven controls)
+# ---------------------------------------------------------------------------
+
+
+def controls_from_compiled(
+    compiled_controls: tuple[CompiledControl, ...],
+) -> tuple["ControlRule", ...]:
+    """Convert CompiledControl list to kernel ControlRule tuple.
+
+    Used when the posting path runs controls from the pack (controls.yaml).
+    """
+    from finance_kernel.domain.control import ControlRule
+
+    return tuple(
+        ControlRule(
+            name=c.name,
+            applies_to=c.applies_to,
+            action=c.action,
+            expression=c.expression,
+            reason_code=c.reason_code,
+            message=c.message or "",
+        )
+        for c in compiled_controls
+    )
 
 
 def _account_type_from_code(code: str) -> tuple[str, str]:

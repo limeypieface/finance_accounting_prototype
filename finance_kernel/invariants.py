@@ -36,3 +36,18 @@ FORBIDDEN_KERNEL_IMPORTS: tuple[str, ...] = (
     "finance_config",
     "finance_modules",
 )
+
+# ---------------------------------------------------------------------------
+# Architecture invariants (R25–R27). Enforced across the codebase.
+# See CLAUDE.md Full Invariant Table and tests/architecture/.
+# ---------------------------------------------------------------------------
+# R25 — Kernel primitives only. All monetary values, quantities, exchange
+#       rates, and artifact identities must use finance_kernel value objects
+#       (Money, ArtifactRef, Quantity, ExchangeRate). Modules may not define
+#       parallel financial types. Enforced: test_primitive_reuse.py.
+# R26 — Journal is the system of record. Module ORM tables are operational
+#       projections only and must be derivable from the journal and link
+#       graph. Financial truth lives in the journal.
+# R27 — Matching is operational. Financial variance treatment and ledger
+#       impact are defined by kernel policy (profiles, guards), not module
+#       logic. Modules call engines; policy decides accounts and posting.

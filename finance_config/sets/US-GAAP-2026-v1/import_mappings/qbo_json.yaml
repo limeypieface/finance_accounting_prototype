@@ -1,0 +1,156 @@
+# QBO converter output — import mappings for JSON produced by scripts/run_qbo_convert.py
+#
+# Use after: python3 scripts/run_qbo_convert.py <folder>
+# Output files: qbo_accounts_*.json, qbo_vendors_*.json, qbo_customers_*.json, qbo_journal_*.json
+# All use source_format: json, source_options.json_path: "rows". Each row has _import_row (1-based).
+#
+# Field names match the normalized output of the QBO readers (see scripts/qbo/readers.py).
+
+import_mappings:
+  # qbo_accounts_*.json — rows: name, account_type, detail_type, description?, total_balance?
+  # No "code" in many QBO exports; use Auto-assign (A #) after staging if needed.
+  - name: qbo_json_accounts
+    version: 1
+    entity_type: account
+    source_format: json
+    source_options:
+      format: array
+      json_path: "rows"
+      encoding: "utf-8"
+    dependency_tier: 0
+    field_mappings:
+      - source: "name"
+        target: "name"
+        field_type: string
+        required: true
+        transform: strip
+      - source: "code"
+        target: "code"
+        field_type: string
+        required: false
+        transform: strip
+      - source: "account_type"
+        target: "account_type"
+        field_type: string
+        required: false
+        default: "expense"
+        transform: lower
+      - source: "detail_type"
+        target: "detail_type"
+        field_type: string
+        required: false
+        transform: strip
+      - source: "description"
+        target: "description"
+        field_type: string
+        required: false
+        transform: strip
+    validations:
+      - rule_type: unique
+        fields: ["name"]
+        scope: batch
+        message: "Duplicate account name within batch"
+      - rule_type: unique
+        fields: ["code"]
+        scope: system
+        message: "Account code already exists"
+
+  # qbo_customers_*.json — rows: code (= name or company), name, email?, phone?, etc.
+  - name: qbo_json_customers
+    version: 1
+    entity_type: customer
+    source_format: json
+    source_options:
+      format: array
+      json_path: "rows"
+      encoding: "utf-8"
+    dependency_tier: 2
+    field_mappings:
+      - source: "code"
+        target: "code"
+        field_type: string
+        required: true
+        transform: strip
+      - source: "name"
+        target: "name"
+        field_type: string
+        required: true
+        transform: strip
+    validations:
+      - rule_type: unique
+        fields: ["code"]
+        scope: batch
+        message: "Duplicate customer within batch"
+      - rule_type: unique
+        fields: ["code"]
+        scope: system
+        message: "Customer already exists"
+
+  # qbo_vendors_*.json — rows: code (= name), name, email?, phone?, etc.
+  - name: qbo_json_vendors
+    version: 1
+    entity_type: vendor
+    source_format: json
+    source_options:
+      format: array
+      json_path: "rows"
+      encoding: "utf-8"
+    dependency_tier: 2
+    field_mappings:
+      - source: "code"
+        target: "code"
+        field_type: string
+        required: true
+        transform: strip
+      - source: "name"
+        target: "name"
+        field_type: string
+        required: true
+        transform: strip
+    validations:
+      - rule_type: unique
+        fields: ["code"]
+        scope: batch
+        message: "Duplicate vendor within batch"
+      - rule_type: unique
+        fields: ["code"]
+        scope: system
+        message: "Vendor already exists"
+
+  # qbo_journal_*.json — rows: date, transaction_type, num, name, lines (array of { account, memo, debit, credit })
+  - name: qbo_json_journal
+    version: 1
+    entity_type: journal
+    source_format: json
+    source_options:
+      format: array
+      json_path: "rows"
+      encoding: "utf-8"
+    dependency_tier: 3
+    field_mappings:
+      - source: "date"
+        target: "date"
+        field_type: date
+        required: true
+        format: "%m/%d/%Y"
+        transform: normalize_date
+      - source: "transaction_type"
+        target: "transaction_type"
+        field_type: string
+        required: false
+        transform: strip
+      - source: "num"
+        target: "num"
+        field_type: string
+        required: false
+        transform: strip
+      - source: "name"
+        target: "name"
+        field_type: string
+        required: false
+        transform: strip
+      - source: "lines"
+        target: "lines"
+        field_type: array
+        required: true
+    validations: []

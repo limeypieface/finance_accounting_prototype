@@ -627,3 +627,695 @@ PAYROLL_LABOR_DISTRIBUTION_V2 = EventSchema(
     ),
 )
 EventSchemaRegistry.register(PAYROLL_LABOR_DISTRIBUTION_V2)
+
+
+# ============================================================================
+# DCAA Operational Control Schemas (v3)
+# ============================================================================
+# These schemas support the DCAA compliance gap closure:
+# D1 daily recording, D2 supervisor approval, D3 total time accounting,
+# D4 concurrent overlap, D5 correction by reversal, D6 pre-travel auth,
+# D7 GSA rate cap, D8 rate ceiling, D9 floor check audit.
+# ============================================================================
+
+
+# --- timesheet.submitted v3 (D1, D3, D4) -----------------------------------
+TIMESHEET_SUBMITTED_V3 = EventSchema(
+    event_type="timesheet.submitted",
+    version=3,
+    description="Timesheet submission event with DCAA compliance fields",
+    fields=(
+        EventFieldSchema(
+            name="submission_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Unique identifier for the timesheet submission",
+        ),
+        EventFieldSchema(
+            name="employee_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Employee submitting the timesheet",
+        ),
+        EventFieldSchema(
+            name="pay_period_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Pay period for this submission",
+        ),
+        EventFieldSchema(
+            name="work_week_start",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Start date of the work week",
+        ),
+        EventFieldSchema(
+            name="total_hours",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0"),
+            description="Total hours in submission",
+        ),
+        EventFieldSchema(
+            name="entry_count",
+            field_type=EventFieldType.INTEGER,
+            required=True,
+            description="Number of time entries in submission",
+        ),
+        EventFieldSchema(
+            name="submitted_at",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Date the timesheet was submitted",
+        ),
+        EventFieldSchema(
+            name="org_unit",
+            field_type=EventFieldType.STRING,
+            required=True,
+            min_length=1,
+            max_length=50,
+            description="Organization unit dimension",
+        ),
+    ),
+)
+EventSchemaRegistry.register(TIMESHEET_SUBMITTED_V3)
+
+
+# --- timesheet.approved v3 (D2) -------------------------------------------
+TIMESHEET_APPROVED_V3 = EventSchema(
+    event_type="timesheet.approved",
+    version=3,
+    description="Timesheet approval event (D2: supervisor approval gate)",
+    fields=(
+        EventFieldSchema(
+            name="submission_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="The submission being approved",
+        ),
+        EventFieldSchema(
+            name="approver_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Supervisor/manager who approved",
+        ),
+        EventFieldSchema(
+            name="approved_at",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Date of approval",
+        ),
+    ),
+)
+EventSchemaRegistry.register(TIMESHEET_APPROVED_V3)
+
+
+# --- timesheet.rejected v3 (D2) -------------------------------------------
+TIMESHEET_REJECTED_V3 = EventSchema(
+    event_type="timesheet.rejected",
+    version=3,
+    description="Timesheet rejection event",
+    fields=(
+        EventFieldSchema(
+            name="submission_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="The submission being rejected",
+        ),
+        EventFieldSchema(
+            name="rejector_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Supervisor/manager who rejected",
+        ),
+        EventFieldSchema(
+            name="reason",
+            field_type=EventFieldType.STRING,
+            required=True,
+            min_length=1,
+            max_length=500,
+            description="Reason for rejection",
+        ),
+        EventFieldSchema(
+            name="rejected_at",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Date of rejection",
+        ),
+    ),
+)
+EventSchemaRegistry.register(TIMESHEET_REJECTED_V3)
+
+
+# --- timesheet.corrected v3 (D5, R10) -------------------------------------
+TIMESHEET_CORRECTED_V3 = EventSchema(
+    event_type="timesheet.corrected",
+    version=3,
+    description="Timesheet correction event (D5: reversal + replacement)",
+    fields=(
+        EventFieldSchema(
+            name="correction_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Unique identifier for the correction",
+        ),
+        EventFieldSchema(
+            name="original_entry_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="The entry being corrected",
+        ),
+        EventFieldSchema(
+            name="reversal_event_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="The reversal event ID",
+        ),
+        EventFieldSchema(
+            name="new_entry_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="The replacement entry ID",
+        ),
+        EventFieldSchema(
+            name="reason",
+            field_type=EventFieldType.STRING,
+            required=True,
+            min_length=1,
+            max_length=500,
+            description="Reason for the correction",
+        ),
+        EventFieldSchema(
+            name="corrected_at",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Date of the correction",
+        ),
+    ),
+)
+EventSchemaRegistry.register(TIMESHEET_CORRECTED_V3)
+
+
+# --- floor_check.completed v3 (D9) ----------------------------------------
+FLOOR_CHECK_COMPLETED_V3 = EventSchema(
+    event_type="floor_check.completed",
+    version=3,
+    description="Floor check audit event (D9: append-only audit artifact)",
+    fields=(
+        EventFieldSchema(
+            name="check_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Unique identifier for the floor check",
+        ),
+        EventFieldSchema(
+            name="employee_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Employee being checked",
+        ),
+        EventFieldSchema(
+            name="check_date",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Date of the floor check",
+        ),
+        EventFieldSchema(
+            name="observed_activity",
+            field_type=EventFieldType.STRING,
+            required=False,
+            nullable=True,
+            max_length=500,
+            description="Activity observed during the check",
+        ),
+        EventFieldSchema(
+            name="charged_contract_id",
+            field_type=EventFieldType.UUID,
+            required=False,
+            nullable=True,
+            description="Contract the employee was charging at time of check",
+        ),
+        EventFieldSchema(
+            name="result",
+            field_type=EventFieldType.STRING,
+            required=True,
+            allowed_values=frozenset({"CONFIRMED", "DISCREPANCY", "EMPLOYEE_ABSENT"}),
+            description="Floor check result",
+        ),
+        EventFieldSchema(
+            name="checker_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Person who performed the floor check",
+        ),
+    ),
+)
+EventSchemaRegistry.register(FLOOR_CHECK_COMPLETED_V3)
+
+
+# --- floor_check.discrepancy_resolved v3 (D9) -----------------------------
+FLOOR_CHECK_DISCREPANCY_RESOLVED_V3 = EventSchema(
+    event_type="floor_check.discrepancy_resolved",
+    version=3,
+    description="Floor check discrepancy resolution",
+    fields=(
+        EventFieldSchema(
+            name="check_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="The floor check being resolved",
+        ),
+        EventFieldSchema(
+            name="resolution",
+            field_type=EventFieldType.STRING,
+            required=True,
+            min_length=1,
+            max_length=500,
+            description="Resolution description",
+        ),
+        EventFieldSchema(
+            name="resolved_by",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Person who resolved the discrepancy",
+        ),
+        EventFieldSchema(
+            name="resolved_at",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Date of resolution",
+        ),
+    ),
+)
+EventSchemaRegistry.register(FLOOR_CHECK_DISCREPANCY_RESOLVED_V3)
+
+
+# --- expense.travel_auth_submitted v3 (D6) --------------------------------
+EXPENSE_TRAVEL_AUTH_SUBMITTED_V3 = EventSchema(
+    event_type="expense.travel_auth_submitted",
+    version=3,
+    description="Travel authorization submitted (D6: pre-travel auth)",
+    fields=(
+        EventFieldSchema(
+            name="authorization_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Unique identifier for the travel authorization",
+        ),
+        EventFieldSchema(
+            name="employee_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Employee requesting travel authorization",
+        ),
+        EventFieldSchema(
+            name="destination",
+            field_type=EventFieldType.STRING,
+            required=True,
+            min_length=1,
+            max_length=200,
+            description="Travel destination",
+        ),
+        EventFieldSchema(
+            name="purpose",
+            field_type=EventFieldType.STRING,
+            required=True,
+            min_length=1,
+            max_length=500,
+            description="Purpose of travel",
+        ),
+        EventFieldSchema(
+            name="travel_start",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="First day of travel",
+        ),
+        EventFieldSchema(
+            name="travel_end",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Last day of travel",
+        ),
+        EventFieldSchema(
+            name="total_estimated",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0.01"),
+            description="Total estimated travel cost",
+        ),
+        EventFieldSchema(
+            name="currency",
+            field_type=EventFieldType.CURRENCY,
+            required=True,
+            description="Currency of the estimates",
+        ),
+        CONTRACT_FIELD,
+        EventFieldSchema(
+            name="org_unit",
+            field_type=EventFieldType.STRING,
+            required=True,
+            min_length=1,
+            max_length=50,
+            description="Organization unit dimension",
+        ),
+    ),
+)
+EventSchemaRegistry.register(EXPENSE_TRAVEL_AUTH_SUBMITTED_V3)
+
+
+# --- expense.travel_auth_approved v3 (D6) ---------------------------------
+EXPENSE_TRAVEL_AUTH_APPROVED_V3 = EventSchema(
+    event_type="expense.travel_auth_approved",
+    version=3,
+    description="Travel authorization approved",
+    fields=(
+        EventFieldSchema(
+            name="authorization_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="The authorization being approved",
+        ),
+        EventFieldSchema(
+            name="approver_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Person who approved the authorization",
+        ),
+        EventFieldSchema(
+            name="approved_at",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Date of approval",
+        ),
+    ),
+)
+EventSchemaRegistry.register(EXPENSE_TRAVEL_AUTH_APPROVED_V3)
+
+
+# --- expense.travel_auth_rejected v3 (D6) ---------------------------------
+EXPENSE_TRAVEL_AUTH_REJECTED_V3 = EventSchema(
+    event_type="expense.travel_auth_rejected",
+    version=3,
+    description="Travel authorization rejected",
+    fields=(
+        EventFieldSchema(
+            name="authorization_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="The authorization being rejected",
+        ),
+        EventFieldSchema(
+            name="rejector_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Person who rejected the authorization",
+        ),
+        EventFieldSchema(
+            name="reason",
+            field_type=EventFieldType.STRING,
+            required=True,
+            min_length=1,
+            max_length=500,
+            description="Reason for rejection",
+        ),
+        EventFieldSchema(
+            name="rejected_at",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Date of rejection",
+        ),
+    ),
+)
+EventSchemaRegistry.register(EXPENSE_TRAVEL_AUTH_REJECTED_V3)
+
+
+# --- expense.report_gsa_validated v3 (D7) ---------------------------------
+EXPENSE_REPORT_GSA_VALIDATED_V3 = EventSchema(
+    event_type="expense.report_gsa_validated",
+    version=3,
+    description="Expense report validated against GSA per diem limits (D7)",
+    fields=(
+        EventFieldSchema(
+            name="report_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="The expense report that was validated",
+        ),
+        EventFieldSchema(
+            name="is_compliant",
+            field_type=EventFieldType.BOOLEAN,
+            required=True,
+            description="Whether the report is GSA-compliant",
+        ),
+        EventFieldSchema(
+            name="total_claimed",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0"),
+            description="Total amount claimed",
+        ),
+        EventFieldSchema(
+            name="total_allowed",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0"),
+            description="Total amount allowed by GSA rates",
+        ),
+        EventFieldSchema(
+            name="excess_amount",
+            field_type=EventFieldType.DECIMAL,
+            required=False,
+            nullable=True,
+            min_value=Decimal("0"),
+            description="Amount exceeding GSA limits",
+        ),
+        EventFieldSchema(
+            name="violation_count",
+            field_type=EventFieldType.INTEGER,
+            required=True,
+            description="Number of GSA violations found",
+        ),
+        EventFieldSchema(
+            name="travel_location",
+            field_type=EventFieldType.STRING,
+            required=True,
+            min_length=1,
+            max_length=200,
+            description="Travel location used for GSA rate lookup",
+        ),
+    ),
+)
+EventSchemaRegistry.register(EXPENSE_REPORT_GSA_VALIDATED_V3)
+
+
+# --- contract.rate_verified v3 (D8) ---------------------------------------
+CONTRACT_RATE_VERIFIED_V3 = EventSchema(
+    event_type="contract.rate_verified",
+    version=3,
+    description="Labor rate verification result (D8)",
+    fields=(
+        EventFieldSchema(
+            name="employee_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Employee whose rate was verified",
+        ),
+        EventFieldSchema(
+            name="contract_id",
+            field_type=EventFieldType.UUID,
+            required=False,
+            nullable=True,
+            description="Contract being charged",
+        ),
+        EventFieldSchema(
+            name="labor_category",
+            field_type=EventFieldType.STRING,
+            required=True,
+            max_length=100,
+            description="Labor category code",
+        ),
+        EventFieldSchema(
+            name="charged_rate",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0"),
+            description="Rate being charged",
+        ),
+        EventFieldSchema(
+            name="approved_rate",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0"),
+            description="Approved rate from schedule",
+        ),
+        EventFieldSchema(
+            name="ceiling_rate",
+            field_type=EventFieldType.DECIMAL,
+            required=False,
+            nullable=True,
+            min_value=Decimal("0"),
+            description="Contract ceiling rate (if applicable)",
+        ),
+        EventFieldSchema(
+            name="is_valid",
+            field_type=EventFieldType.BOOLEAN,
+            required=True,
+            description="Whether the rate passes verification",
+        ),
+        EventFieldSchema(
+            name="violation_type",
+            field_type=EventFieldType.STRING,
+            required=False,
+            nullable=True,
+            allowed_values=frozenset({
+                "EXCEEDS_CLASSIFICATION",
+                "EXCEEDS_CONTRACT_CEILING",
+                "PROVISIONAL_NOT_APPROVED",
+                "RATE_EXPIRED",
+            }),
+            description="Type of rate violation (if any)",
+        ),
+        EventFieldSchema(
+            name="charge_date",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Date of the labor charge",
+        ),
+    ),
+)
+EventSchemaRegistry.register(CONTRACT_RATE_VERIFIED_V3)
+
+
+# --- contract.rate_ceiling_exceeded v3 (D8) --------------------------------
+CONTRACT_RATE_CEILING_EXCEEDED_V3 = EventSchema(
+    event_type="contract.rate_ceiling_exceeded",
+    version=3,
+    description="Rate ceiling exceeded alert event (D8)",
+    fields=(
+        EventFieldSchema(
+            name="employee_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Employee whose rate exceeded ceiling",
+        ),
+        EventFieldSchema(
+            name="contract_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Contract with the ceiling",
+        ),
+        EventFieldSchema(
+            name="labor_category",
+            field_type=EventFieldType.STRING,
+            required=True,
+            max_length=100,
+            description="Labor category code",
+        ),
+        EventFieldSchema(
+            name="charged_rate",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0"),
+            description="Rate that was charged",
+        ),
+        EventFieldSchema(
+            name="ceiling_rate",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0"),
+            description="Contract ceiling rate",
+        ),
+        EventFieldSchema(
+            name="excess_amount",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0"),
+            description="Amount by which rate exceeds ceiling",
+        ),
+        EventFieldSchema(
+            name="charge_date",
+            field_type=EventFieldType.DATE,
+            required=True,
+            description="Date of the labor charge",
+        ),
+    ),
+)
+EventSchemaRegistry.register(CONTRACT_RATE_CEILING_EXCEEDED_V3)
+
+
+# --- contract.rate_reconciliation v3 --------------------------------------
+CONTRACT_RATE_RECONCILIATION_V3 = EventSchema(
+    event_type="contract.rate_reconciliation",
+    version=3,
+    description="Provisional-to-final indirect rate reconciliation",
+    fields=(
+        EventFieldSchema(
+            name="reconciliation_id",
+            field_type=EventFieldType.UUID,
+            required=True,
+            description="Unique identifier for this reconciliation",
+        ),
+        EventFieldSchema(
+            name="fiscal_year",
+            field_type=EventFieldType.INTEGER,
+            required=True,
+            description="Fiscal year being reconciled",
+        ),
+        EventFieldSchema(
+            name="rate_type",
+            field_type=EventFieldType.STRING,
+            required=True,
+            allowed_values=frozenset({"FRINGE", "OVERHEAD", "G_AND_A", "MATERIAL_HANDLING"}),
+            description="Indirect rate type",
+        ),
+        EventFieldSchema(
+            name="provisional_rate",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0"),
+            description="Provisional rate used during the year",
+        ),
+        EventFieldSchema(
+            name="final_rate",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0"),
+            description="DCAA-audited final rate",
+        ),
+        EventFieldSchema(
+            name="base_amount",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            min_value=Decimal("0"),
+            description="Total base dollars for the year",
+        ),
+        EventFieldSchema(
+            name="adjustment_amount",
+            field_type=EventFieldType.DECIMAL,
+            required=True,
+            description="Computed adjustment amount",
+        ),
+        EventFieldSchema(
+            name="direction",
+            field_type=EventFieldType.STRING,
+            required=True,
+            allowed_values=frozenset({"UNDERAPPLIED", "OVERAPPLIED"}),
+            description="Whether cost was underapplied or overapplied",
+        ),
+        EventFieldSchema(
+            name="currency",
+            field_type=EventFieldType.CURRENCY,
+            required=True,
+            description="Currency of the amounts",
+        ),
+        EventFieldSchema(
+            name="org_unit",
+            field_type=EventFieldType.STRING,
+            required=True,
+            min_length=1,
+            max_length=50,
+            description="Organization unit dimension",
+        ),
+    ),
+)
+EventSchemaRegistry.register(CONTRACT_RATE_RECONCILIATION_V3)

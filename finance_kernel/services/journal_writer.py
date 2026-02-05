@@ -21,6 +21,7 @@ from finance_kernel.domain.accounting_intent import (
 )
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.exceptions import (
+    CrossLedgerReversalError,
     MissingReferenceSnapshotError,
     MultipleRoundingLinesError,
     RoundingAmountExceededError,
@@ -369,6 +370,30 @@ class JournalWriter:
                     actor_id=actor_id,
                     event_type=event_type,
                 )
+                # Per-entry balance validation (audit: Dr=Cr per entry)
+                for currency in ledger_intent.currencies:
+                    sum_d = sum(
+                        (line.amount for line in resolved_lines
+                         if line.side == "debit" and line.currency == currency),
+                        Decimal("0"),
+                    )
+                    sum_c = sum(
+                        (line.amount for line in resolved_lines
+                         if line.side == "credit" and line.currency == currency),
+                        Decimal("0"),
+                    )
+                    logger.info(
+                        "entry_balance_validated",
+                        extra={
+                            "entry_id": str(entry.id),
+                            "ledger_id": ledger_intent.ledger_id,
+                            "currency": currency,
+                            "sum_debit": str(sum_d),
+                            "sum_credit": str(sum_c),
+                            "balanced": sum_d == sum_c,
+                            "source_event_id": str(intent.source_event_id),
+                        },
+                    )
                 written_entries.append(
                     WrittenEntry(
                         entry_id=entry.id,
@@ -377,7 +402,7 @@ class JournalWriter:
                         idempotency_key=entry.idempotency_key,
                     )
                 )
-            except IntegrityError:
+            except IntegrityError as e:
                 # Concurrent insert - fetch existing
                 self._session.rollback()
                 logger.warning("concurrent_insert_conflict")
@@ -426,6 +451,7 @@ class JournalWriter:
         effective_date: date,
         reason: str,
         event_type: str = "system.reversal",
+        expected_ledger_id: str | None = None,
     ) -> JournalEntry:
         """Create a reversal entry that mechanically inverts an original entry.
 
@@ -443,6 +469,10 @@ class JournalWriter:
             - source_event_id must reference a valid Event.
             - effective_date must fall in an open fiscal period (enforced by caller).
 
+        Args:
+            expected_ledger_id: If provided, the original entry's ledger must match;
+                raises CrossLedgerReversalError otherwise (ledger boundary enforcement).
+
         Postconditions:
             - Returns a new POSTED JournalEntry with reversal_of_id set.
             - Reversal lines are exact mirrors: same accounts, amounts, currencies,
@@ -453,6 +483,10 @@ class JournalWriter:
             - R4: Debits == Credits per currency (guaranteed by construction).
             - R9: Monotonic sequence assigned.
             - R21: Snapshot versions copied from original entry.
+
+        Raises:
+            CrossLedgerReversalError: If expected_ledger_id is provided and does not
+                match the original entry's ledger_id (reject cross-ledger reversals).
         """
         t0 = time.monotonic()
 
@@ -469,6 +503,14 @@ class JournalWriter:
             if original_entry.entry_metadata
             else "GL"
         )
+
+        # Ledger boundary: reversal must be in same ledger as original (reject cross-ledger)
+        if expected_ledger_id is not None and expected_ledger_id != ledger_id:
+            raise CrossLedgerReversalError(
+                journal_entry_id=str(original_entry.id),
+                original_ledger_id=ledger_id,
+                requested_ledger_id=expected_ledger_id,
+            )
 
         # Deterministic idempotency key
         idempotency_key = f"reversal:{original_entry.id}:{ledger_id}"

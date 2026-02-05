@@ -31,12 +31,12 @@ Audit relevance
 * WIP variance profiles support standard cost accounting compliance.
 
 Profiles:
-    WipMaterialIssued       — Raw materials issued to work order
-    WipLaborCharged         — Direct labor charged to work order
-    WipOverheadApplied      — Overhead applied to work order
-    WipCompletion           — Finished goods completed from work order
-    WipScrap                — Scrap recorded on work order
-    WipRework               — Rework costs charged to work order
+    WipMaterialIssued       — Raw materials issued to manufacturing order
+    WipLaborCharged         — Direct labor charged to manufacturing order
+    WipOverheadApplied      — Overhead applied to manufacturing order
+    WipCompletion           — Finished goods completed from manufacturing order
+    WipScrap                — Scrap recorded on manufacturing order
+    WipRework               — Rework costs charged to manufacturing order
     WipLaborVariance        — Labor efficiency variance at close
     WipMaterialVariance     — Material usage variance at close
     WipOverheadVariance     — Overhead over/under applied variance
@@ -98,7 +98,7 @@ WIP_MATERIAL_ISSUED = AccountingPolicy(
     meaning=PolicyMeaning(
         economic_type="WIP_MATERIAL_ISSUE",
         quantity_field="payload.quantity",
-        dimensions=("org_unit", "cost_center", "work_order"),
+        dimensions=("org_unit", "cost_center", "manufacturing_order"),
     ),
     ledger_effects=(
         LedgerEffect(ledger="GL", debit_role="WIP", credit_role="RAW_MATERIALS"),
@@ -112,7 +112,7 @@ WIP_MATERIAL_ISSUED = AccountingPolicy(
             message="Material issue quantity must be positive",
         ),
     ),
-    description="Raw materials issued to work order",
+    description="Raw materials issued to manufacturing order",
 )
 
 WIP_MATERIAL_ISSUED_MAPPINGS = (
@@ -130,7 +130,7 @@ WIP_LABOR_CHARGED = AccountingPolicy(
     meaning=PolicyMeaning(
         economic_type="WIP_LABOR_CHARGE",
         quantity_field="payload.hours",
-        dimensions=("org_unit", "cost_center", "work_order"),
+        dimensions=("org_unit", "cost_center", "manufacturing_order"),
     ),
     ledger_effects=(
         LedgerEffect(ledger="GL", debit_role="WIP", credit_role="LABOR_CLEARING"),
@@ -162,13 +162,13 @@ WIP_OVERHEAD_APPLIED = AccountingPolicy(
     meaning=PolicyMeaning(
         economic_type="WIP_OVERHEAD_APPLICATION",
         quantity_field="payload.quantity",
-        dimensions=("org_unit", "cost_center", "work_order"),
+        dimensions=("org_unit", "cost_center", "manufacturing_order"),
     ),
     ledger_effects=(
         LedgerEffect(ledger="GL", debit_role="WIP", credit_role="OVERHEAD_APPLIED"),
     ),
     effective_from=date(2024, 1, 1),
-    description="Overhead applied to work order",
+    description="Overhead applied to manufacturing order",
 )
 
 WIP_OVERHEAD_APPLIED_MAPPINGS = (
@@ -186,7 +186,7 @@ WIP_COMPLETION = AccountingPolicy(
     meaning=PolicyMeaning(
         economic_type="WIP_COMPLETION",
         quantity_field="payload.quantity",
-        dimensions=("org_unit", "cost_center", "work_order"),
+        dimensions=("org_unit", "cost_center", "manufacturing_order"),
     ),
     ledger_effects=(
         LedgerEffect(ledger="GL", debit_role="FINISHED_GOODS", credit_role="WIP"),
@@ -200,7 +200,7 @@ WIP_COMPLETION = AccountingPolicy(
             message="Completion quantity must be positive",
         ),
     ),
-    description="Finished goods completed from work order",
+    description="Finished goods completed from manufacturing order",
 )
 
 WIP_COMPLETION_MAPPINGS = (
@@ -218,7 +218,7 @@ WIP_SCRAP = AccountingPolicy(
     meaning=PolicyMeaning(
         economic_type="WIP_SCRAP",
         quantity_field="payload.quantity",
-        dimensions=("org_unit", "cost_center", "work_order"),
+        dimensions=("org_unit", "cost_center", "manufacturing_order"),
     ),
     ledger_effects=(
         LedgerEffect(ledger="GL", debit_role="SCRAP_EXPENSE", credit_role="WIP"),
@@ -232,7 +232,7 @@ WIP_SCRAP = AccountingPolicy(
             message="Scrap quantity must be positive",
         ),
     ),
-    description="Scrap recorded on work order",
+    description="Scrap recorded on manufacturing order",
 )
 
 WIP_SCRAP_MAPPINGS = (
@@ -250,7 +250,7 @@ WIP_REWORK = AccountingPolicy(
     meaning=PolicyMeaning(
         economic_type="WIP_REWORK",
         quantity_field="payload.quantity",
-        dimensions=("org_unit", "cost_center", "work_order"),
+        dimensions=("org_unit", "cost_center", "manufacturing_order"),
     ),
     ledger_effects=(
         LedgerEffect(ledger="GL", debit_role="WIP", credit_role="LABOR_CLEARING"),
@@ -264,7 +264,7 @@ WIP_REWORK = AccountingPolicy(
             message="Rework quantity must be positive",
         ),
     ),
-    description="Rework costs charged to work order",
+    description="Rework costs charged to manufacturing order",
 )
 
 WIP_REWORK_MAPPINGS = (
@@ -282,7 +282,7 @@ WIP_LABOR_VARIANCE = AccountingPolicy(
     meaning=PolicyMeaning(
         economic_type="WIP_LABOR_VARIANCE",
         quantity_field="payload.quantity",
-        dimensions=("org_unit", "cost_center", "work_order"),
+        dimensions=("org_unit", "cost_center", "manufacturing_order"),
     ),
     ledger_effects=(
         LedgerEffect(ledger="GL", debit_role="LABOR_VARIANCE", credit_role="WIP"),
@@ -306,7 +306,7 @@ WIP_MATERIAL_VARIANCE = AccountingPolicy(
     meaning=PolicyMeaning(
         economic_type="WIP_MATERIAL_VARIANCE",
         quantity_field="payload.quantity",
-        dimensions=("org_unit", "cost_center", "work_order"),
+        dimensions=("org_unit", "cost_center", "manufacturing_order"),
     ),
     ledger_effects=(
         LedgerEffect(

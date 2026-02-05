@@ -119,6 +119,7 @@ class PolicyDefinition:
     precedence: PrecedenceDef | None = None
     valuation_model: str | None = None
     line_mappings: tuple[LineMappingDef, ...] = ()  # For intent construction
+    intent_source: str | None = None  # e.g. "payload_lines" for import.historical_journal
 
     # Engine binding
     required_engines: tuple[str, ...] = ()

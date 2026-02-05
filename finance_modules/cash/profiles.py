@@ -96,7 +96,7 @@ class AccountRole(Enum):
 # =============================================================================
 
 
-# --- Deposit -----------------------------------------------------------------
+# --- Deposit (GL only: Dr Bank / Cr Undeposited Funds) -----------------------
 
 CASH_DEPOSIT = AccountingPolicy(
     name="CashDeposit",
@@ -112,6 +112,36 @@ CASH_DEPOSIT = AccountingPolicy(
             debit_role="BANK",
             credit_role="UNDEPOSITED_FUNDS",
         ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.amount <= 0",
+            reason_code="INVALID_AMOUNT",
+            message="Deposit amount must be positive",
+        ),
+    ),
+    description="Records bank deposit (GL): Dr Bank / Cr Undeposited Funds",
+)
+
+CASH_DEPOSIT_MAPPINGS = (
+    ModuleLineMapping(role="BANK", side="debit", ledger="GL"),
+    ModuleLineMapping(role="UNDEPOSITED_FUNDS", side="credit", ledger="GL"),
+)
+
+
+# --- Make available (BANK subledger: internal cash-state reclassification) ---
+
+CASH_MAKE_AVAILABLE = AccountingPolicy(
+    name="CashMakeAvailable",
+    version=1,
+    trigger=PolicyTrigger(event_type="cash.make_available"),
+    meaning=PolicyMeaning(
+        economic_type="CASH_AVAILABILITY",
+        dimensions=("org_unit",),
+    ),
+    ledger_effects=(
         LedgerEffect(
             ledger="BANK",
             debit_role="AVAILABLE",
@@ -124,15 +154,13 @@ CASH_DEPOSIT = AccountingPolicy(
             guard_type=GuardType.REJECT,
             expression="payload.amount <= 0",
             reason_code="INVALID_AMOUNT",
-            message="Deposit amount must be positive",
+            message="Amount must be positive",
         ),
     ),
-    description="Records bank deposit, moving funds from undeposited to bank",
+    description="Subledger-only: reclassify deposit to available (BANK ledger)",
 )
 
-CASH_DEPOSIT_MAPPINGS = (
-    ModuleLineMapping(role="BANK", side="debit", ledger="GL"),
-    ModuleLineMapping(role="UNDEPOSITED_FUNDS", side="credit", ledger="GL"),
+CASH_MAKE_AVAILABLE_MAPPINGS = (
     ModuleLineMapping(role="AVAILABLE", side="debit", ledger="BANK"),
     ModuleLineMapping(role="DEPOSIT", side="credit", ledger="BANK"),
 )
@@ -538,6 +566,7 @@ CASH_NSF_RETURN_MAPPINGS = (
 
 _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...] = (
     (CASH_DEPOSIT, CASH_DEPOSIT_MAPPINGS),
+    (CASH_MAKE_AVAILABLE, CASH_MAKE_AVAILABLE_MAPPINGS),
     (CASH_WITHDRAWAL_EXPENSE, CASH_WITHDRAWAL_EXPENSE_MAPPINGS),
     (CASH_WITHDRAWAL_SUPPLIER, CASH_WITHDRAWAL_SUPPLIER_MAPPINGS),
     (CASH_WITHDRAWAL_PAYROLL, CASH_WITHDRAWAL_PAYROLL_MAPPINGS),

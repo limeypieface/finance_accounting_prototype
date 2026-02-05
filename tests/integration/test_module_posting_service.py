@@ -22,6 +22,9 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingStatus,
 )
 
+# Service-tier: use test session + module_role_resolver (no get_session/get_active_config).
+pytestmark = pytest.mark.service
+
 # =============================================================================
 # Test 1: Inventory Receipt — Happy Path
 # =============================================================================

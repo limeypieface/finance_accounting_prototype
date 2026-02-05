@@ -4,12 +4,13 @@ SQLAlchemy ORM persistence models for the Procurement module.
 Responsibility
 --------------
 Provide database-backed persistence for finance-specific procurement
-entities: purchase requisitions, requisition lines, and receiving reports.
+entities: purchase orders, purchase order lines, purchase requisitions,
+requisition lines, and receiving reports.
 
-**Sindri Integration Note**: Purchase orders (``PurchaseOrder``,
-``PurchaseOrderLine``) are owned by Sindri and do NOT get ORM models here.
-Only finance-specific procurement records are modeled.  References to
-Sindri entities use ``String(100)`` fields with NO foreign key constraints.
+**Persistence scope**: All procurement operations that post to the journal
+also persist an operational projection here (R26: journal is system of
+record; module ORM is derivable projection).  References to external systems
+(e.g. Sindri) use ``String(100)`` with NO foreign key constraints.
 
 Architecture position
 ---------------------
@@ -34,12 +35,88 @@ Audit relevance
 
 from datetime import date
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import Date, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import Date, ForeignKey, Index, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from finance_kernel.db.base import TrackedBase
+
+# ---------------------------------------------------------------------------
+# PurchaseOrderModel
+# ---------------------------------------------------------------------------
+
+
+class PurchaseOrderModel(TrackedBase):
+    """
+    A purchase order (finance-owned operational projection).
+
+    Persisted when create_purchase_order posts procurement.po_encumbered.
+    Journal is system of record (R26); this table is for queryability.
+    """
+
+    __tablename__ = "procurement_purchase_orders"
+
+    __table_args__ = (
+        UniqueConstraint("po_number", name="uq_procurement_po_number"),
+        Index("idx_procurement_po_vendor", "vendor_id"),
+        Index("idx_procurement_po_status", "status"),
+        Index("idx_procurement_po_date", "order_date"),
+    )
+
+    po_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    vendor_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    order_date: Mapped[date] = mapped_column(Date, nullable=False)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(38, 9), nullable=False, default=Decimal("0"))
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="draft")
+
+    lines: Mapped[list["PurchaseOrderLineModel"]] = relationship(
+        "PurchaseOrderLineModel",
+        back_populates="purchase_order",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    def __repr__(self) -> str:
+        return f"<PurchaseOrderModel {self.po_number} [{self.status}]>"
+
+
+# ---------------------------------------------------------------------------
+# PurchaseOrderLineModel
+# ---------------------------------------------------------------------------
+
+
+class PurchaseOrderLineModel(TrackedBase):
+    """A line item on a purchase order."""
+
+    __tablename__ = "procurement_purchase_order_lines"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "purchase_order_id", "line_number",
+            name="uq_procurement_po_line_number",
+        ),
+        Index("idx_procurement_po_line_po", "purchase_order_id"),
+    )
+
+    purchase_order_id: Mapped[UUID] = mapped_column(
+        ForeignKey("procurement_purchase_orders.id"), nullable=False,
+    )
+    line_number: Mapped[int] = mapped_column(nullable=False)
+    item_code: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    quantity: Mapped[Decimal] = mapped_column(Numeric(38, 9), nullable=False, default=Decimal("0"))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(38, 9), nullable=False, default=Decimal("0"))
+    line_total: Mapped[Decimal] = mapped_column(Numeric(38, 9), nullable=False, default=Decimal("0"))
+
+    purchase_order: Mapped["PurchaseOrderModel"] = relationship(
+        "PurchaseOrderModel",
+        back_populates="lines",
+    )
+
+    def __repr__(self) -> str:
+        return f"<PurchaseOrderLineModel #{self.line_number} {self.item_code} qty={self.quantity}>"
+
 
 # ---------------------------------------------------------------------------
 # PurchaseRequisitionModel

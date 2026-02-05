@@ -16,20 +16,28 @@ import pytest
 
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 
+# Service-tier: use test session + module_role_resolver (no get_session/get_active_config).
+pytestmark = pytest.mark.service
+
 # =============================================================================
 # Fixtures
 # =============================================================================
 
 
 @pytest.fixture
-def inventory_service(session, module_role_resolver, deterministic_clock, register_modules):
-    """Provide InventoryService for integration testing."""
+def inventory_service(
+    session, module_role_resolver, deterministic_clock, register_modules, workflow_executor,
+    party_service, test_actor_party,
+):
+    """Provide InventoryService for integration testing. party_service + test_actor_party for G14."""
     from finance_modules.inventory.service import InventoryService
 
     return InventoryService(
         session=session,
         role_resolver=module_role_resolver,
+        workflow_executor=workflow_executor,
         clock=deterministic_clock,
+        party_service=party_service,
     )
 
 
@@ -474,7 +482,7 @@ class TestCycleCount:
     def test_record_cycle_count_zero_variance_no_posting(
         self, inventory_service, current_period, test_actor_id, deterministic_clock,
     ):
-        """Zero variance (actual == expected) should return success without journal."""
+        """Zero variance (actual == expected): service returns TRANSITION_APPLIED, no journal (R29: only kernel may assert POSTED)."""
         result = inventory_service.record_cycle_count(
             count_id=uuid4(),
             item_id="COUNT-ITEM-3",
@@ -485,8 +493,10 @@ class TestCycleCount:
             actor_id=test_actor_id,
         )
 
-        assert result.is_success
+        assert result.status == ModulePostingStatus.TRANSITION_APPLIED
         assert result.journal_entry_ids == ()
+        # No ledger post; is_success is True only for kernel POSTED/ALREADY_POSTED
+        assert not result.is_success
 
 
 # =============================================================================

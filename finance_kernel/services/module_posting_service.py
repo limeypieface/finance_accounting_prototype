@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID
 from uuid import uuid4 as _uuid4
 
@@ -16,10 +16,16 @@ from sqlalchemy.orm import Session
 
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.meaning_builder import MeaningBuilder, MeaningBuilderResult
-from finance_kernel.domain.policy_bridge import build_accounting_intent
+from finance_kernel.domain.control import evaluate_controls
+from finance_kernel.domain.policy_bridge import (
+    build_accounting_intent,
+    build_accounting_intent_from_payload_lines,
+)
 from finance_kernel.domain.policy_selector import PolicyNotFoundError, PolicySelector
+from finance_kernel.domain.policy_source import PolicySource
 from finance_kernel.exceptions import PartyNotFoundError
 from finance_kernel.logging_config import LogContext, get_logger
+from finance_kernel.models.party import PartyType
 from finance_kernel.services.auditor_service import AuditorService
 from finance_kernel.services.ingestor_service import IngestorService, IngestStatus
 from finance_kernel.services.interpretation_coordinator import (
@@ -29,15 +35,33 @@ from finance_kernel.services.interpretation_coordinator import (
 from finance_kernel.services.journal_writer import JournalWriter, RoleResolver
 from finance_kernel.services.outcome_recorder import OutcomeRecorder
 from finance_kernel.services.period_service import PeriodService
+from finance_kernel.services.party_service import PartyService
 
 logger = get_logger("services.module_posting")
 
 
 class ModulePostingStatus(str, Enum):
-    """Status of a module posting operation."""
+    """Status of a module posting operation.
 
+    Authority boundary:
+    - Kernel layer only may assert POSTED or REJECTED (ledger truth).
+    - Service layer may return only: TRANSITION_APPLIED, TRANSITION_BLOCKED,
+      TRANSITION_REJECTED, GUARD_BLOCKED, GUARD_REJECTED (governance outcomes).
+    """
+
+    # Kernel-only: ledger truth (only ModulePostingService may set these)
     POSTED = "posted"
     ALREADY_POSTED = "already_posted"
+    REJECTED = "rejected"  # Kernel validation / policy / period lock / invariant
+
+    # Service-only: governance / orchestration outcomes (no ledger assertion)
+    TRANSITION_APPLIED = "transition_applied"
+    TRANSITION_BLOCKED = "transition_blocked"
+    TRANSITION_REJECTED = "transition_rejected"
+    GUARD_REJECTED = "guard_rejected"
+    GUARD_BLOCKED = "guard_blocked"
+
+    # Kernel-originated failure details (validation, profile, etc.)
     PERIOD_CLOSED = "period_closed"
     ADJUSTMENTS_NOT_ALLOWED = "adjustments_not_allowed"
     INVALID_ACTOR = "invalid_actor"
@@ -45,26 +69,45 @@ class ModulePostingStatus(str, Enum):
     INGESTION_FAILED = "ingestion_failed"
     PROFILE_NOT_FOUND = "profile_not_found"
     MEANING_FAILED = "meaning_failed"
-    GUARD_REJECTED = "guard_rejected"
-    GUARD_BLOCKED = "guard_blocked"
     INTENT_FAILED = "intent_failed"
     POSTING_FAILED = "posting_failed"
 
 
 @dataclass(frozen=True)
 class ModulePostingResult:
-    """Result of a module posting operation."""
+    """Result of a module posting operation.
+
+    Semantic split (R29): governance outcomes vs ledger truth.
+    - is_transition: authority was exercised (transition applied/blocked/rejected).
+    - is_ledger_fact: a journal entry exists (only kernel may assert).
+    """
 
     status: ModulePostingStatus
     event_id: UUID
     journal_entry_ids: tuple[UUID, ...] = ()
+    ledger_ids: tuple[str, ...] = ()  # Ledgers written (e.g. GL, AP, AR) for trace visibility
     interpretation_result: InterpretationResult | None = None
     meaning_result: MeaningBuilderResult | None = None
     profile_name: str | None = None
     message: str | None = None
 
     @property
+    def is_transition(self) -> bool:
+        """True if this is a governance outcome (authority exercised), not ledger truth."""
+        return self.status in (
+            ModulePostingStatus.TRANSITION_APPLIED,
+            ModulePostingStatus.TRANSITION_BLOCKED,
+            ModulePostingStatus.TRANSITION_REJECTED,
+        )
+
+    @property
+    def is_ledger_fact(self) -> bool:
+        """True iff a journal entry exists. Only kernel may set POSTED (R29)."""
+        return self.status == ModulePostingStatus.POSTED
+
+    @property
     def is_success(self) -> bool:
+        """True iff posting succeeded (ledger fact created or already posted)."""
         return self.status in (
             ModulePostingStatus.POSTED,
             ModulePostingStatus.ALREADY_POSTED,
@@ -80,11 +123,13 @@ class ModulePostingService:
         role_resolver: RoleResolver,
         clock: Clock | None = None,
         auto_commit: bool = True,
+        party_service: PartyService | None = None,
     ):
         """Legacy constructor. Prefer ``from_orchestrator`` for new code."""
         self._session = session
         self._clock = clock or SystemClock()
         self._auto_commit = auto_commit
+        self._party_service_ref = party_service
 
         # Build internal services (legacy path)
         self._auditor = AuditorService(session, clock)
@@ -120,6 +165,8 @@ class ModulePostingService:
         instance._coordinator = orchestrator.interpretation_coordinator
         instance._party_service_ref = orchestrator.party_service
         instance._compiled_pack = orchestrator.engine_dispatcher._pack
+        instance._policy_source = getattr(orchestrator, "policy_source", None)
+        instance._control_rules = getattr(orchestrator, "control_rules", ())
         # Subledger posting callable — lives in finance_services/ to
         # respect architecture boundary (kernel must not import engines).
         instance._post_subledger_fn = getattr(
@@ -143,8 +190,16 @@ class ModulePostingService:
         description: str | None = None,
         coa_version: int = 1,
         dimension_schema_version: int = 1,
+        preamble_log: list[dict] | None = None,
+        account_key_to_role: Callable[[str], str | None] | None = None,
     ) -> ModulePostingResult:
-        """Post an economic event through the posting pipeline."""
+        """Post an economic event through the posting pipeline.
+
+        preamble_log: Optional list of structured log records (e.g. workflow
+        transition outcomes) to prepend to the decision_log for traceability.
+        Modules that call WorkflowExecutor with outcome_sink can pass the
+        collected records here so workflow outcomes appear in the event trace.
+        """
         resolved_event_id = event_id or _uuid4()
         resolved_occurred_at = occurred_at or self._clock.now()
         resolved_producer = producer or event_type.split(".")[0]
@@ -183,6 +238,8 @@ class ModulePostingService:
                     description=description,
                     coa_version=coa_version,
                     dimension_schema_version=dimension_schema_version,
+                    preamble_log=preamble_log,
+                    account_key_to_role=account_key_to_role,
                 )
 
                 # INVARIANT: R7 — Transaction boundaries: commit on success
@@ -212,6 +269,49 @@ class ModulePostingService:
                 )
                 raise
 
+    def _validate_import_hard_gate(
+        self,
+        event_id: UUID,
+        event_type: str,
+        producer: str,
+        payload: dict[str, Any],
+        actor_id: UUID,
+    ) -> ModulePostingResult | None:
+        """Migration-only gate for import.historical_journal. Returns result if rejected, None if passed."""
+        if event_type != "import.historical_journal":
+            return None
+        if producer != "ingestion":
+            return ModulePostingResult(
+                status=ModulePostingStatus.GUARD_REJECTED,
+                event_id=event_id,
+                message="import.historical_journal requires producer=ingestion (migration-only)",
+            )
+        meta = payload.get("metadata") or {}
+        if not meta.get("migration_batch_id"):
+            return ModulePostingResult(
+                status=ModulePostingStatus.GUARD_REJECTED,
+                event_id=event_id,
+                message="import.historical_journal requires payload.metadata.migration_batch_id",
+            )
+        party_svc = getattr(self, "_party_service_ref", None)
+        if party_svc is None:
+            return None
+        try:
+            actor_party = party_svc.get_by_id(actor_id)
+            if actor_party.party_type not in (PartyType.SYSTEM, PartyType.MIGRATION_SERVICE):
+                return ModulePostingResult(
+                    status=ModulePostingStatus.GUARD_REJECTED,
+                    event_id=event_id,
+                    message="import.historical_journal requires actor party_type in (system, migration_service)",
+                )
+        except PartyNotFoundError:
+            return ModulePostingResult(
+                status=ModulePostingStatus.INVALID_ACTOR,
+                event_id=event_id,
+                message=f"Actor {actor_id} is not a valid party",
+            )
+        return None
+
     def _do_post_event(
         self,
         event_id: UUID,
@@ -228,25 +328,34 @@ class ModulePostingService:
         description: str | None,
         coa_version: int,
         dimension_schema_version: int,
+        preamble_log: list[dict] | None = None,
+        account_key_to_role: Callable[[str], str | None] | None = None,
     ) -> ModulePostingResult:
         """Internal posting logic (without transaction management)."""
 
-        # INVARIANT: G14 — Actor authorization at posting boundary
-        if hasattr(self, '_party_service_ref') and self._party_service_ref is not None:
-            try:
-                actor_party = self._party_service_ref.get_by_id(actor_id)
-                if not actor_party.can_transact:
-                    return ModulePostingResult(
-                        status=ModulePostingStatus.ACTOR_FROZEN,
-                        event_id=event_id,
-                        message=f"Actor {actor_id} is frozen and cannot post",
-                    )
-            except PartyNotFoundError:
+        # INVARIANT: G14 — Actor validation is mandatory for all POSTED outcomes.
+        # No POSTED may occur without validating actor_id against PartyService.
+        party_svc = getattr(self, "_party_service_ref", None)
+        if party_svc is None:
+            return ModulePostingResult(
+                status=ModulePostingStatus.REJECTED,
+                event_id=event_id,
+                message="Actor validation is mandatory for posting; PartyService not configured",
+            )
+        try:
+            actor_party = party_svc.get_by_id(actor_id)
+            if not actor_party.can_transact:
                 return ModulePostingResult(
-                    status=ModulePostingStatus.INVALID_ACTOR,
+                    status=ModulePostingStatus.ACTOR_FROZEN,
                     event_id=event_id,
-                    message=f"Actor {actor_id} is not a valid party",
+                    message=f"Actor {actor_id} is frozen and cannot post",
                 )
+        except PartyNotFoundError:
+            return ModulePostingResult(
+                status=ModulePostingStatus.INVALID_ACTOR,
+                event_id=event_id,
+                message=f"Actor {actor_id} is not a valid party",
+            )
 
         # INVARIANT: R12 — Closed period enforcement
         # INVARIANT: R13 — Adjustment policy enforcement
@@ -268,6 +377,18 @@ class ModulePostingService:
                 event_id=event_id,
                 message=str(e),
             )
+
+        # Governance preamble for trace (period check, then caller preamble e.g. workflow)
+        governance_preamble: list[dict] = []
+        period_info = self._period_service.get_period_for_date(effective_date)
+        if period_info is not None:
+            governance_preamble.append({
+                "message": "period_check",
+                "period_code": period_info.period_code,
+                "passed": True,
+                "effective_date": str(effective_date),
+            })
+        full_preamble = governance_preamble + (preamble_log or [])
 
         # INVARIANT: R1 — Event immutability via IngestorService
         # INVARIANT: R2 — Payload hash verification via IngestorService
@@ -296,11 +417,37 @@ class ModulePostingService:
                 message="Event already ingested (idempotent duplicate)",
             )
 
+        gate_result = self._validate_import_hard_gate(event_id, event_type, producer, payload, actor_id)
+        if gate_result is not None:
+            return gate_result
+
+        # Config-driven controls (controls.yaml) — run after ingest, before profile
+        control_rules = getattr(self, "_control_rules", ())
+        if control_rules:
+            control_result = evaluate_controls(payload, event_type, control_rules)
+            if not control_result.passed:
+                status = (
+                    ModulePostingStatus.GUARD_REJECTED
+                    if control_result.rejected
+                    else ModulePostingStatus.GUARD_BLOCKED
+                )
+                return ModulePostingResult(
+                    status=status,
+                    event_id=event_id,
+                    message=control_result.message or control_result.reason_code or "Control not satisfied",
+                )
+
         # INVARIANT: P1 — Exactly one EconomicProfile matches any event
+        # When policy_source is set (from orchestrator with pack), use config-driven profile.
         try:
-            profile = PolicySelector.find_for_event(
-                event_type, effective_date, payload=payload
-            )
+            if getattr(self, "_policy_source", None) is not None:
+                profile = self._policy_source.get_profile(
+                    event_type, effective_date, payload=payload
+                )
+            else:
+                profile = PolicySelector.find_for_event(
+                    event_type, effective_date, payload=payload
+                )
         except PolicyNotFoundError as e:
             return ModulePostingResult(
                 status=ModulePostingStatus.PROFILE_NOT_FOUND,
@@ -363,19 +510,42 @@ class ModulePostingService:
                 message="MeaningBuilder failed to produce economic event",
             )
 
-        # 5. Build accounting intent (profile_bridge)
+        # 5. Build accounting intent (profile_bridge or from payload.lines)
         try:
-            accounting_intent = build_accounting_intent(
-                profile_name=profile.name,
-                source_event_id=event_id,
-                effective_date=effective_date,
-                amount=amount,
-                currency=currency,
-                payload=payload,
-                description=description,
-                coa_version=coa_version,
-                dimension_schema_version=dimension_schema_version,
-            )
+            if getattr(profile, "intent_source", None) == "payload_lines":
+                if account_key_to_role is None:
+                    return ModulePostingResult(
+                        status=ModulePostingStatus.INTENT_FAILED,
+                        event_id=event_id,
+                        profile_name=profile.name,
+                        message="account_key_to_role resolver required for import.historical_journal",
+                    )
+                intent_currency = payload.get("currency") or currency
+                if not isinstance(intent_currency, str):
+                    intent_currency = "USD"
+                accounting_intent = build_accounting_intent_from_payload_lines(
+                    profile=profile,
+                    source_event_id=event_id,
+                    effective_date=effective_date,
+                    payload=payload,
+                    account_key_to_role=account_key_to_role,
+                    currency=intent_currency,
+                    description=description,
+                    coa_version=coa_version,
+                    dimension_schema_version=dimension_schema_version,
+                )
+            else:
+                accounting_intent = build_accounting_intent(
+                    profile_name=profile.name,
+                    source_event_id=event_id,
+                    effective_date=effective_date,
+                    amount=amount,
+                    currency=currency,
+                    payload=payload,
+                    description=description,
+                    coa_version=coa_version,
+                    dimension_schema_version=dimension_schema_version,
+                )
         except ValueError as e:
             return ModulePostingResult(
                 status=ModulePostingStatus.INTENT_FAILED,
@@ -386,12 +556,16 @@ class ModulePostingService:
 
         # INVARIANT: L5 — Atomic journal + outcome via InterpretationCoordinator
         # INVARIANT: P11 — Multi-ledger postings are atomic
+        pack = getattr(self, "_compiled_pack", None)
         interpretation_result = self._coordinator.interpret_and_post(
             meaning_result=meaning_result,
             accounting_intent=accounting_intent,
             actor_id=actor_id,
             compiled_policy=compiled_policy,
             event_payload=payload,
+            preamble_log=full_preamble,
+            policy_fingerprint=getattr(pack, "canonical_fingerprint", None) if pack else None,
+            profile_source="compiled_policy_pack" if pack else None,
         )
 
         if not interpretation_result.success:
@@ -425,10 +599,12 @@ class ModulePostingService:
             "L5 violation: POSTED result must contain at least one journal entry"
         )
 
+        ledger_ids = tuple(li.ledger_id for li in accounting_intent.ledger_intents)
         return ModulePostingResult(
             status=ModulePostingStatus.POSTED,
             event_id=event_id,
             journal_entry_ids=journal_entry_ids,
+            ledger_ids=ledger_ids,
             interpretation_result=interpretation_result,
             meaning_result=meaning_result,
             profile_name=profile.name,

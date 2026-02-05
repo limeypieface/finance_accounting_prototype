@@ -82,13 +82,16 @@ class LogCapture(logging.Handler):
         super().__init__(level)
         self._records: list[dict] = []
         self._formatter = StructuredFormatter()
+        self._use_format_to_dict = hasattr(self._formatter, "format_to_dict")
 
     def emit(self, record: logging.LogRecord) -> None:
         """Capture a log record as a structured dict."""
         try:
-            # Parse the JSON formatted output to get a clean dict
-            formatted = self._formatter.format(record)
-            entry = json.loads(formatted)
+            if self._use_format_to_dict:
+                entry = self._formatter.format_to_dict(record)
+            else:
+                formatted = self._formatter.format(record)
+                entry = json.loads(formatted)
             self._records.append(entry)
         except Exception:
             # Fallback: build dict from record attributes directly
@@ -122,15 +125,31 @@ class LogCapture(logging.Handler):
 
     @staticmethod
     def _serialize(val: Any) -> Any:
-        """Serialize a value for storage."""
+        """Serialize a value for storage (decision_log must be JSON-serializable)."""
+        if val is None:
+            return None
+        if isinstance(val, (str, int, float, bool)):
+            return val
         if isinstance(val, UUID):
             return str(val)
         if isinstance(val, datetime):
             return val.isoformat()
+        if isinstance(val, dict):
+            return {k: LogCapture._serialize(v) for k, v in val.items()}
+        if isinstance(val, (list, tuple)):
+            return [LogCapture._serialize(v) for v in val]
         try:
             from decimal import Decimal
             if isinstance(val, Decimal):
                 return str(val)
+        except ImportError:
+            pass
+        try:
+            from finance_kernel.domain.values import Currency, Money
+            if isinstance(val, Currency):
+                return val.code
+            if isinstance(val, Money):
+                return {"amount": str(val.amount), "currency": val.currency.code}
         except ImportError:
             pass
         return val
@@ -215,6 +234,12 @@ class LogCapture(logging.Handler):
     def records(self) -> list[dict]:
         """All captured records (read-only copy)."""
         return list(self._records)
+
+    def take_records(self) -> list[dict]:
+        """Return and clear the captured records (avoids list copy when assigning to outcome)."""
+        records = self._records
+        self._records = []
+        return records
 
     def clear(self) -> None:
         """Discard all captured records."""

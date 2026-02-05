@@ -1,0 +1,112 @@
+# GSA per diem rates for DCAA compliance (D7: FAR 31.205-46).
+#
+# This file defines GSA lodging and M&IE rates by location for government
+# travel expense validation. Rates are updated annually (effective Oct 1).
+#
+# The CONUS default rate applies when no location-specific rate is found.
+# OCONUS rates are not covered here (use separate JTR lookup).
+#
+# Source: https://www.gsa.gov/travel/plan-book/per-diem-rates
+# Fiscal year: 2026 (Oct 1 2025 - Sep 30 2026)
+
+fiscal_year: 2026
+effective_from: "2025-10-01"
+effective_to: "2026-09-30"
+
+# Default CONUS rates (standard rate for unlisted locations)
+default_conus:
+  lodging_rate: "107.00"
+  meals_rate: "68.00"
+  first_last_day_meals: "51.00"  # 75% of meals_rate
+
+# Location-specific rates (high-cost areas)
+locations:
+  - location: "Washington, DC"
+    state: "DC"
+    lodging_rate: "258.00"
+    meals_rate: "79.00"
+    first_last_day_meals: "59.25"
+
+  - location: "New York City, NY"
+    state: "NY"
+    lodging_rate: "282.00"
+    meals_rate: "79.00"
+    first_last_day_meals: "59.25"
+
+  - location: "San Francisco, CA"
+    state: "CA"
+    lodging_rate: "311.00"
+    meals_rate: "79.00"
+    first_last_day_meals: "59.25"
+
+  - location: "Los Angeles, CA"
+    state: "CA"
+    lodging_rate: "222.00"
+    meals_rate: "74.00"
+    first_last_day_meals: "55.50"
+
+  - location: "Boston, MA"
+    state: "MA"
+    lodging_rate: "268.00"
+    meals_rate: "79.00"
+    first_last_day_meals: "59.25"
+
+  - location: "Chicago, IL"
+    state: "IL"
+    lodging_rate: "221.00"
+    meals_rate: "79.00"
+    first_last_day_meals: "59.25"
+
+  - location: "Seattle, WA"
+    state: "WA"
+    lodging_rate: "227.00"
+    meals_rate: "79.00"
+    first_last_day_meals: "59.25"
+
+  - location: "Denver, CO"
+    state: "CO"
+    lodging_rate: "203.00"
+    meals_rate: "74.00"
+    first_last_day_meals: "55.50"
+
+  - location: "Miami, FL"
+    state: "FL"
+    lodging_rate: "196.00"
+    meals_rate: "74.00"
+    first_last_day_meals: "55.50"
+
+  - location: "Huntsville, AL"
+    state: "AL"
+    lodging_rate: "148.00"
+    meals_rate: "69.00"
+    first_last_day_meals: "51.75"
+
+  - location: "Dayton, OH"
+    state: "OH"
+    lodging_rate: "119.00"
+    meals_rate: "64.00"
+    first_last_day_meals: "48.00"
+
+  - location: "San Diego, CA"
+    state: "CA"
+    lodging_rate: "214.00"
+    meals_rate: "74.00"
+    first_last_day_meals: "55.50"
+
+  - location: "Colorado Springs, CO"
+    state: "CO"
+    lodging_rate: "155.00"
+    meals_rate: "69.00"
+    first_last_day_meals: "51.75"
+
+  - location: "Hampton Roads, VA"
+    state: "VA"
+    lodging_rate: "145.00"
+    meals_rate: "69.00"
+    first_last_day_meals: "51.75"
+
+  - location: "Baltimore, MD"
+    state: "MD"
+    lodging_rate: "180.00"
+    meals_rate: "74.00"
+    first_last_day_meals: "55.50"

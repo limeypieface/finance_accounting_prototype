@@ -26,57 +26,11 @@ Audit relevance:
     point that triggers posting of reconciliation adjustments.
 """
 
-from dataclasses import dataclass
 
 from finance_kernel.logging_config import get_logger
+from finance_kernel.domain.workflow import Guard, Transition, Workflow
 
 logger = get_logger("modules.cash.workflows")
-
-
-@dataclass(frozen=True)
-class Guard:
-    """
-    A condition that must be true for a transition to be allowed.
-
-    Contract:
-        Immutable predicate declaration.  The workflow engine evaluates the
-        named guard at transition time; this dataclass only stores metadata.
-    """
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class Transition:
-    """
-    A valid state transition in a workflow.
-
-    Contract:
-        Immutable edge in the workflow graph.  When ``posts_entry`` is True,
-        the transition triggers a journal entry via the posting pipeline.
-    """
-    from_state: str
-    to_state: str
-    action: str
-    guard: Guard | None = None
-    posts_entry: bool = False  # if True, triggers journal entry on transition
-
-
-@dataclass(frozen=True)
-class Workflow:
-    """
-    A state machine definition.
-
-    Contract:
-        Frozen declaration of states and transitions.  ``initial_state``
-        must be an element of ``states``.  All ``from_state`` / ``to_state``
-        values in ``transitions`` must be elements of ``states``.
-    """
-    name: str
-    description: str
-    initial_state: str
-    states: tuple[str, ...]
-    transitions: tuple[Transition, ...]
 
 
 # -----------------------------------------------------------------------------
@@ -159,3 +113,51 @@ logger.info(
         "initial_state": RECONCILIATION_WORKFLOW.initial_state,
     },
 )
+
+
+# -----------------------------------------------------------------------------
+# Directive: no generic workflows. Each financial action has its own lifecycle.
+# See docs/WORKFLOW_DIRECTIVE.md.
+# -----------------------------------------------------------------------------
+
+def _cash_draft_posted(name: str, description: str) -> Workflow:
+    return Workflow(
+        name=name,
+        description=description,
+        initial_state="draft",
+        states=("draft", "posted"),
+        transitions=(Transition("draft", "posted", action="post"),),
+    )
+
+CASH_RECEIPT_WORKFLOW = _cash_draft_posted("cash_receipt", "Cash receipt")
+CASH_DISBURSEMENT_WORKFLOW = _cash_draft_posted("cash_disbursement", "Cash disbursement")
+CASH_BANK_FEE_WORKFLOW = _cash_draft_posted("cash_bank_fee", "Bank fee")
+CASH_INTEREST_EARNED_WORKFLOW = _cash_draft_posted("cash_interest_earned", "Interest earned")
+CASH_TRANSFER_WORKFLOW = _cash_draft_posted("cash_transfer", "Transfer between accounts")
+CASH_WIRE_TRANSFER_OUT_WORKFLOW = _cash_draft_posted("cash_wire_transfer_out", "Wire transfer out")
+CASH_WIRE_TRANSFER_CLEARED_WORKFLOW = _cash_draft_posted("cash_wire_transfer_cleared", "Wire transfer cleared")
+CASH_RECONCILIATION_WORKFLOW = _cash_draft_posted("cash_reconciliation", "Bank reconciliation (post adjustment)")
+CASH_AUTO_RECONCILE_WORKFLOW = _cash_draft_posted("cash_auto_reconcile", "Auto-reconciliation")
+CASH_NSF_RETURN_WORKFLOW = _cash_draft_posted("cash_nsf_return", "NSF return")
+
+for wf in (
+    CASH_RECEIPT_WORKFLOW,
+    CASH_DISBURSEMENT_WORKFLOW,
+    CASH_BANK_FEE_WORKFLOW,
+    CASH_INTEREST_EARNED_WORKFLOW,
+    CASH_TRANSFER_WORKFLOW,
+    CASH_WIRE_TRANSFER_OUT_WORKFLOW,
+    CASH_WIRE_TRANSFER_CLEARED_WORKFLOW,
+    CASH_RECONCILIATION_WORKFLOW,
+    CASH_AUTO_RECONCILE_WORKFLOW,
+    CASH_NSF_RETURN_WORKFLOW,
+):
+    logger.info(
+        "cash_workflow_registered",
+        extra={
+            "workflow_name": wf.name,
+            "state_count": len(wf.states),
+            "transition_count": len(wf.transitions),
+            "initial_state": wf.initial_state,
+        },
+    )

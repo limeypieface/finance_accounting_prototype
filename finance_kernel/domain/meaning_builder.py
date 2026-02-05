@@ -316,13 +316,14 @@ class MeaningBuilder:
         """Evaluate guard conditions against payload (P12)."""
         for guard in guards:
             triggered = self._evaluate_expression(payload, guard.expression)
-            logger.debug(
+            logger.info(
                 "guard_evaluated",
                 extra={
                     "guard_type": guard.guard_type.value,
                     "expression": guard.expression,
                     "reason_code": guard.reason_code,
                     "triggered": triggered,
+                    "passed": not triggered,
                 },
             )
             if triggered:

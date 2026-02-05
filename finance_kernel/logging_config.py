@@ -17,6 +17,9 @@ from datetime import UTC, datetime, timezone
 from typing import Any
 from uuid import UUID
 
+# Import once so _serialize_log_value hot path avoids repeated try/except
+from finance_kernel.domain.values import Currency, Money
+
 # ---------------------------------------------------------------------------
 # Context propagation
 # ---------------------------------------------------------------------------
@@ -42,6 +45,9 @@ class LogContext:
     )
     _trace_id: ContextVar[str | None] = ContextVar(
         "log_trace_id", default=None
+    )
+    _snapshot: ContextVar[dict[str, str] | None] = ContextVar(
+        "log_context_snapshot", default=None
     )
 
     _FIELD_NAMES = (
@@ -87,6 +93,24 @@ class LogContext:
             if val is not None:
                 ctx[name] = val
         return ctx
+
+    @classmethod
+    def get_snapshot(cls) -> dict[str, str] | None:
+        """Return the current context snapshot if set (avoids get_all() per log record)."""
+        return cls._snapshot.get()
+
+    @classmethod
+    def set_snapshot(cls) -> None:
+        """Store current context as snapshot for format_to_dict hot path."""
+        cls._snapshot.set(cls.get_all())
+
+    @classmethod
+    def clear_snapshot(cls) -> None:
+        """Clear the context snapshot (call in finally)."""
+        try:
+            cls._snapshot.set(None)
+        except LookupError:
+            pass
 
     @classmethod
     def clear(cls) -> None:
@@ -152,8 +176,8 @@ class _JSONEncoder(json.JSONEncoder):
 class StructuredFormatter(logging.Formatter):
     """Formats each log record as a single JSON line."""
 
-    def format(self, record: logging.LogRecord) -> str:
-        # Mandatory envelope
+    def format_to_dict(self, record: logging.LogRecord) -> dict[str, Any]:
+        """Build the structured dict for this record (avoids JSON round-trip in handlers)."""
         payload: dict[str, Any] = {
             "ts": datetime.fromtimestamp(
                 record.created, tz=UTC
@@ -162,29 +186,55 @@ class StructuredFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-
-        # Merge context fields
-        payload.update(LogContext.get_all())
-
-        # Merge structured extra data (skip stdlib internal keys)
+        # Use snapshot when set (one get_all() per request instead of per record)
+        ctx = LogContext.get_snapshot() or LogContext.get_all()
+        payload.update(ctx)
         for key, val in vars(record).items():
             if key not in _STDLIB_KEYS and key not in payload:
-                payload[key] = val
-
-        # Exception info
+                payload[key] = _serialize_log_value(val)
         if record.exc_info and record.exc_info[1] is not None:
             exc = record.exc_info[1]
             payload["exc_type"] = type(exc).__name__
             payload["exc_message"] = str(exc)
             if hasattr(exc, "code"):
                 payload["exc_code"] = exc.code
-            # Include structured fields from FinanceKernelError subclasses
             for k, v in vars(exc).items():
                 if not k.startswith("_") and k not in ("args", "code"):
-                    payload[f"exc_{k}"] = v
+                    payload[f"exc_{k}"] = _serialize_log_value(v)
             payload["traceback"] = self.formatException(record.exc_info)
+        return payload
 
+    def format(self, record: logging.LogRecord) -> str:
+        payload = self.format_to_dict(record)
         return json.dumps(payload, cls=_JSONEncoder, default=str)
+
+
+def _serialize_log_value(val: Any) -> Any:
+    """Serialize a value for structured log dict (decision_log must be JSON-serializable)."""
+    if val is None:
+        return None
+    # Primitives are already JSON-serializable; short-circuit to avoid isinstance chain
+    if isinstance(val, (str, int, float, bool)):
+        return val
+    if isinstance(val, UUID):
+        return str(val)
+    if isinstance(val, datetime):
+        return val.isoformat()
+    if isinstance(val, (Currency, Money)):
+        if isinstance(val, Currency):
+            return val.code
+        return {"amount": str(val.amount), "currency": val.currency.code}
+    if isinstance(val, dict):
+        return {k: _serialize_log_value(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [_serialize_log_value(v) for v in val]
+    try:
+        from decimal import Decimal
+        if isinstance(val, Decimal):
+            return str(val)
+    except ImportError:
+        pass
+    return val
 
 
 # ---------------------------------------------------------------------------

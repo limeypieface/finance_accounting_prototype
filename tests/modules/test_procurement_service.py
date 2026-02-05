@@ -30,12 +30,17 @@ from tests.modules.conftest import TEST_EMPLOYEE_ID
 
 
 @pytest.fixture
-def procurement_service(session, module_role_resolver, deterministic_clock, register_modules):
-    """Provide ProcurementService for integration testing."""
+def procurement_service(
+    session, module_role_resolver, deterministic_clock, register_modules, workflow_executor,
+    party_service, test_actor_party,
+):
+    """Provide ProcurementService for integration testing. party_service + test_actor_party for G14."""
     return ProcurementService(
         session=session,
         role_resolver=module_role_resolver,
+        workflow_executor=workflow_executor,
         clock=deterministic_clock,
+        party_service=party_service,
     )
 
 
@@ -55,6 +60,7 @@ class TestProcurementServiceStructure:
         params = list(sig.parameters.keys())
         assert "session" in params
         assert "role_resolver" in params
+        assert "workflow_executor" in params
         assert "clock" in params
 
     def test_has_public_methods(self):
@@ -68,6 +74,50 @@ class TestProcurementServiceStructure:
         for method_name in expected:
             assert hasattr(ProcurementService, method_name)
             assert callable(getattr(ProcurementService, method_name))
+
+
+# =============================================================================
+# Guard path tests (run with -k guard)
+# =============================================================================
+
+
+class TestProcurementServiceGuardPath:
+    """Posting path goes through workflow executor (run_workflow_guard) before post_event (R29)."""
+
+    def test_create_po_guard_path_posts(
+        self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party,
+    ):
+        """Create PO runs through workflow guard then posts; no guard on draft->posted so POSTED."""
+        result = procurement_service.create_purchase_order(
+            po_id=uuid4(),
+            vendor_id="V-001",
+            lines=[
+                {"item_code": "WIDGET-001", "quantity": "10", "unit_price": "25.00"},
+            ],
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+        )
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
+
+    def test_record_commitment_guard_path_posts(
+        self, procurement_service, current_period, test_actor_id, deterministic_clock,
+        test_vendor_party,
+    ):
+        """Record commitment runs through workflow guard then posts."""
+        result = procurement_service.record_commitment(
+            commitment_id=uuid4(),
+            po_id=uuid4(),
+            amount=Decimal("10000.00"),
+            effective_date=deterministic_clock.now().date(),
+            actor_id=test_actor_id,
+            vendor_id="V-002",
+        )
+        assert result.status == ModulePostingStatus.POSTED
+        assert result.is_success
+        assert len(result.journal_entry_ids) > 0
 
 
 # =============================================================================

@@ -20,6 +20,16 @@ Invariants enforced:
     - R16 (ISO_4217): currency validated at kernel boundary.
     - LINK_LEGALITY: economic links created via LinkGraphService with
           validated link types and artifact references.
+    - R25 (KERNEL_PRIMITIVES_ONLY): Money, ArtifactRef from finance_kernel;
+          no parallel financial types in this module.
+    - R26 (JOURNAL_SYSTEM_OF_RECORD): journal + link graph are the source
+          of truth; Cash ORM (e.g. BankTransactionModel, ReconciliationModel)
+          is an operational projection, persisted in the same transaction.
+    - R27 (MATCHING_OPERATIONAL): ledger impact from kernel policy
+          (profiles); this module does not branch on operational results
+          to choose accounts.
+    - Workflow executor required; every financial action calls
+      execute_transition (guards enforced, no bypass).
 
 Failure modes:
     - Posting failure (kernel rejection) -> session rolled back, result
@@ -34,7 +44,8 @@ Audit relevance:
 
 Usage::
 
-    service = CashService(session, role_resolver, clock)
+    # workflow_executor is required — guards are always enforced (no bypass).
+    service = CashService(session, role_resolver, workflow_executor, clock=clock)
     result = service.record_receipt(
         receipt_id=uuid4(), amount=Decimal("5000.00"),
         effective_date=date.today(), actor_id=actor_id,
@@ -44,6 +55,7 @@ Usage::
 from __future__ import annotations
 
 from collections.abc import Sequence
+import time
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -57,10 +69,25 @@ from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
 from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_kernel.services.party_service import PartyService
+from finance_kernel.domain.validation import require_decimal
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_modules._posting_helpers import commit_or_rollback, run_workflow_guard
+from finance_modules.cash.workflows import (
+    CASH_AUTO_RECONCILE_WORKFLOW,
+    CASH_BANK_FEE_WORKFLOW,
+    CASH_DISBURSEMENT_WORKFLOW,
+    CASH_INTEREST_EARNED_WORKFLOW,
+    CASH_NSF_RETURN_WORKFLOW,
+    CASH_RECONCILIATION_WORKFLOW,
+    CASH_RECEIPT_WORKFLOW,
+    CASH_TRANSFER_WORKFLOW,
+    CASH_WIRE_TRANSFER_CLEARED_WORKFLOW,
+    CASH_WIRE_TRANSFER_OUT_WORKFLOW,
 )
 from finance_modules.cash.models import (
     BankStatement,
@@ -75,7 +102,9 @@ from finance_modules.cash.orm import (
     BankTransactionModel,
     ReconciliationModel,
 )
+from finance_services.observability import log_match_accepted
 from finance_services.reconciliation_service import ReconciliationManager
+from finance_services.workflow_executor import WorkflowExecutor
 
 logger = get_logger("modules.cash.service")
 
@@ -116,17 +145,21 @@ class CashService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor  # Required: guards always enforced
 
-        # Kernel posting (auto_commit=False -- we own the boundary)
+        # Kernel posting (auto_commit=False -- we own the boundary). G14: actor validation mandatory.
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
         # Stateful engines (share session for atomicity)
@@ -170,13 +203,26 @@ class CashService:
         Profile: cash.deposit -> CashDeposit
         """
         # INVARIANT [R4]: amount passed to kernel; kernel enforces Dr = Cr.
-        assert isinstance(amount, Decimal), "amount must be Decimal, not float"
+        require_decimal(amount)
         try:
             logger.info("cash_receipt_started", extra={
                 "receipt_id": str(receipt_id),
                 "amount": str(amount),
                 "bank_account_code": bank_account_code,
             })
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CASH_RECEIPT_WORKFLOW,
+                "cash_receipt",
+                receipt_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
 
             payload: dict[str, Any] = {
                 "amount": str(amount),
@@ -185,7 +231,9 @@ class CashService:
                 "reference": reference,
             }
 
-            result = self._poster.post_event(
+            # Semantic split: one GL event (Dr Bank / Cr Undeposited Funds),
+            # then one BANK subledger event (availability reclassification).
+            result_gl = self._poster.post_event(
                 event_type="cash.deposit",
                 payload=payload,
                 effective_date=effective_date,
@@ -194,7 +242,22 @@ class CashService:
                 currency=currency,
                 description=description,
             )
+            if not result_gl.is_success:
+                return result_gl
 
+            result_bank = self._poster.post_event(
+                event_type="cash.make_available",
+                payload=payload,
+                effective_date=effective_date,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                description=description,
+            )
+            if not result_bank.is_success:
+                return result_bank
+
+            result = result_gl  # primary event for receipt is the GL deposit
             if result.is_success:
                 orm_txn = BankTransactionModel(
                     id=receipt_id,
@@ -210,9 +273,7 @@ class CashService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_txn)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -256,7 +317,7 @@ class CashService:
                  CashWithdrawalPayroll (where-clause dispatch on destination_type)
         """
         # INVARIANT [R4]: amount passed to kernel; kernel enforces Dr = Cr.
-        assert isinstance(amount, Decimal), "amount must be Decimal, not float"
+        require_decimal(amount)
         try:
             logger.info("cash_disbursement_started", extra={
                 "disbursement_id": str(disbursement_id),
@@ -264,6 +325,19 @@ class CashService:
                 "destination_type": destination_type,
                 "bank_account_code": bank_account_code,
             })
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CASH_DISBURSEMENT_WORKFLOW,
+                "cash_disbursement",
+                disbursement_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"destination_type": destination_type},
+            )
+            if failure is not None:
+                return failure
 
             payload: dict[str, Any] = {
                 "amount": str(amount),
@@ -299,9 +373,7 @@ class CashService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_txn)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -336,13 +408,26 @@ class CashService:
         Profile: cash.bank_fee -> CashBankFee
         """
         # INVARIANT [R4]: balanced entry enforced by kernel.
-        assert isinstance(amount, Decimal), "amount must be Decimal, not float"
+        require_decimal(amount)
         try:
             logger.info("cash_bank_fee_started", extra={
                 "fee_id": str(fee_id),
                 "amount": str(amount),
                 "bank_account_code": bank_account_code,
             })
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CASH_BANK_FEE_WORKFLOW,
+                "cash_bank_fee",
+                fee_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
 
             payload: dict[str, Any] = {
                 "amount": str(amount),
@@ -374,9 +459,7 @@ class CashService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_txn)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -411,13 +494,26 @@ class CashService:
         Profile: cash.interest_earned -> CashInterestEarned
         """
         # INVARIANT [R4]: balanced entry enforced by kernel.
-        assert isinstance(amount, Decimal), "amount must be Decimal, not float"
+        require_decimal(amount)
         try:
             logger.info("cash_interest_earned_started", extra={
                 "interest_id": str(interest_id),
                 "amount": str(amount),
                 "bank_account_code": bank_account_code,
             })
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CASH_INTEREST_EARNED_WORKFLOW,
+                "cash_interest_earned",
+                interest_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
 
             payload: dict[str, Any] = {
                 "amount": str(amount),
@@ -449,9 +545,7 @@ class CashService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_txn)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -488,7 +582,7 @@ class CashService:
         Profile: cash.transfer -> CashTransfer
         """
         # INVARIANT [R4]: balanced entry enforced by kernel.
-        assert isinstance(amount, Decimal), "amount must be Decimal, not float"
+        require_decimal(amount)
         try:
             logger.info("cash_transfer_started", extra={
                 "transfer_id": str(transfer_id),
@@ -496,6 +590,19 @@ class CashService:
                 "from_bank_account_code": from_bank_account_code,
                 "to_bank_account_code": to_bank_account_code,
             })
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CASH_TRANSFER_WORKFLOW,
+                "cash_transfer",
+                transfer_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
 
             payload: dict[str, Any] = {
                 "amount": str(amount),
@@ -528,9 +635,7 @@ class CashService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_txn)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -566,13 +671,26 @@ class CashService:
         Profile: cash.wire_transfer_out -> CashWireTransferOut
         """
         # INVARIANT [R4]: balanced entry enforced by kernel.
-        assert isinstance(amount, Decimal), "amount must be Decimal, not float"
+        require_decimal(amount)
         try:
             logger.info("cash_wire_transfer_out_started", extra={
                 "wire_id": str(wire_id),
                 "amount": str(amount),
                 "bank_account_code": bank_account_code,
             })
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CASH_WIRE_TRANSFER_OUT_WORKFLOW,
+                "cash_wire_transfer_out",
+                wire_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
 
             payload: dict[str, Any] = {
                 "amount": str(amount),
@@ -591,10 +709,7 @@ class CashService:
                 description=description,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -628,13 +743,26 @@ class CashService:
         Profile: cash.wire_transfer_cleared -> CashWireTransferCleared
         """
         # INVARIANT [R4]: balanced entry enforced by kernel.
-        assert isinstance(amount, Decimal), "amount must be Decimal, not float"
+        require_decimal(amount)
         try:
             logger.info("cash_wire_transfer_cleared_started", extra={
                 "wire_id": str(wire_id),
                 "amount": str(amount),
                 "bank_account_code": bank_account_code,
             })
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CASH_WIRE_TRANSFER_CLEARED_WORKFLOW,
+                "cash_wire_transfer_cleared",
+                wire_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
 
             payload: dict[str, Any] = {
                 "amount": str(amount),
@@ -651,10 +779,7 @@ class CashService:
                 description=description,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -708,6 +833,20 @@ class CashService:
                 "entry_count": len(entries),
                 "bank_account_code": bank_account_code,
             })
+
+            net_preview = sum(Decimal(str(e.get("amount", "0"))) for e in entries)
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CASH_RECONCILIATION_WORKFLOW,
+                "cash_reconciliation",
+                statement_id,
+                actor_id=actor_id,
+                amount=abs(net_preview),
+                currency=currency,
+                context={"entry_count": len(entries)},
+            )
+            if failure is not None:
+                return failure
 
             statement_ref = ArtifactRef(ArtifactType.BANK_STATEMENT, statement_id)
 
@@ -764,9 +903,8 @@ class CashService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_recon)
-                self._session.commit()
                 return ModulePostingResult(
-                    status=ModulePostingStatus.POSTED,
+                    status=ModulePostingStatus.TRANSITION_APPLIED,
                     event_id=statement_id,
                     message="Bank reconciliation matched; no adjustment required",
                 )
@@ -805,9 +943,7 @@ class CashService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_recon)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -946,6 +1082,20 @@ class CashService:
             Tuple of (list of ReconciliationMatch, ModulePostingResult).
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CASH_AUTO_RECONCILE_WORKFLOW,
+                "cash_auto_reconcile",
+                bank_account_id,
+                actor_id=actor_id,
+                amount=Decimal("0"),
+                currency=currency,
+                context={"statement_line_count": len(statement_lines), "book_entry_count": len(book_entries)},
+            )
+            if failure is not None:
+                return [], failure
+
+            t0 = time.monotonic()
             matches: list[ReconciliationMatch] = []
             matched_book_ids: set[str] = set()
             net_variance = Decimal("0")
@@ -974,6 +1124,14 @@ class CashService:
                 else:
                     net_variance += line.amount
 
+            duration_ms = round((time.monotonic() - t0) * 1000, 2)
+            log_match_accepted(
+                context="auto_reconcile",
+                duration_ms=duration_ms,
+                matched_count=len(matches),
+                unmatched_count=len(statement_lines) - len(matches),
+                net_variance=str(net_variance),
+            )
             logger.info("auto_reconciliation_completed", extra={
                 "matched_count": len(matches),
                 "unmatched_count": len(statement_lines) - len(matches),
@@ -981,9 +1139,8 @@ class CashService:
             })
 
             if net_variance == Decimal("0") or abs(net_variance) < tolerance:
-                self._session.commit()
                 return matches, ModulePostingResult(
-                    status=ModulePostingStatus.POSTED,
+                    status=ModulePostingStatus.TRANSITION_APPLIED,
                     event_id=uuid4(),
                     message="Auto-reconciliation complete; no adjustment needed",
                 )
@@ -1001,11 +1158,7 @@ class CashService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
-
+            commit_or_rollback(self._session, result)
             return matches, result
 
         except Exception:
@@ -1139,12 +1292,25 @@ class CashService:
         Profile: cash.nsf_return -> CashNSFReturn
         """
         # INVARIANT [R4]: balanced entry enforced by kernel.
-        assert isinstance(amount, Decimal), "amount must be Decimal, not float"
+        require_decimal(amount)
         try:
             logger.info("nsf_return_started", extra={
                 "deposit_id": str(deposit_id),
                 "amount": str(amount),
             })
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                CASH_NSF_RETURN_WORKFLOW,
+                "cash_nsf_return",
+                deposit_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
 
             result = self._poster.post_event(
                 event_type="cash.nsf_return",
@@ -1159,10 +1325,7 @@ class CashService:
                 description=description or f"NSF return: {deposit_id}",
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:

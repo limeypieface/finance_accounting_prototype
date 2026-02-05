@@ -47,7 +47,10 @@ traceability.
 
 Usage::
 
-    service = PayrollService(session, role_resolver, clock)
+    # workflow_executor is required — guards are always enforced.
+    service = PayrollService(
+        session, role_resolver, orchestrator.workflow_executor, clock=clock,
+    )
     result = service.record_payroll_run(
         run_id=uuid4(), employee_id="EMP-001",
         gross_pay=Decimal("5000.00"),
@@ -83,10 +86,31 @@ from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
 from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
-    ModulePostingStatus,
+)
+from finance_modules._posting_helpers import commit_or_rollback, run_workflow_guard
+from finance_services.workflow_executor import WorkflowExecutor
+from finance_engines.timesheet_compliance import (
+    compute_total_time_record,
+    detect_concurrent_overlaps,
+    validate_all_entries_daily_recording,
+    validate_no_excessive_daily_hours,
+)
+from finance_modules.payroll.dcaa_orm import (
+    FloorCheckModel,
+    TimesheetCorrectionModel,
+    TimesheetEntryModel,
+    TimesheetSubmissionModel,
+)
+from finance_modules.payroll.dcaa_types import (
+    FloorCheck,
+    TimesheetCorrection,
+    TimesheetEntry,
+    TimesheetSubmission,
+    TimesheetSubmissionStatus,
 )
 from finance_modules.payroll.helpers import (
     calculate_federal_withholding,
@@ -103,6 +127,20 @@ from finance_modules.payroll.orm import (
     BenefitsDeductionModel,
     EmployerContributionModel,
     PayrollRunModel,
+)
+from finance_modules.payroll.workflows import (
+    PAYROLL_ACCRUAL_WORKFLOW,
+    PAYROLL_BENEFITS_DEDUCTION_WORKFLOW,
+    PAYROLL_BENEFITS_PAYMENT_WORKFLOW,
+    PAYROLL_EMPLOYER_CONTRIBUTION_WORKFLOW,
+    PAYROLL_FLOOR_CHECK_WORKFLOW,
+    PAYROLL_LABOR_ALLOCATION_WORKFLOW,
+    PAYROLL_OVERTIME_WORKFLOW,
+    PAYROLL_PAYMENT_WORKFLOW,
+    PAYROLL_PTO_WORKFLOW,
+    PAYROLL_REGULAR_HOURS_WORKFLOW,
+    PAYROLL_TAX_WORKFLOW,
+    TIMESHEET_WORKFLOW,
 )
 
 logger = get_logger("modules.payroll.service")
@@ -150,17 +188,21 @@ class PayrollService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor  # Required: guards always enforced
 
-        # Kernel posting (auto_commit=False -- we own the boundary)
+        # Kernel posting (auto_commit=False -- we own the boundary). G14: actor validation mandatory.
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
         # Stateful engines (share session for atomicity)
@@ -195,6 +237,23 @@ class PayrollService:
         Profile: payroll.accrual -> PayrollAccrual
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PAYROLL_ACCRUAL_WORKFLOW,
+                "payroll_run",
+                run_id,
+                current_state="draft",
+                action="post",
+                actor_id=actor_id,
+                actor_role="",
+                amount=gross_pay,
+                currency=currency,
+                context={},
+                event_id=run_id,
+            )
+            if failure is not None:
+                return failure
+
             logger.info("payroll_run_started", extra={
                 "run_id": str(run_id),
                 "employee_id": employee_id,
@@ -252,9 +311,7 @@ class PayrollService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_model)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -284,6 +341,19 @@ class PayrollService:
         Profile: payroll.tax_deposit -> PayrollTaxDeposit
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PAYROLL_TAX_WORKFLOW,
+                "payroll_tax",
+                run_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             # Engine: link tax deposit to payroll run
             from finance_kernel.domain.economic_link import EconomicLink, LinkType
             tax_event_id = uuid4()
@@ -337,10 +407,7 @@ class PayrollService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -365,6 +432,19 @@ class PayrollService:
         Profile: payroll.payment -> PayrollPayment
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PAYROLL_PAYMENT_WORKFLOW,
+                "payroll_payment",
+                payment_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("payroll_payment_recorded", extra={
                 "payment_id": str(payment_id),
                 "amount": str(amount),
@@ -382,10 +462,7 @@ class PayrollService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -411,6 +488,19 @@ class PayrollService:
         Profile: payroll.benefits_payment -> PayrollBenefitsPayment
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PAYROLL_BENEFITS_PAYMENT_WORKFLOW,
+                "payroll_benefits_payment",
+                payment_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("benefits_payment_recorded", extra={
                 "payment_id": str(payment_id),
                 "amount": str(amount),
@@ -429,10 +519,7 @@ class PayrollService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -461,6 +548,19 @@ class PayrollService:
         """
         total = hours * rate
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PAYROLL_REGULAR_HOURS_WORKFLOW,
+                "timesheet_entry",
+                timesheet_id,
+                actor_id=actor_id,
+                amount=total,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("timesheet_regular_recorded", extra={
                 "timesheet_id": str(timesheet_id),
                 "employee_id": employee_id,
@@ -483,10 +583,7 @@ class PayrollService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -511,6 +608,19 @@ class PayrollService:
         """
         total = hours * rate
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PAYROLL_OVERTIME_WORKFLOW,
+                "timesheet_entry",
+                timesheet_id,
+                actor_id=actor_id,
+                amount=total,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("timesheet_overtime_recorded", extra={
                 "timesheet_id": str(timesheet_id),
                 "employee_id": employee_id,
@@ -533,10 +643,7 @@ class PayrollService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -561,6 +668,19 @@ class PayrollService:
         """
         total = hours * rate
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PAYROLL_PTO_WORKFLOW,
+                "timesheet_entry",
+                timesheet_id,
+                actor_id=actor_id,
+                amount=total,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             logger.info("timesheet_pto_recorded", extra={
                 "timesheet_id": str(timesheet_id),
                 "employee_id": employee_id,
@@ -582,10 +702,7 @@ class PayrollService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -623,6 +740,24 @@ class PayrollService:
             raise ValueError("At least one allocation target is required")
 
         total_amount = sum(Decimal(str(a["amount"])) for a in allocations)
+
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            PAYROLL_LABOR_ALLOCATION_WORKFLOW,
+            "payroll_run",
+            run_id,
+            current_state="draft",
+            action="post",
+            actor_id=actor_id,
+            actor_role="",
+            amount=total_amount,
+            currency=currency,
+            context={},
+            event_id=run_id,
+        )
+        if failure is not None:
+            return failure
+
         last_result: ModulePostingResult | None = None
 
         try:
@@ -844,8 +979,9 @@ class PayrollService:
         Returns:
             Tuple of (BenefitsDeduction, ModulePostingResult).
         """
+        deduction_id = uuid4()
         deduction = BenefitsDeduction(
-            id=uuid4(),
+            id=deduction_id,
             employee_id=employee_id,
             plan_name=plan_name,
             employee_amount=employee_amount,
@@ -853,6 +989,23 @@ class PayrollService:
         )
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PAYROLL_BENEFITS_DEDUCTION_WORKFLOW,
+                "payroll_benefits_deduction",
+                deduction_id,
+                current_state="draft",
+                action="post",
+                actor_id=actor_id,
+                actor_role="",
+                amount=employee_amount,
+                currency=currency,
+                context={},
+                event_id=deduction_id,
+            )
+            if failure is not None:
+                return deduction, failure
+
             logger.info("benefits_deduction_started", extra={
                 "employee_id": str(employee_id),
                 "plan_name": plan_name,
@@ -877,7 +1030,6 @@ class PayrollService:
             if result.is_success:
                 orm_model = BenefitsDeductionModel.from_dto(deduction, created_by_id=actor_id)
                 self._session.add(orm_model)
-                self._session.commit()
             else:
                 self._session.rollback()
             return deduction, result
@@ -946,14 +1098,32 @@ class PayrollService:
         Returns:
             Tuple of (EmployerContribution, ModulePostingResult).
         """
+        contribution_id = uuid4()
         contribution = EmployerContribution(
-            id=uuid4(),
+            id=contribution_id,
             employee_id=employee_id,
             plan_name=plan_name,
             amount=amount,
         )
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PAYROLL_EMPLOYER_CONTRIBUTION_WORKFLOW,
+                "payroll_employer_contribution",
+                contribution_id,
+                current_state="draft",
+                action="post",
+                actor_id=actor_id,
+                actor_role="",
+                amount=amount,
+                currency=currency,
+                context={},
+                event_id=contribution_id,
+            )
+            if failure is not None:
+                return contribution, failure
+
             logger.info("employer_contribution_started", extra={
                 "employee_id": str(employee_id),
                 "plan_name": plan_name,
@@ -973,11 +1143,628 @@ class PayrollService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return contribution, result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # DCAA Timesheet Submission (D1, D3, D4)
+    # =========================================================================
+
+    def submit_timesheet(
+        self,
+        submission: TimesheetSubmission,
+        actor_id: UUID,
+        max_retroactive_days: int = 7,
+        expected_hours: Decimal = Decimal("40"),
+        total_time_tolerance: Decimal = Decimal("0.25"),
+        enable_concurrent_check: bool = True,
+    ) -> TimesheetSubmissionModel:
+        """
+        Submit a timesheet for supervisor approval (D1, D3, D4).
+
+        Validates:
+        * D1 -- Daily recording: all entries within max_retroactive_days.
+        * D3 -- Total time accounting: hours balance within tolerance.
+        * D4 -- No concurrent overlap: no overlapping charges.
+
+        On success, persists the submission and transitions to SUBMITTED.
+        Does NOT post journal entries -- that happens on approval (D2).
+
+        Raises:
+            ValueError: If any DCAA validation fails.
+        """
+        now = self._clock.now()
+        submission_date = now.date()
+
+        try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                TIMESHEET_WORKFLOW,
+                "timesheet",
+                submission.submission_id,
+                current_state="draft",
+                action="submit",
+                actor_id=actor_id,
+                actor_role="",
+                amount=Decimal("0"),
+                currency="USD",
+                context={
+                    "max_retroactive_days": max_retroactive_days,
+                    "expected_hours": expected_hours,
+                    "total_time_tolerance": total_time_tolerance,
+                },
+            )
+            if failure is not None:
+                raise ValueError(
+                    failure.message or "Workflow guard not satisfied"
+                )
+
+            # D1: Daily recording validation
+            d1_violations = validate_all_entries_daily_recording(
+                submission.entries, submission_date, max_retroactive_days,
+            )
+            if d1_violations:
+                violations_str = "; ".join(msg for _, msg in d1_violations)
+                raise ValueError(
+                    f"D1 daily recording violation: {violations_str}"
+                )
+
+            # D4: Concurrent overlap detection
+            if enable_concurrent_check and submission.entries:
+                overlap_check = detect_concurrent_overlaps(submission.entries)
+                if not overlap_check.is_valid:
+                    raise ValueError(
+                        f"D4 concurrent overlap detected: "
+                        f"{len(overlap_check.overlapping_entries)} overlapping "
+                        f"entry pairs on {overlap_check.work_date}"
+                    )
+
+            # D3: Total time accounting
+            total_hours = sum(
+                (e.hours for e in submission.entries), Decimal("0"),
+            )
+            total_time = compute_total_time_record(
+                employee_id=submission.employee_id,
+                pay_period_id=submission.pay_period_id,
+                entries=submission.entries,
+                expected_hours=expected_hours,
+                tolerance=total_time_tolerance,
+            )
+
+            # Daily hours sanity check
+            valid_daily, excessive_days = validate_no_excessive_daily_hours(
+                submission.entries,
+            )
+            if not valid_daily:
+                raise ValueError(
+                    f"Excessive daily hours detected on: "
+                    f"{list(excessive_days.keys())}"
+                )
+
+            logger.info("timesheet_submission_validated", extra={
+                "submission_id": str(submission.submission_id),
+                "employee_id": str(submission.employee_id),
+                "total_hours": str(total_hours),
+                "d3_compliant": total_time.is_compliant,
+                "d3_variance": str(total_time.variance),
+            })
+
+            # Persist submission + entries
+            orm_submission = TimesheetSubmissionModel.from_dto(
+                submission, created_by_id=actor_id,
+            )
+            orm_submission.status = TimesheetSubmissionStatus.SUBMITTED.value
+            orm_submission.submitted_at = now
+            orm_submission.total_hours = total_hours
+            self._session.add(orm_submission)
+
+            for entry in submission.entries:
+                orm_entry = TimesheetEntryModel.from_dto(
+                    entry,
+                    submission_id=submission.submission_id,
+                    created_by_id=actor_id,
+                )
+                self._session.add(orm_entry)
+
+            # Post timesheet.submitted event (workflow event, no GL effect)
+            self._poster.post_event(
+                event_type="timesheet.submitted",
+                payload={
+                    "submission_id": str(submission.submission_id),
+                    "employee_id": str(submission.employee_id),
+                    "pay_period_id": str(submission.pay_period_id),
+                    "total_hours": str(total_hours),
+                    "entry_count": len(submission.entries),
+                    "d3_compliant": total_time.is_compliant,
+                    "d3_variance": str(total_time.variance),
+                },
+                effective_date=submission_date,
+                actor_id=actor_id,
+                amount=Decimal("0"),
+                currency="USD",
+            )
+
+            self._session.commit()
+
+            logger.info("timesheet_submitted", extra={
+                "submission_id": str(submission.submission_id),
+                "status": "submitted",
+            })
+            return orm_submission
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # DCAA Timesheet Approval (D2)
+    # =========================================================================
+
+    def approve_timesheet(
+        self,
+        submission_id: UUID,
+        approver_id: UUID,
+        effective_date: date,
+        rate_by_entry: dict[UUID, Decimal] | None = None,
+        currency: str = "USD",
+    ) -> list[ModulePostingResult]:
+        """
+        Approve a timesheet and post labor charges (D2).
+
+        This is the ONLY path that posts labor cost events.  Approval
+        gates posting -- no labor charges exist without supervisor sign-off.
+
+        For each billable/direct entry, posts the appropriate timesheet
+        event (timesheet.regular, timesheet.overtime, timesheet.pto) which
+        produces journal entries via existing profiles.
+
+        Args:
+            submission_id: The submission to approve.
+            approver_id: The supervisor approving.
+            effective_date: Journal entry effective date.
+            rate_by_entry: Optional map of entry_id -> hourly rate.
+                If not provided, defaults to Decimal("0") (rate resolved
+                elsewhere or carried in the entry).
+            currency: ISO 4217 currency code.
+
+        Returns:
+            List of ModulePostingResult for each posted labor charge.
+
+        Raises:
+            ValueError: If submission not found or not in pending_approval.
+        """
+        try:
+            orm_sub = (
+                self._session.query(TimesheetSubmissionModel)
+                .filter_by(id=submission_id)
+                .first()
+            )
+            if orm_sub is None:
+                raise ValueError(
+                    f"Timesheet submission {submission_id} not found"
+                )
+            if orm_sub.status != TimesheetSubmissionStatus.PENDING_APPROVAL.value:
+                raise ValueError(
+                    f"Timesheet {submission_id} has status '{orm_sub.status}' "
+                    f"-- must be 'pending_approval' to approve"
+                )
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                TIMESHEET_WORKFLOW,
+                "timesheet",
+                submission_id,
+                current_state="pending_approval",
+                action="approve",
+                actor_id=approver_id,
+                actor_role="",
+                amount=Decimal("0"),
+                currency=currency,
+                context={"total_hours": orm_sub.total_hours},
+                event_id=uuid4(),
+            )
+            if failure is not None:
+                return [failure]
+
+            # Transition to approved
+            orm_sub.status = TimesheetSubmissionStatus.APPROVED.value
+
+            # Post timesheet.approved workflow event
+            self._poster.post_event(
+                event_type="timesheet.approved",
+                payload={
+                    "submission_id": str(submission_id),
+                    "approver_id": str(approver_id),
+                    "employee_id": str(orm_sub.employee_id),
+                    "total_hours": str(orm_sub.total_hours),
+                },
+                effective_date=effective_date,
+                actor_id=approver_id,
+                amount=Decimal("0"),
+                currency=currency,
+            )
+
+            # Post labor charges for each entry
+            results: list[ModulePostingResult] = []
+            default_rate = Decimal("0")
+            rate_map = rate_by_entry or {}
+
+            for orm_entry in orm_sub.entries:
+                rate = rate_map.get(orm_entry.id, default_rate)
+                total = orm_entry.hours * rate
+
+                # Map pay_code to event type
+                pay_code_upper = orm_entry.pay_code.upper()
+                if pay_code_upper in ("OVERTIME", "DOUBLE_TIME"):
+                    event_type = "timesheet.overtime"
+                elif pay_code_upper in (
+                    "SICK", "VACATION", "HOLIDAY", "PTO",
+                ):
+                    event_type = "timesheet.pto"
+                else:
+                    event_type = "timesheet.regular"
+
+                result = self._poster.post_event(
+                    event_type=event_type,
+                    payload={
+                        "hours": str(orm_entry.hours),
+                        "rate": str(rate),
+                        "pay_code": orm_entry.pay_code,
+                        "employee_id": str(orm_sub.employee_id),
+                        "department": None,
+                        "charge_code": orm_entry.charge_code,
+                        "submission_id": str(submission_id),
+                    },
+                    effective_date=effective_date,
+                    actor_id=approver_id,
+                    amount=total,
+                    currency=currency,
+                )
+                results.append(result)
+
+                if not result.is_success:
+                    self._session.rollback()
+                    return results
+
+            self._session.commit()
+
+            logger.info("timesheet_approved", extra={
+                "submission_id": str(submission_id),
+                "approver_id": str(approver_id),
+                "entries_posted": len(results),
+            })
+            return results
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # DCAA Timesheet Rejection
+    # =========================================================================
+
+    def reject_timesheet(
+        self,
+        submission_id: UUID,
+        rejector_id: UUID,
+        reason: str,
+        effective_date: date | None = None,
+    ) -> None:
+        """
+        Reject a timesheet submission.
+
+        Transitions to REJECTED.  No journal entries are posted.
+
+        Raises:
+            ValueError: If submission not found or not in pending_approval.
+        """
+        eff_date = effective_date or self._clock.now().date()
+
+        try:
+            orm_sub = (
+                self._session.query(TimesheetSubmissionModel)
+                .filter_by(id=submission_id)
+                .first()
+            )
+            if orm_sub is None:
+                raise ValueError(
+                    f"Timesheet submission {submission_id} not found"
+                )
+            if orm_sub.status != TimesheetSubmissionStatus.PENDING_APPROVAL.value:
+                raise ValueError(
+                    f"Timesheet {submission_id} has status '{orm_sub.status}' "
+                    f"-- must be 'pending_approval' to reject"
+                )
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                TIMESHEET_WORKFLOW,
+                "timesheet",
+                submission_id,
+                current_state="pending_approval",
+                action="reject",
+                actor_id=rejector_id,
+                actor_role="",
+                amount=Decimal("0"),
+                currency="USD",
+                context={"reason": reason},
+            )
+            if failure is not None:
+                raise ValueError(
+                    failure.message or "Workflow guard not satisfied"
+                )
+
+            orm_sub.status = TimesheetSubmissionStatus.REJECTED.value
+
+            # Post timesheet.rejected workflow event
+            self._poster.post_event(
+                event_type="timesheet.rejected",
+                payload={
+                    "submission_id": str(submission_id),
+                    "rejector_id": str(rejector_id),
+                    "employee_id": str(orm_sub.employee_id),
+                    "reason": reason,
+                },
+                effective_date=eff_date,
+                actor_id=rejector_id,
+                amount=Decimal("0"),
+                currency="USD",
+            )
+
+            self._session.commit()
+
+            logger.info("timesheet_rejected", extra={
+                "submission_id": str(submission_id),
+                "rejector_id": str(rejector_id),
+                "reason": reason,
+            })
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # DCAA Timesheet Correction (D5 / R10)
+    # =========================================================================
+
+    def correct_timesheet_entry(
+        self,
+        original_entry_id: UUID,
+        new_entry: TimesheetEntry,
+        reason: str,
+        actor_id: UUID,
+        effective_date: date | None = None,
+    ) -> tuple[TimesheetCorrection, ModulePostingResult]:
+        """
+        Correct a timesheet entry via reversal + replacement (D5).
+
+        Steps:
+        1. Posts a reversal event for the original entry.
+        2. Persists the new (corrected) entry.
+        3. Records the correction chain for audit trail.
+
+        NEVER mutates existing records (R10).
+
+        Args:
+            original_entry_id: The entry being corrected.
+            new_entry: The replacement entry.
+            reason: Audit reason for the correction.
+            actor_id: Who initiated the correction.
+            effective_date: Journal entry date (defaults to today via clock).
+
+        Returns:
+            Tuple of (TimesheetCorrection, ModulePostingResult for reversal).
+
+        Raises:
+            ValueError: If original entry not found.
+        """
+        now = self._clock.now()
+        eff_date = effective_date or now.date()
+
+        try:
+            # Verify original entry exists
+            orm_original = (
+                self._session.query(TimesheetEntryModel)
+                .filter_by(id=original_entry_id)
+                .first()
+            )
+            if orm_original is None:
+                raise ValueError(
+                    f"Original timesheet entry {original_entry_id} not found"
+                )
+
+            submission_id = orm_original.submission_id
+            placeholder_id = uuid4()
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                TIMESHEET_WORKFLOW,
+                "timesheet",
+                submission_id,
+                current_state="approved",
+                action="initiate_correction",
+                actor_id=actor_id,
+                actor_role="",
+                amount=Decimal("0"),
+                currency="USD",
+                context={
+                    "original_entry_id": original_entry_id,
+                    "new_entry_id": new_entry.entry_id,
+                    "reason": reason,
+                },
+                event_id=placeholder_id,
+            )
+            if failure is not None:
+                correction = TimesheetCorrection(
+                    correction_id=placeholder_id,
+                    original_entry_id=original_entry_id,
+                    reversal_event_id=placeholder_id,
+                    new_entry_id=new_entry.entry_id,
+                    reason=reason,
+                    corrected_at=now,
+                    corrected_by=actor_id,
+                )
+                return correction, failure
+
+            # Step 1: Post reversal event
+            reversal_event_id = uuid4()
+            reversal_result = self._poster.post_event(
+                event_type="timesheet.corrected",
+                payload={
+                    "original_entry_id": str(original_entry_id),
+                    "reversal_event_id": str(reversal_event_id),
+                    "new_entry_id": str(new_entry.entry_id),
+                    "reason": reason,
+                    "corrected_by": str(actor_id),
+                    "original_hours": str(orm_original.hours),
+                    "new_hours": str(new_entry.hours),
+                    "original_charge_code": orm_original.charge_code,
+                    "new_charge_code": new_entry.charge_code,
+                },
+                effective_date=eff_date,
+                actor_id=actor_id,
+                amount=Decimal("0"),
+                currency="USD",
+                event_id=reversal_event_id,
+            )
+
+            if not reversal_result.is_success:
+                self._session.rollback()
+                correction = TimesheetCorrection(
+                    correction_id=uuid4(),
+                    original_entry_id=original_entry_id,
+                    reversal_event_id=reversal_event_id,
+                    new_entry_id=new_entry.entry_id,
+                    reason=reason,
+                    corrected_at=now,
+                    corrected_by=actor_id,
+                )
+                return correction, reversal_result
+
+            # Step 2: Persist new entry under the same submission
+            orm_new_entry = TimesheetEntryModel.from_dto(
+                new_entry,
+                submission_id=orm_original.submission_id,
+                created_by_id=actor_id,
+            )
+            self._session.add(orm_new_entry)
+
+            # Step 3: Record correction chain
+            correction = TimesheetCorrection(
+                correction_id=uuid4(),
+                original_entry_id=original_entry_id,
+                reversal_event_id=reversal_event_id,
+                new_entry_id=new_entry.entry_id,
+                reason=reason,
+                corrected_at=now,
+                corrected_by=actor_id,
+            )
+            orm_correction = TimesheetCorrectionModel.from_dto(
+                correction, created_by_id=actor_id,
+            )
+            self._session.add(orm_correction)
+
+            self._session.commit()
+
+            logger.info("timesheet_entry_corrected", extra={
+                "original_entry_id": str(original_entry_id),
+                "new_entry_id": str(new_entry.entry_id),
+                "reversal_event_id": str(reversal_event_id),
+                "reason": reason,
+            })
+
+            return correction, reversal_result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # DCAA Floor Check (D9)
+    # =========================================================================
+
+    def record_floor_check(
+        self,
+        floor_check: FloorCheck,
+        actor_id: UUID,
+    ) -> FloorCheckModel:
+        """
+        Record a DCAA floor check observation (D9).
+
+        Floor checks are append-only audit artifacts.  Once recorded they
+        must never be modified or deleted.
+
+        Posts a ``floor_check.completed`` event for the audit trail.
+
+        Args:
+            floor_check: The floor check observation to record.
+            actor_id: The person recording (usually the checker).
+
+        Returns:
+            The persisted FloorCheckModel.
+        """
+        try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PAYROLL_FLOOR_CHECK_WORKFLOW,
+                "floor_check",
+                floor_check.check_id,
+                current_state="draft",
+                action="post",
+                actor_id=actor_id,
+                actor_role="",
+                amount=Decimal("0"),
+                currency="USD",
+                context={
+                    "employee_id": floor_check.employee_id,
+                    "check_date": floor_check.check_date,
+                    "result": floor_check.result.value,
+                },
+                event_id=floor_check.check_id,
+            )
+            if failure is not None:
+                raise ValueError(
+                    failure.message or "Workflow guard not satisfied"
+                )
+
+            orm_check = FloorCheckModel.from_dto(
+                floor_check, created_by_id=actor_id,
+            )
+            self._session.add(orm_check)
+
+            self._poster.post_event(
+                event_type="floor_check.completed",
+                payload={
+                    "check_id": str(floor_check.check_id),
+                    "employee_id": str(floor_check.employee_id),
+                    "check_date": str(floor_check.check_date),
+                    "check_time": str(floor_check.check_time),
+                    "observed_location": floor_check.observed_location,
+                    "observed_activity": floor_check.observed_activity,
+                    "charged_contract_id": floor_check.charged_contract_id,
+                    "charged_hours": str(floor_check.charged_hours),
+                    "checker_id": str(floor_check.checker_id),
+                    "result": floor_check.result.value,
+                    "discrepancy_note": floor_check.discrepancy_note,
+                },
+                effective_date=floor_check.check_date,
+                actor_id=actor_id,
+                amount=Decimal("0"),
+                currency="USD",
+            )
+
+            self._session.commit()
+
+            logger.info("floor_check_recorded", extra={
+                "check_id": str(floor_check.check_id),
+                "employee_id": str(floor_check.employee_id),
+                "result": floor_check.result.value,
+            })
+
+            return orm_check
 
         except Exception:
             self._session.rollback()

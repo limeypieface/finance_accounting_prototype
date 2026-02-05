@@ -17,6 +17,9 @@ import pytest
 from finance_kernel.domain.approval import ApprovalDecision
 from finance_kernel.services.module_posting_service import ModulePostingStatus
 
+# Service-tier: use test session + module_role_resolver (no get_session/get_active_config).
+pytestmark = pytest.mark.service
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

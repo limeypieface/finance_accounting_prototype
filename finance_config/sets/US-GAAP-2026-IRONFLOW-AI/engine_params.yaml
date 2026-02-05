@@ -1,0 +1,29 @@
+engines:
+- engine_name: variance
+  version_constraint: 1.*
+  parameters:
+    tolerance_percent: 5.0
+    tolerance_amount: 10.0
+- engine_name: allocation
+  version_constraint: 1.*
+  parameters:
+    method: prorata
+    rounding_method: largest_remainder
+- engine_name: matching
+  version_constraint: 1.*
+  parameters:
+    tolerance_percent: 5.0
+    tolerance_amount: 10.0
+    match_strategy: three_way
+- engine_name: aging
+  version_constraint: 1.*
+  parameters:
+    buckets:
+    - 30
+    - 60
+    - 90
+    - 120
+- engine_name: tax
+  version_constraint: 1.*
+  parameters:
+    calculation_method: destination

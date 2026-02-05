@@ -27,15 +27,16 @@ Scripts, entrypoints, and ``tests/conftest.py`` all call
 
 
 def import_all_orm_models() -> None:
-    """Import every ``finance_modules.*.orm`` module to register ORM models.
+    """Import kernel models and every ``finance_modules.*.orm`` module to register ORM models.
 
-    Each ``orm.py`` file defines SQLAlchemy ORM models that inherit from
-    ``finance_kernel.db.base.TrackedBase`` (or ``Base``).  Importing them
-    ensures they appear in ``Base.metadata.tables`` so that
-    ``create_all()`` can create the corresponding database tables.
+    Kernel models (Contract, FiscalPeriod, Account, etc.) must be registered first
+    so ``Base.metadata`` includes their tables before ``create_all()`` runs.
+    Module ORM modules may reference kernel tables (e.g. FK to contracts.id).
 
     This function is idempotent -- repeated calls are harmless.
     """
+    # Kernel tables first (contracts, fiscal_periods, accounts, etc.)
+    import finance_kernel.models  # noqa: F401
     # fmt: off
     import finance_modules.ap.orm  # noqa: F401
     import finance_modules.ar.orm  # noqa: F401
@@ -57,6 +58,9 @@ def import_all_orm_models() -> None:
     import finance_services.orm  # noqa: F401
     import finance_ingestion.models  # noqa: F401  # ERP ingestion staging tables
     import finance_batch.models  # noqa: F401  # Batch processing tables
+    import finance_modules.payroll.dcaa_orm  # noqa: F401  # DCAA timesheet tables
+    import finance_modules.expense.dcaa_orm  # noqa: F401  # DCAA expense tables
+    import finance_modules.contracts.rate_orm  # noqa: F401  # DCAA rate control tables
     # fmt: on
 
 

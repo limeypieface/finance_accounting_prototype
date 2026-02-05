@@ -126,6 +126,10 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 
+# Upload folder: CSVs/JSONs for import (folder kept via upload/.gitkeep)
+upload/*
+!upload/.gitkeep
+
 # Duplicate numbered files (e.g. "file 2.py", "doc 3.md") — never track or merge
 * 2.*
 * 3.*

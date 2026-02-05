@@ -1,0 +1,7 @@
+controls:
+- name: positive_amount_required
+  applies_to: '*'
+  action: reject
+  expression: payload.amount <= 0
+  reason_code: INVALID_AMOUNT
+  message: Transaction amount must be positive

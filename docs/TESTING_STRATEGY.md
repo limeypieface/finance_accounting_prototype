@@ -2,396 +2,290 @@
 
 ## Overview
 
-Comprehensive testing for all 11 ERP modules ensuring correctness, consistency, and integration with the Finance Kernel.
+This document describes testing for **`tests/modules/`** — ERP module tests covering configuration, domain models, economic profiles, workflows, gap coverage, and module service integration. The **full test suite** (domain, engines, posting, audit, fuzzing, integration, services, etc.) is documented in **`docs/TEST_COMMANDS.md`**.
+
+**Scope:** `tests/modules/` — **~73 test files**, **~1,972 tests** (as of last update; run `pytest tests/modules/ --collect-only -q` for current count).
+
+**Database:** Pytest uses a separate DB (`finance_kernel_pytest` by default) so tests never drop or truncate interactive/scripts data. See **docs/TEST_COMMANDS.md** for setup (`createdb -U finance finance_kernel_pytest`).
+
+---
 
 ## Quick Start - Test Commands
 
 ```bash
-# Run ALL module tests (31 test files, 501 test functions)
+# Run ALL module tests (~73 files, ~1,972 tests)
 pytest tests/modules/ -v
 
-# Run specific test categories:
-pytest tests/modules/test_config_schemas.py -v        # Config validation (20 tests)
-pytest tests/modules/test_config_fuzzing.py -v        # Hypothesis fuzzing (17 tests)
-pytest tests/modules/test_config_validation.py -v     # Config validation rules (43 tests)
-pytest tests/modules/test_model_immutability.py -v    # Immutability (14 tests)
-pytest tests/modules/test_model_invariants.py -v      # Model invariants (27 tests)
-pytest tests/modules/test_profile_balance.py -v       # Profile balance (12 tests)
-pytest tests/modules/test_workflow_transitions.py -v  # Workflow validity (12 tests)
-pytest tests/modules/test_boundary_conditions.py -v   # Edge cases (35 tests)
-pytest tests/modules/test_workflow_adversarial.py -v  # Adversarial (19 tests)
-pytest tests/modules/test_guard_execution.py -v       # Guard execution (18 tests)
+# Run full project test suite (all categories)
+pytest tests/ -v --tb=short
 
-# Gap coverage tests (from TEST_GAP_ANALYSIS.md):
-pytest tests/modules/test_blocked_party.py -v         # Blocked party (25 tests)
-pytest tests/modules/test_asset_depreciation.py -v    # Asset depreciation (23 tests)
-pytest tests/modules/test_returns.py -v               # Returns/credit notes (28 tests)
-pytest tests/modules/test_payment_terms.py -v         # Payment terms (26 tests)
-pytest tests/modules/test_invoice_status.py -v        # Invoice status (27 tests)
-pytest tests/modules/test_cost_center.py -v           # Cost center propagation (23 tests)
-pytest tests/modules/test_landed_cost.py -v           # Landed cost allocation (15 tests)
-pytest tests/modules/test_bank_reconciliation.py -v   # Bank reconciliation (14 tests)
-pytest tests/modules/test_intercompany.py -v          # Intercompany journals (14 tests)
+# Core infrastructure tests
+pytest tests/modules/test_config_schemas.py tests/modules/test_config_validation.py tests/modules/test_config_fuzzing.py -v
+pytest tests/modules/test_model_immutability.py tests/modules/test_model_invariants.py -v
+pytest tests/modules/test_profile_balance.py tests/modules/test_guard_execution.py -v
+pytest tests/modules/test_workflow_transitions.py tests/modules/test_workflow_adversarial.py -v
+pytest tests/modules/test_boundary_conditions.py -v
 
-# Module service integration tests:
-pytest tests/modules/test_ap_service.py -v             # AP service (6 tests)
-pytest tests/modules/test_ar_service.py -v             # AR service (7 tests)
-pytest tests/modules/test_assets_service.py -v         # Assets service (7 tests)
-pytest tests/modules/test_cash_service.py -v           # Cash service (6 tests)
-pytest tests/modules/test_contracts_service.py -v      # Contracts service (10 tests)
-pytest tests/modules/test_expense_service.py -v        # Expense service (8 tests)
-pytest tests/modules/test_gl_service.py -v             # GL service (10 tests)
-pytest tests/modules/test_payroll_service.py -v        # Payroll service (8 tests)
-pytest tests/modules/test_procurement_service.py -v    # Procurement service (6 tests)
-pytest tests/modules/test_tax_service.py -v            # Tax service (6 tests)
-pytest tests/modules/test_wip_service.py -v            # WIP service (10 tests)
-pytest tests/modules/test_cross_module_flow.py -v      # Cross-module flow (5 tests)
+# Gap coverage tests (from GAP_ANALYSIS.md)
+pytest tests/modules/test_blocked_party.py tests/modules/test_asset_depreciation.py tests/modules/test_returns.py -v
+pytest tests/modules/test_payment_terms.py tests/modules/test_invoice_status.py tests/modules/test_cost_center.py -v
+pytest tests/modules/test_landed_cost.py tests/modules/test_bank_reconciliation.py tests/modules/test_intercompany.py -v
 
-# Run with coverage report
+# Module service integration tests
+pytest tests/modules/test_ap_service.py 
+pytest tests/modules/test_ar_service.py 
+pytest tests/modules/test_assets_service.py -v
+pytest tests/modules/test_cash_service.py tests/modules/test_contracts_service.py tests/modules/test_expense_service.py -v
+pytest tests/modules/test_gl_service.py tests/modules/test_payroll_service.py tests/modules/test_procurement_service.py -v
+pytest tests/modules/test_tax_service.py tests/modules/test_wip_service.py -v
+pytest tests/modules/test_credit_loss_service.py tests/modules/test_revenue_service.py tests/modules/test_lease_service.py -v
+pytest tests/modules/test_budget_service.py tests/modules/test_project_service.py tests/modules/test_intercompany_service.py -v
+pytest tests/modules/test_cross_module_flow.py -v
+
+# ORM tests (per-module persistence)
+pytest tests/modules/test_ap_orm.py tests/modules/test_ar_orm.py tests/modules/test_assets_orm.py -v
+
+# Run with coverage
 pytest tests/modules/ --cov=finance_modules --cov-report=html
 
 # Run only fast tests (exclude Hypothesis)
 pytest tests/modules/ -v --ignore=tests/modules/test_config_fuzzing.py
 
-# Run Hypothesis tests with more examples
-pytest tests/modules/test_config_fuzzing.py -v --hypothesis-seed=random
-
 # Run tests matching a pattern
-pytest tests/modules/ -v -k "decimal"           # All decimal-related tests
-pytest tests/modules/ -v -k "workflow"          # All workflow tests
-pytest tests/modules/ -v -k "AP"                # All AP module tests
+pytest tests/modules/ -v -k "decimal"
+pytest tests/modules/ -v -k "workflow"
+pytest tests/modules/ -v -k "AP"
 
-# Run tests with short output
-pytest tests/modules/ -q
-
-# Run tests and stop on first failure
+# Stop on first failure
 pytest tests/modules/ -x
 
-# Run tests in parallel (requires pytest-xdist)
+# Parallel (requires pytest-xdist)
 pytest tests/modules/ -n auto
 ```
 
-## Test Categories
+---
+
+## Full Test Suite (Beyond Modules)
+
+The project has **21+ test directories**. For commands by category (unit, posting, audit, fuzzing, integration, services, architecture, etc.), see **`docs/TEST_COMMANDS.md`**. Key areas:
+
+| Area | Directory | Focus |
+|------|-----------|--------|
+| Fuzzing | `tests/fuzzing/` | Hypothesis (amounts, idempotency, workflow executor, workflow posting E2E) |
+| Integration | `tests/integration/` | Approval + posting E2E, reversal E2E, module posting |
+| Services | `tests/services/` | Approval, workflow executor, reversal, lifecycle recon, etc. |
+| Domain | `tests/domain/` | Pure logic, schemas, profiles, economic link |
+| Engines | `tests/engines/` | Valuation, allocation, matching, approval engine |
+| Posting | `tests/posting/` | Balance, idempotency, period lock |
+| Audit | `tests/audit/` | Immutability, hash chain |
+| Architecture | `tests/architecture/` | Import boundaries, R20 mapping |
+
+---
+
+## Test Categories (tests/modules/)
 
 ### 1. Configuration Tests
 
-#### 1.1 Config Schema Tests (`test_config_schemas.py`) - 20 tests
-- **Default values**: All configs instantiate with sensible defaults
-- **Override behavior**: Defaults can be overridden at instantiation
-- **Dictionary loading**: `from_dict()` correctly handles nested objects
-- **Isolation**: Modifying one config doesn't affect others
+#### 1.1 Config Schema Tests (`test_config_schemas.py`)
+- Default values, override behavior, dictionary loading, isolation
 
-#### 1.2 Config Fuzzing Tests (`test_config_fuzzing.py`) - 17 tests
-- **Property-based testing**: Hypothesis generates random valid inputs
-- **Decimal precision**: Decimal values are preserved exactly
-- **Collection handling**: Lists and tuples work correctly
-- **Edge cases**: Empty strings, None values, high-precision decimals
+#### 1.2 Config Fuzzing Tests (`test_config_fuzzing.py`)
+- Hypothesis property-based testing; decimal precision, collections, edge cases
 
-#### 1.3 Config Validation Tests (`test_config_validation.py`) - 43 tests
-- **Validation rules**: All config fields enforce valid ranges and types
-- **Cross-field validation**: Dependent field constraints enforced
-- **Error messages**: Validation errors provide clear descriptions
+#### 1.3 Config Validation Tests (`test_config_validation.py`)
+- Validation rules, cross-field validation, error messages
 
 ### 2. Domain Model Tests
 
-#### 2.1 Model Immutability Tests (`test_model_immutability.py`) - 14 tests
-- **Frozen dataclasses**: All domain models raise `FrozenInstanceError` on mutation
-- **Hash stability**: Immutable objects have stable hashes
-- **Equality**: Same data produces equal objects
+#### 2.1 Model Immutability (`test_model_immutability.py`)
+- Frozen dataclasses, hash stability, equality
 
-#### 2.2 Model Invariants Tests (`test_model_invariants.py`) - 27 tests
-- **Required fields**: All required fields enforced at construction
-- **Value constraints**: Domain-specific value constraints validated
-- **Relationship integrity**: Cross-model references are consistent
+#### 2.2 Model Invariants (`test_model_invariants.py`)
+- Required fields, value constraints, relationship integrity
 
-#### 2.3 Boundary Condition Tests (`test_boundary_conditions.py`) - 35 tests
-- **Decimal precision**: 10-digit, zero, very small/large values
-- **Date boundaries**: Leap years, month ends, fiscal periods
-- **Collection boundaries**: Empty, single, large collections
-- **Enum exhaustive**: All enum values tested
-- **UUID handling**: Nil UUID, max UUID, uniqueness
-- **String handling**: Empty, long, unicode, special characters
+#### 2.3 Boundary Conditions (`test_boundary_conditions.py`)
+- Decimal precision, date boundaries, collections, enums, UUIDs, strings
 
 ### 3. Economic Profile Tests
 
-#### 3.1 Profile Balance Tests (`test_profile_balance.py`) - 12 tests
-- **Structural balance**: Every profile has at least one debit and one credit
-- **Event type uniqueness**: No duplicate event types across modules
-- **Role coverage**: All account roles are used
+#### 3.1 Profile Balance (`test_profile_balance.py`)
+- Structural balance, event type uniqueness, role coverage
 
-#### 3.2 Guard Execution Tests (`test_guard_execution.py`) - 18 tests
-- **Guard evaluation**: Guards fire correctly for matching conditions
-- **Guard precedence**: REJECT takes priority over BLOCK
-- **Bypass roles**: Authorized roles can bypass BLOCK guards
+#### 3.2 Guard Execution (`test_guard_execution.py`)
+- Guard evaluation, precedence (REJECT vs BLOCK), bypass roles
 
 ### 4. Workflow Tests
 
-#### 4.1 Workflow Transition Tests (`test_workflow_transitions.py`) - 12 tests
-- **Valid initial state**: Initial state exists in state list
-- **Valid transitions**: All from/to states exist
-- **Reachability**: No orphan states
-- **Terminal states**: At least one terminal state exists
-- **Naming conventions**: States and actions are lowercase
+#### 4.1 Workflow Transitions (`test_workflow_transitions.py`)
+- Initial state, from/to states, reachability, terminal states, naming
 
-#### 4.2 Workflow Adversarial Tests (`test_workflow_adversarial.py`) - 19 tests
-- **Invalid transitions**: Self-transitions, transitions from terminals
-- **Guard validation**: Guarded transitions have metadata
-- **Exhaustive paths**: All states reachable, happy path exists
-- **State machine completeness**: No dead ends, meaningful names
-- **Concurrency patterns**: Race condition detection
-- **Business rules**: Approval before execution, posting after validation
-- **Fuzzing**: Random action sequences
+#### 4.2 Workflow Adversarial (`test_workflow_adversarial.py`)
+- Invalid transitions, guard validation, exhaustive paths, concurrency patterns
 
 ### 5. Gap Coverage Tests
 
-Tests addressing all gaps identified in `docs/TEST_GAP_ANALYSIS.md`:
-
-#### 5.1 Blocked Party Tests (`test_blocked_party.py`) - 25 tests
-- **Supplier blocks**: Invoice/payment blocked for held suppliers
-- **Customer blocks**: Invoice blocked for credit-held customers
-- **Date-based holds**: Release date enforcement
-- **Hold release**: Operations allowed after hold expires
-
-#### 5.2 Asset Depreciation Tests (`test_asset_depreciation.py`) - 23 tests
-- **Straight-line**: Annual and monthly depreciation, pro-rata first year
-- **Double declining**: Accelerated depreciation with SL switch
-- **Written-down value**: Constant rate on declining balance
-- **Disposal**: Gain/loss on sale, scrap entries
-- **Revaluation**: Upward revaluation, impairment
-
-#### 5.3 Returns/Credit Note Tests (`test_returns.py`) - 28 tests
-- **Purchase returns**: GL reversal, price difference variance, partial returns
-- **Sales returns**: Credit note reversal, COGS reversal, restock
-
-#### 5.4 Payment Terms Tests (`test_payment_terms.py`) - 26 tests
-- **Term allocation**: FIFO allocation to due dates, partial payments
-- **Early payment discount**: 2/10 Net 30, discount expiry, tax impact
-- **Over-allocation**: Rejection of excess allocation
-
-#### 5.5 Invoice Status Tests (`test_invoice_status.py`) - 27 tests
-- **Payment status**: Full/partial payment status updates
-- **Cancellation**: Status reversion on payment cancel
-- **Credit notes**: Outstanding reduction
-
-#### 5.6 Cost Center Tests (`test_cost_center.py`) - 23 tests
-- **Propagation**: Invoice/payment CC flows to GL
-- **Defaults**: Account default CC applied when unspecified
-- **Querying**: Balance filtered by cost center
-
-#### 5.7 Landed Cost Tests (`test_landed_cost.py`) - 15 tests
-- **Allocation**: By value, quantity, weight
-- **GL entries**: Correct landed cost journalization
-- **Valuation**: Inventory rate includes landed costs
-
-#### 5.8 Bank Reconciliation Tests (`test_bank_reconciliation.py`) - 14 tests
-- **Matching**: Exact amount, reference, date tolerance
-- **Status**: Reconciled/unreconciled tracking
-
-#### 5.9 Intercompany Tests (`test_intercompany.py`) - 14 tests
-- **Mirror entries**: Auto-create pair in target company
-- **Cancellation**: Cancel both entries together
-- **Currency**: Handle different functional currencies
+From `docs/GAP_ANALYSIS.md`: blocked party, asset depreciation, returns/credit notes, payment terms, invoice status, cost center, landed cost, bank reconciliation, intercompany (see doc for details).
 
 ### 6. Module Service Integration Tests
 
-End-to-end tests for each module's service layer, verifying that module services correctly orchestrate posting through `ModulePostingService` and the kernel pipeline.
+End-to-end service layer tests: AP, AR, Assets, Cash, Contracts, Expense, GL, Payroll, Procurement, Tax, WIP, Credit Loss, Revenue, Lease, Budget, Project, Intercompany service, and cross-module flow. Each `test_*_service.py` file includes both core posting integration and per-module logic (e.g. payment runs, dunning, credit management, multicurrency translation, batch operations) — one service test file per module.
 
-#### 6.1 AP Service Tests (`test_ap_service.py`) - 6 tests
-- **Invoice posting**: AP invoice creates correct journal entries
-- **Payment posting**: AP payment settles outstanding invoices
+**Actor required (G14):** Any test that posts MUST have a valid actor. Use the module’s service fixture (e.g. `ap_service`), which depends on `party_service` and `test_actor_party`, and pass `actor_id=test_actor_id` in posting calls. Without a Party for the actor, posting returns `REJECTED` or `INVALID_ACTOR`. See **Actor required for posting tests** in `docs/TEST_COMMANDS.md`.
 
-#### 6.2 AR Service Tests (`test_ar_service.py`) - 7 tests
-- **Invoice posting**: AR invoice creates receivable entries
-- **Receipt posting**: AR receipt applies against open invoices
+### 7. ORM Tests
 
-#### 6.3 Assets Service Tests (`test_assets_service.py`) - 7 tests
-- **Acquisition**: Asset purchase creates capitalization entries
-- **Depreciation**: Periodic depreciation posts correctly
+Per-module persistence: `test_*_orm.py` for AP, AR, Assets, Budget, Cash, Contracts, Expense, GL, Inventory, Intercompany, Lease, Payroll, Procurement, Revenue, Tax, WIP, Period Close, Project.
 
-#### 6.4 Cash Service Tests (`test_cash_service.py`) - 6 tests
-- **Deposits**: Bank deposit creates correct entries
-- **Disbursements**: Cash disbursement posts correctly
+### 8. Helpers Tests
 
-#### 6.5 Contracts Service Tests (`test_contracts_service.py`) - 10 tests
-- **Billing**: Contract billing creates revenue entries
-- **DCAA compliance**: Cost-plus contract posting with DCAA rules
+`test_expense_helpers.py`, `test_inventory_helpers.py`.
 
-#### 6.6 Expense Service Tests (`test_expense_service.py`) - 8 tests
-- **Expense reports**: Expense submission creates GL entries
-- **Reimbursement**: Employee reimbursement posting
-
-#### 6.7 GL Service Tests (`test_gl_service.py`) - 10 tests
-- **Manual journals**: Direct GL entry posting
-- **Adjustments**: Period-end adjustment entries
-
-#### 6.8 Payroll Service Tests (`test_payroll_service.py`) - 8 tests
-- **Payroll runs**: Payroll posting creates salary/tax entries
-- **Accruals**: Payroll accrual entries
-
-#### 6.9 Procurement Service Tests (`test_procurement_service.py`) - 6 tests
-- **PO receipt**: Goods receipt creates inventory entries
-- **Three-way match**: Invoice/PO/receipt matching
-
-#### 6.10 Tax Service Tests (`test_tax_service.py`) - 6 tests
-- **Tax collection**: Sales tax posting
-- **Tax remittance**: Tax payment entries
-
-#### 6.11 WIP Service Tests (`test_wip_service.py`) - 10 tests
-- **Labor capture**: WIP labor posting
-- **Overhead allocation**: WIP overhead distribution
-
-#### 6.12 Cross-Module Flow Tests (`test_cross_module_flow.py`) - 5 tests
-- **End-to-end flows**: Multi-module transaction chains (e.g., procurement -> AP -> cash)
-- **Inter-module consistency**: Balances reconcile across module boundaries
+---
 
 ## Test File Structure
 
 ```
 tests/modules/
 ├── __init__.py
-├── conftest.py                      # Shared fixtures
-├── TESTING_STRATEGY.md              # This document
+├── conftest.py
 │
-│ # Core infrastructure tests
-├── test_config_schemas.py           # Config defaults & loading (20 tests)
-├── test_config_fuzzing.py           # Hypothesis property tests (17 tests)
-├── test_config_validation.py        # Config validation rules (43 tests)
-├── test_model_immutability.py       # Frozen dataclass tests (14 tests)
-├── test_model_invariants.py         # Model invariant tests (27 tests)
-├── test_profile_balance.py          # Economic profile balance (12 tests)
-├── test_workflow_transitions.py     # State machine validity (12 tests)
-├── test_boundary_conditions.py      # Edge cases (35 tests)
-├── test_workflow_adversarial.py     # Adversarial workflow tests (19 tests)
-├── test_guard_execution.py          # Guard execution tests (18 tests)
+├── # Core infrastructure
+├── test_config_schemas.py
+├── test_config_fuzzing.py
+├── test_config_validation.py
+├── test_model_immutability.py
+├── test_model_invariants.py
+├── test_profile_balance.py
+├── test_guard_execution.py
+├── test_workflow_transitions.py
+├── test_workflow_adversarial.py
+├── test_boundary_conditions.py
 │
-│ # Gap coverage tests
-├── test_blocked_party.py            # Blocked supplier/customer (25 tests)
-├── test_asset_depreciation.py       # Asset depreciation methods (23 tests)
-├── test_returns.py                  # Returns/credit notes GL (28 tests)
-├── test_payment_terms.py            # Payment term allocation (26 tests)
-├── test_invoice_status.py           # Invoice status on payment (27 tests)
-├── test_cost_center.py              # Cost center propagation (23 tests)
-├── test_landed_cost.py              # Landed cost allocation (15 tests)
-├── test_bank_reconciliation.py      # Bank reconciliation matching (14 tests)
-├── test_intercompany.py             # Intercompany journals (14 tests)
+├── # Gap coverage
+├── test_blocked_party.py
+├── test_asset_depreciation.py
+├── test_returns.py
+├── test_payment_terms.py
+├── test_invoice_status.py
+├── test_cost_center.py
+├── test_landed_cost.py
+├── test_bank_reconciliation.py
+├── test_intercompany.py
 │
-│ # Module service integration tests
-├── test_ap_service.py               # AP module service tests (6 tests)
-├── test_ar_service.py               # AR module service tests (7 tests)
-├── test_assets_service.py           # Assets module service tests (7 tests)
-├── test_cash_service.py             # Cash module service tests (6 tests)
-├── test_contracts_service.py        # Contracts module service tests (10 tests)
-├── test_expense_service.py          # Expense module service tests (8 tests)
-├── test_gl_service.py               # GL module service tests (10 tests)
-├── test_payroll_service.py          # Payroll module service tests (8 tests)
-├── test_procurement_service.py      # Procurement module service tests (6 tests)
-├── test_tax_service.py              # Tax module service tests (6 tests)
-├── test_wip_service.py              # WIP module service tests (10 tests)
-└── test_cross_module_flow.py        # Cross-module flow tests (5 tests)
+├── # Module service integration
+├── test_ap_service.py
+├── test_ar_service.py
+├── test_assets_service.py
+├── test_cash_service.py
+├── test_contracts_service.py
+├── test_expense_service.py
+├── test_gl_service.py
+├── test_payroll_service.py
+├── test_procurement_service.py
+├── test_tax_service.py
+├── test_wip_service.py
+├── test_credit_loss_service.py
+├── test_revenue_service.py
+├── test_lease_service.py
+├── test_budget_service.py
+├── test_project_service.py
+├── test_intercompany_service.py
+├── test_cross_module_flow.py
+│
+├── # ORM (per-module persistence)
+├── test_ap_orm.py
+├── test_ar_orm.py
+├── test_assets_orm.py
+├── test_budget_orm.py
+├── test_cash_orm.py
+├── test_contracts_orm.py
+├── test_expense_orm.py
+├── test_gl_orm.py
+├── test_inventory_orm.py
+├── test_intercompany_orm.py
+├── test_lease_orm.py
+├── test_payroll_orm.py
+├── test_procurement_orm.py
+├── test_revenue_orm.py
+├── test_tax_orm.py
+├── test_wip_orm.py
+├── test_period_close_orm.py
+├── test_project_orm.py
+│
+├── # Helpers
+├── test_expense_helpers.py
+├── test_inventory_helpers.py
 ```
+
+*(This document lives in `docs/TESTING_STRATEGY.md`.)*
+
+---
 
 ## Test Results Summary
 
-| Test File | Tests | Classes |
-|-----------|-------|---------|
-| test_config_schemas.py | 20 | 4 |
-| test_config_fuzzing.py | 17 | 7 |
-| test_config_validation.py | 43 | 10 |
-| test_model_immutability.py | 14 | 11 |
-| test_model_invariants.py | 27 | 9 |
-| test_profile_balance.py | 12 | 12 |
-| test_workflow_transitions.py | 12 | 8 |
-| test_boundary_conditions.py | 35 | 8 |
-| test_workflow_adversarial.py | 19 | 7 |
-| test_guard_execution.py | 18 | 10 |
-| test_blocked_party.py | 25 | 7 |
-| test_asset_depreciation.py | 23 | 7 |
-| test_returns.py | 28 | 8 |
-| test_payment_terms.py | 26 | 8 |
-| test_invoice_status.py | 27 | 9 |
-| test_cost_center.py | 23 | 8 |
-| test_landed_cost.py | 15 | 7 |
-| test_bank_reconciliation.py | 14 | 5 |
-| test_intercompany.py | 14 | 7 |
-| test_ap_service.py | 6 | 2 |
-| test_ar_service.py | 7 | 2 |
-| test_assets_service.py | 7 | 2 |
-| test_cash_service.py | 6 | 2 |
-| test_contracts_service.py | 10 | 2 |
-| test_expense_service.py | 8 | 2 |
-| test_gl_service.py | 10 | 2 |
-| test_payroll_service.py | 8 | 2 |
-| test_procurement_service.py | 6 | 2 |
-| test_tax_service.py | 6 | 2 |
-| test_wip_service.py | 10 | 2 |
-| test_cross_module_flow.py | 5 | 3 |
-| **Total** | **501** | **181** |
+| Metric | Value |
+|--------|--------|
+| Test files | ~73 |
+| Tests collected | ~1,972 |
+| Categories | Config, models, profiles, workflows, gap, services, ORM, helpers |
 
-Skipped tests are for known special cases:
-- AR Receipt circular workflow
-- Period Close pre-initial state
-- Dynamic profiles (labor_distribution, recon_adjustment, fx_revaluation)
+For exact counts: `pytest tests/modules/ --collect-only -q`.
+
+Skipped tests (known special cases): AR Receipt circular workflow; Period Close pre-initial state; dynamic profiles (e.g. labor_distribution, recon_adjustment, fx_revaluation).
+
+---
 
 ## Dependencies
 
 ```bash
-# Required
 pip install pytest
-
-# For Hypothesis fuzzing tests
-pip install hypothesis
-
-# For coverage reports
-pip install pytest-cov
-
-# For parallel execution
-pip install pytest-xdist
+pip install hypothesis    # For config fuzzing and property-based tests
+pip install pytest-cov   # For coverage
+pip install pytest-xdist # For parallel execution
 ```
+
+---
 
 ## Coverage Goals
 
-| Category | Target | Current |
-|----------|--------|---------|
-| Config schemas | 100% | 100% |
-| Model definitions | 100% | 100% |
-| Economic profiles | 100% | 100% |
-| Workflows | 100% | 100% |
-| Blocked party | 100% | 100% |
-| Asset depreciation | 100% | 100% |
-| Returns/credit notes | 100% | 100% |
-| Payment terms | 100% | 100% |
+| Category | Target |
+|----------|--------|
+| Config schemas | 100% |
+| Model definitions | 100% |
+| Economic profiles | 100% |
+| Workflows | 100% |
+| Gap coverage (blocked party, depreciation, returns, etc.) | 100% |
+
+---
 
 ## Invariants Under Test
 
-These invariants are verified across all modules:
+1. **I1: Immutability** — Domain models immutable
+2. **I2: Balance** — Journal entries balance (debits = credits)
+3. **I3: State validity** — State transitions valid
+4. **I4: Config isolation** — No config leakage between instances
+5. **I5: Event uniqueness** — Event types unique across system
+6. **I6: No orphan states** — All workflow states reachable
+7. **I7: Decimal precision** — Financial amounts preserve precision
+8. **I8: Guard completeness** — Multiple paths from same state have guards
 
-1. **I1: Immutability** - All domain models are immutable
-2. **I2: Balance** - All journal entries balance (debits = credits)
-3. **I3: State validity** - All state transitions are valid
-4. **I4: Config isolation** - Config changes don't leak between instances
-5. **I5: Event uniqueness** - All event types are unique across system
-6. **I6: No orphan states** - All workflow states are reachable
-7. **I7: Decimal precision** - Financial amounts preserve 10-digit precision
-8. **I8: Guard completeness** - Multiple paths from same state have guards
+---
 
 ## Adding Tests for New Modules
 
-When adding a new module:
+1. Add config tests to `test_config_schemas.py`, `test_config_validation.py`, `test_config_fuzzing.py`
+2. Add model tests to `test_model_immutability.py`, `test_model_invariants.py`
+3. Add profile tests to `test_profile_balance.py`
+4. Add workflow tests to `test_workflow_transitions.py`, `test_workflow_adversarial.py` (ALL_WORKFLOWS)
+5. Add boundary tests to `test_boundary_conditions.py` as needed
+6. Add guard tests to `test_guard_execution.py`
+7. Add gap tests if covered by GAP_ANALYSIS (e.g. new `test_<topic>.py`)
+8. Add service test `test_<module>_service.py` (include any per-module logic here)
+9. Add ORM test `test_<module>_orm.py` as needed
 
-1. Add config tests to `test_config_schemas.py`
-2. Add config fuzzing to `test_config_fuzzing.py`
-3. Add config validation to `test_config_validation.py`
-4. Add model immutability tests to `test_model_immutability.py`
-5. Add model invariant tests to `test_model_invariants.py`
-6. Add profile balance tests to `test_profile_balance.py`
-7. Add workflow tests to `test_workflow_transitions.py`
-8. Add workflow to `test_workflow_adversarial.py` ALL_WORKFLOWS list
-9. Add boundary tests to `test_boundary_conditions.py` as needed
-10. Add guard execution tests to `test_guard_execution.py`
+---
 
 ## CI/CD Integration
 
-Tests run on every PR:
-- Unit tests: Always run (~1 second)
-- Hypothesis tests: Run with reduced examples for speed
-- Full Hypothesis: Run on nightly builds with max_examples=1000
+- Unit/infrastructure tests: run on every PR
+- Hypothesis tests: reduced examples for speed; full runs (e.g. max_examples=1000) on nightly if configured

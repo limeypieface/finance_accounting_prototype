@@ -865,12 +865,17 @@ class TestLandedCostIntegration:
     """Real integration tests using InventoryService for receive + adjust."""
 
     @pytest.fixture
-    def inventory_service(self, session, module_role_resolver, deterministic_clock, register_modules):
+    def inventory_service(
+        self, session, module_role_resolver, deterministic_clock, register_modules, workflow_executor,
+        party_service, test_actor_party,
+    ):
         from finance_modules.inventory.service import InventoryService
         return InventoryService(
             session=session,
             role_resolver=module_role_resolver,
+            workflow_executor=workflow_executor,
             clock=deterministic_clock,
+            party_service=party_service,
         )
 
     def test_receive_inventory_posts(

@@ -25,12 +25,17 @@ from tests.modules.conftest import TEST_EMPLOYEE_ID, TEST_EXPENSE_REPORT_ID
 
 
 @pytest.fixture
-def expense_service(session, module_role_resolver, deterministic_clock, register_modules):
-    """Provide ExpenseService for integration testing."""
+def expense_service(
+    session, module_role_resolver, deterministic_clock, register_modules, workflow_executor,
+    party_service, test_actor_party,
+):
+    """Provide ExpenseService for integration testing. party_service + test_actor_party for G14."""
     return ExpenseService(
         session=session,
         role_resolver=module_role_resolver,
+        workflow_executor=workflow_executor,
         clock=deterministic_clock,
+        party_service=party_service,
     )
 
 
@@ -50,6 +55,7 @@ class TestExpenseServiceStructure:
         params = list(sig.parameters.keys())
         assert "session" in params
         assert "role_resolver" in params
+        assert "workflow_executor" in params
         assert "clock" in params
 
     def test_has_public_methods(self):

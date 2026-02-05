@@ -42,6 +42,29 @@ def _all_keys(rows: list[dict[str, Any]]) -> tuple[str, ...]:
     return tuple(sorted(seen))
 
 
+def _normalize_row_keys(item: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy with string keys lowercased so mappings (e.g. 'name', 'code') match regardless of JSON casing."""
+    return {str(k).strip().lower(): v for k, v in item.items() if isinstance(k, str)}
+
+
+def _has_required_keys(row: dict[str, Any], required_keys: list[str]) -> bool:
+    """True if row has all required keys with valid values. Used to skip incomplete rows (e.g. journal without date/lines)."""
+    for key in required_keys:
+        val = row.get(key)
+        if val is None:
+            return False
+        if key == "date":
+            # Mapping expects date as string (e.g. MM/DD/YYYY). Skip rows with Excel serial or other non-string.
+            if not isinstance(val, str) or not val.strip():
+                return False
+        elif key == "lines":
+            if not isinstance(val, list) or len(val) == 0:
+                return False
+        elif isinstance(val, str) and not val.strip():
+            return False
+    return True
+
+
 class JsonSourceAdapter:
     """Read JSON array or JSON Lines files as one dict per record."""
 
@@ -51,12 +74,19 @@ class JsonSourceAdapter:
         encoding = options.get("encoding", "utf-8")
 
         if fmt == "jsonl":
+            required_keys = options.get("required_keys")
             with source_path.open("r", encoding=encoding) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
-                    yield json.loads(line)
+                    item = json.loads(line)
+                    if not isinstance(item, dict):
+                        continue
+                    row = _normalize_row_keys(item)
+                    if required_keys and not _has_required_keys(row, required_keys):
+                        continue
+                    yield row
             return
 
         with source_path.open("r", encoding=encoding) as f:
@@ -64,9 +94,15 @@ class JsonSourceAdapter:
         root = _get_nested(data, json_path) if json_path else data
         if not isinstance(root, list):
             return
+        required_keys = options.get("required_keys")
         for item in root:
-            if isinstance(item, dict):
-                yield item
+            if not isinstance(item, dict):
+                continue
+            row = _normalize_row_keys(item)
+            if required_keys:
+                if not _has_required_keys(row, required_keys):
+                    continue
+            yield row
 
     def probe(self, source_path: Path, options: dict[str, Any]) -> SourceProbe:
         fmt = options.get("format", "array")

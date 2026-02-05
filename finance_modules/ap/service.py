@@ -25,6 +25,16 @@ Invariants enforced
 * L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
 * L5  -- Atomicity: link creation and journal posting share a single
           transaction (``auto_commit=False``).
+* R25 -- Kernel primitives only: Money, ArtifactRef, EconomicLink from
+          finance_kernel; no parallel financial types in this module.
+* R26 -- Journal + link graph are the system of record; AP ORM (e.g.
+          APInvoiceModel) is an operational projection, persisted in the
+          same transaction as posting.
+* R27 -- Matching/variance treatment and ledger impact are defined by
+          kernel policy (guards, profiles); this module does not branch
+          on match result to choose accounts.
+* Workflow executor required; every financial action calls
+  ``execute_transition`` (guards enforced, no bypass).
 
 Failure modes
 -------------
@@ -41,7 +51,11 @@ entries feed the kernel audit chain (R11).
 
 Usage::
 
-    service = APService(session, role_resolver, clock)
+    # workflow_executor is required — guards are always enforced (no bypass).
+    service = APService(
+        session, role_resolver, orchestrator.workflow_executor,
+        clock=clock,
+    )
     result = service.record_invoice(
         invoice_id=uuid4(), vendor_id=uuid4(),
         amount=Decimal("5000.00"),
@@ -54,7 +68,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -70,9 +84,15 @@ from finance_engines.matching import (
     MatchResult,
     MatchTolerance,
     MatchType,
+    ToleranceType,
 )
 from finance_kernel.domain.clock import Clock, SystemClock
-from finance_kernel.domain.economic_link import ArtifactRef, ArtifactType
+from finance_kernel.domain.economic_link import (
+    ArtifactRef,
+    ArtifactType,
+    EconomicLink,
+    LinkType,
+)
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
@@ -81,6 +101,18 @@ from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_kernel.services.party_service import PartyService
+from finance_modules._posting_helpers import commit_or_rollback, guard_failure_result, run_workflow_guard
+from finance_modules.ap.config import APConfig
+from finance_modules.ap.workflows import (
+    AP_ACCRUAL_REVERSAL_WORKFLOW,
+    AP_ACCRUAL_WORKFLOW,
+    AP_INVENTORY_INVOICE_WORKFLOW,
+    AP_PREPAYMENT_APPLICATION_WORKFLOW,
+    AP_PREPAYMENT_WORKFLOW,
+    INVOICE_WORKFLOW,
+    PAYMENT_WORKFLOW,
 )
 from finance_modules.ap.models import (
     HoldStatus,
@@ -96,6 +128,7 @@ from finance_modules.ap.orm import (
     APVendorHoldModel,
 )
 from finance_services.reconciliation_service import ReconciliationManager
+from finance_services.workflow_executor import WorkflowExecutor
 
 logger = get_logger("modules.ap.service")
 
@@ -139,17 +172,25 @@ class APService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
+        ap_config: APConfig | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor  # Required: guards always enforced
+        self._party_service = party_service
+        self._ap_config = ap_config
 
-        # Kernel posting (auto_commit=False -- we own the boundary)
+        # Kernel posting (auto_commit=False -- we own the boundary).
+        # G14: pass party_service so actor_id is validated at posting boundary.
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
         # Stateful engines (share session for atomicity)
@@ -160,6 +201,16 @@ class APService:
         self._allocation = AllocationEngine()
         self._matching = MatchingEngine()
         self._aging = AgingCalculator()
+
+    def _party_snapshot_for_payload(self, vendor_id: UUID) -> dict:
+        """Build party dict for profile guards (party.is_frozen). MeaningBuilder evaluates against payload."""
+        if self._party_service is None:
+            return {"is_frozen": False}
+        try:
+            info = self._party_service.get_by_id(vendor_id)
+            return {"is_frozen": info.is_frozen}
+        except Exception:  # PartyNotFoundError or any lookup failure
+            return {"is_frozen": False}
 
     # =========================================================================
     # Invoices
@@ -198,12 +249,13 @@ class APService:
             Exception: re-raised after rollback for unexpected failures.
         """
         try:
-            # Build payload
+            # Build payload (party for profile guards: party.is_frozen)
             payload: dict = {
                 "vendor_id": str(vendor_id),
                 "invoice_number": invoice_number,
                 "gross_amount": str(amount),
                 "due_date": due_date.isoformat() if due_date else None,
+                "party": self._party_snapshot_for_payload(vendor_id),
             }
             if tax_amount is not None:
                 payload["tax_amount"] = str(tax_amount)
@@ -218,6 +270,22 @@ class APService:
                 "amount": str(amount),
                 "has_po": po_number is not None,
             })
+
+            # Workflow: draft → pending_match (submit) before posting
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                INVOICE_WORKFLOW,
+                "ap_invoice",
+                invoice_id,
+                current_state="draft",
+                action="submit",
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
 
             # Kernel: post journal entry
             result = self._poster.post_event(
@@ -245,13 +313,11 @@ class APService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_invoice)
-                self._session.commit()
                 logger.info("ap_record_invoice_committed", extra={
                     "invoice_id": str(invoice_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -261,6 +327,90 @@ class APService:
     # =========================================================================
     # Payments
     # =========================================================================
+
+    def submit_payment(
+        self,
+        payment_id: UUID,
+        amount: Decimal,
+        bank_balance: Decimal,
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> ModulePostingResult:
+        """
+        Execute payment transition draft → pending_approval (guard: sufficient_funds).
+
+        Runs execute_transition(ap_payment, submit). Does not post; use approve_payment
+        then record_payment to complete the flow.
+        """
+        try:
+            transition_result = self._workflow_executor.execute_transition(
+                workflow=PAYMENT_WORKFLOW,
+                entity_type="ap_payment",
+                entity_id=payment_id,
+                current_state="draft",
+                action="submit",
+                actor_id=actor_id,
+                actor_role="",
+                amount=amount,
+                currency=currency,
+                context={
+                    "bank_balance": bank_balance,
+                    "payment_amount": amount,
+                },
+            )
+            failure = guard_failure_result(transition_result)
+            if failure is not None:
+                return failure
+            return ModulePostingResult(
+                status=ModulePostingStatus.TRANSITION_APPLIED,
+                event_id=uuid4(),
+                message=transition_result.reason or "Transition applied",
+            )
+        except Exception:
+            self._session.rollback()
+            raise
+
+    def approve_payment(
+        self,
+        payment_id: UUID,
+        actor_id: UUID,
+        actor_role: str,
+        amount: Decimal,
+        currency: str = "USD",
+        approval_request_id: UUID | None = None,
+        invoice_status: str | None = None,
+    ) -> ModulePostingResult:
+        """
+        Execute payment transition pending_approval → approved (guard: payment_approved).
+
+        Runs execute_transition(ap_payment, approve). Pass invoice_status (e.g. "approved")
+        or it defaults to "approved" for guard.
+        """
+        try:
+            transition_result = self._workflow_executor.execute_transition(
+                workflow=PAYMENT_WORKFLOW,
+                entity_type="ap_payment",
+                entity_id=payment_id,
+                current_state="pending_approval",
+                action="approve",
+                actor_id=actor_id,
+                actor_role=actor_role,
+                amount=amount,
+                currency=currency,
+                context={"invoice_status": invoice_status or "approved"},
+                approval_request_id=approval_request_id,
+            )
+            failure = guard_failure_result(transition_result)
+            if failure is not None:
+                return failure
+            return ModulePostingResult(
+                status=ModulePostingStatus.TRANSITION_APPLIED,
+                event_id=uuid4(),
+                message=transition_result.reason or "Transition applied",
+            )
+        except Exception:
+            self._session.rollback()
+            raise
 
     def record_payment(
         self,
@@ -296,6 +446,24 @@ class APService:
             invoice_ref = ArtifactRef.invoice(invoice_id)
             payment_ref = ArtifactRef.payment(payment_id)
 
+            # Guard: payment "release" (approved → submitted) requires payment_approved
+            inv_row = self._session.get(APInvoiceModel, invoice_id)
+            invoice_status = inv_row.status if inv_row else "unknown"
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                PAYMENT_WORKFLOW,
+                "ap_payment",
+                payment_id,
+                current_state="approved",
+                action="release",
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"invoice_status": invoice_status},
+            )
+            if failure is not None:
+                return failure
+
             # Engine: create payment application link
             payment_money = Money.of(amount, currency)
             invoice_original = Money.of(amount, currency)  # caller should supply full amount
@@ -326,6 +494,7 @@ class APService:
                 "payment_method": payment_method,
                 "reference": reference,
                 "bank_account_id": str(bank_account_id) if bank_account_id else None,
+                "party": self._party_snapshot_for_payload(vendor_id) if vendor_id else {"is_frozen": False},
             }
             if has_discount:
                 payload["discount_amount"] = str(discount_amount)
@@ -360,14 +529,12 @@ class APService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_payment)
-                self._session.commit()
                 logger.info("ap_record_payment_committed", extra={
                     "payment_id": str(payment_id),
                     "event_type": event_type,
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -407,6 +574,13 @@ class APService:
             Exception: re-raised after rollback for unexpected failures.
         """
         try:
+            # Default tolerance from APConfig when not passed (wire config into guard)
+            if tolerance is None and self._ap_config is not None:
+                tolerance = MatchTolerance(
+                    amount_tolerance=self._ap_config.match_tolerance.price_variance_percent * 100,
+                    amount_tolerance_type=ToleranceType.PERCENT,
+                )
+
             invoice_ref = ArtifactRef.invoice(invoice_id)
             po_ref = ArtifactRef.purchase_order(po_id)
 
@@ -439,23 +613,57 @@ class APService:
                 tolerance=tolerance,
             )
 
+            # Guard: workflow transition "match" must pass (match_within_tolerance) before links/post
+            inv_amt = invoice_amount if invoice_amount is not None else match_result.matched_amount.amount
+            po_amt = po_amount if po_amount is not None else match_result.matched_amount.amount
+            tol_pct = (
+                tolerance.amount_tolerance
+                if tolerance and tolerance.amount_tolerance_type == ToleranceType.PERCENT
+                else Decimal("5")
+            )
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                INVOICE_WORKFLOW,
+                "ap_invoice",
+                invoice_id,
+                current_state="pending_match",
+                action="match",
+                actor_id=actor_id,
+                amount=match_result.matched_amount.amount,
+                currency=currency,
+                context={
+                    "invoice_amount": inv_amt,
+                    "po_amount": po_amt,
+                    "tolerance_percent": tol_pct,
+                },
+            )
+            if failure is not None:
+                return failure
+
             # Engine: establish FULFILLED_BY links in the graph
+            now = self._clock.now()
             for receipt_id in receipt_ids:
                 receipt_ref = ArtifactRef.receipt(receipt_id)
                 # PO -> Receipt link
-                self._link_graph.establish_link_simple(
+                po_receipt_link = EconomicLink(
+                    link_id=uuid4(),
+                    link_type=LinkType.FULFILLED_BY,
                     parent_ref=po_ref,
                     child_ref=receipt_ref,
-                    link_type="fulfilled_by",
                     creating_event_id=invoice_id,
+                    created_at=now,
                 )
+                self._link_graph.establish_link(po_receipt_link, allow_duplicate=True)
                 # Receipt -> Invoice link
-                self._link_graph.establish_link_simple(
+                receipt_invoice_link = EconomicLink(
+                    link_id=uuid4(),
+                    link_type=LinkType.FULFILLED_BY,
                     parent_ref=receipt_ref,
                     child_ref=invoice_ref,
-                    link_type="fulfilled_by",
                     creating_event_id=invoice_id,
+                    created_at=now,
                 )
+                self._link_graph.establish_link(receipt_invoice_link, allow_duplicate=True)
 
             logger.info("ap_match_invoice_to_po_linked", extra={
                 "invoice_id": str(invoice_id),
@@ -465,7 +673,9 @@ class APService:
                 "has_variance": match_result.has_variance,
             })
 
-            # Build payload
+            # Build payload (party for profile guards: party.is_frozen; vendor from invoice row)
+            inv_row = self._session.get(APInvoiceModel, invoice_id)
+            vendor_id_for_party = inv_row.vendor_id if inv_row else None
             payload: dict = {
                 "invoice_id": str(invoice_id),
                 "po_number": str(po_id),
@@ -473,6 +683,7 @@ class APService:
                 "match_status": match_result.status.value,
                 "matched_amount": str(match_result.matched_amount.amount),
                 "has_variance": match_result.has_variance,
+                "party": self._party_snapshot_for_payload(vendor_id_for_party) if vendor_id_for_party else {"is_frozen": False},
             }
 
             # Kernel: post journal entry
@@ -485,12 +696,51 @@ class APService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
+        except Exception:
+            self._session.rollback()
+            raise
+
+    def approve_invoice(
+        self,
+        invoice_id: UUID,
+        actor_id: UUID,
+        actor_role: str,
+        amount: Decimal,
+        currency: str = "USD",
+        approval_request_id: UUID | None = None,
+    ) -> ModulePostingResult:
+        """
+        Execute invoice transition pending_approval → approved (guard + approval gate).
+
+        Runs execute_transition(ap_invoice, approve). Guard: approval_threshold_met
+        (delegated to approval engine). Returns GUARD_REJECTED if guard fails,
+        GUARD_BLOCKED if approval required.
+        """
+        try:
+            transition_result = self._workflow_executor.execute_transition(
+                workflow=INVOICE_WORKFLOW,
+                entity_type="ap_invoice",
+                entity_id=invoice_id,
+                current_state="pending_approval",
+                action="approve",
+                actor_id=actor_id,
+                actor_role=actor_role,
+                amount=amount,
+                currency=currency,
+                context={},
+                approval_request_id=approval_request_id,
+            )
+            failure = guard_failure_result(transition_result)
+            if failure is not None:
+                return failure
+            return ModulePostingResult(
+                status=ModulePostingStatus.TRANSITION_APPLIED,
+                event_id=uuid4(),
+                message=transition_result.reason or "Transition applied",
+            )
         except Exception:
             self._session.rollback()
             raise
@@ -596,6 +846,24 @@ class APService:
                 "reason": reason,
             })
 
+            # Workflow: current_state → cancelled before posting
+            existing = self._session.get(APInvoiceModel, invoice_id)
+            current_state = existing.status if existing is not None else "draft"
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                INVOICE_WORKFLOW,
+                "ap_invoice",
+                invoice_id,
+                current_state=current_state,
+                action="cancel",
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"reason": reason},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ap.invoice_cancelled",
                 payload=payload,
@@ -606,16 +874,13 @@ class APService:
             )
 
             if result.is_success:
-                existing = self._session.get(APInvoiceModel, invoice_id)
                 if existing is not None:
                     existing.status = "cancelled"
-                self._session.commit()
                 logger.info("ap_cancel_invoice_committed", extra={
                     "invoice_id": str(invoice_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -669,6 +934,19 @@ class APService:
                 "amount": str(amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AP_INVENTORY_INVOICE_WORKFLOW,
+                "ap_inventory_invoice",
+                invoice_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ap.invoice_received_inventory",
                 payload=payload,
@@ -694,13 +972,11 @@ class APService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_invoice)
-                self._session.commit()
                 logger.info("ap_record_inventory_invoice_committed", extra={
                     "invoice_id": str(invoice_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -748,6 +1024,19 @@ class APService:
                 "period_id": period_id,
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AP_ACCRUAL_WORKFLOW,
+                "ap_accrual",
+                accrual_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"period_id": period_id},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ap.accrual_recorded",
                 payload=payload,
@@ -758,13 +1047,11 @@ class APService:
             )
 
             if result.is_success:
-                self._session.commit()
                 logger.info("ap_record_accrual_committed", extra={
                     "accrual_id": str(accrual_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -805,6 +1092,19 @@ class APService:
                 "amount": str(amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AP_ACCRUAL_REVERSAL_WORKFLOW,
+                "ap_accrual_reversal",
+                reversal_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"original_accrual_id": str(original_accrual_id)},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ap.accrual_reversed",
                 payload=payload,
@@ -815,13 +1115,11 @@ class APService:
             )
 
             if result.is_success:
-                self._session.commit()
                 logger.info("ap_reverse_accrual_committed", extra={
                     "reversal_id": str(reversal_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -865,6 +1163,19 @@ class APService:
                 "amount": str(amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AP_PREPAYMENT_WORKFLOW,
+                "ap_prepayment",
+                prepayment_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ap.prepayment_recorded",
                 payload=payload,
@@ -875,13 +1186,11 @@ class APService:
             )
 
             if result.is_success:
-                self._session.commit()
                 logger.info("ap_record_prepayment_committed", extra={
                     "prepayment_id": str(prepayment_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -914,6 +1223,23 @@ class APService:
             Exception: re-raised after rollback for unexpected failures.
         """
         try:
+            # Workflow: draft → posted before link + posting
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AP_PREPAYMENT_APPLICATION_WORKFLOW,
+                "ap_prepayment_application",
+                application_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={
+                    "prepayment_id": str(prepayment_id),
+                    "invoice_id": str(invoice_id),
+                },
+            )
+            if failure is not None:
+                return failure
+
             # Engine: create link between prepayment and invoice
             prepayment_ref = ArtifactRef.payment(prepayment_id)
             invoice_ref = ArtifactRef.invoice(invoice_id)
@@ -951,13 +1277,11 @@ class APService:
             )
 
             if result.is_success:
-                self._session.commit()
                 logger.info("ap_apply_prepayment_committed", extra={
                     "application_id": str(application_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:

@@ -234,6 +234,10 @@ def apply_mapping(
         # Transform first
         value = apply_transform(raw_value, fm.transform) if fm.transform else raw_value
 
+        # When target is STRING, accept int/float (e.g. QBO "num": 1) and coerce to string
+        if fm.field_type == EventFieldType.STRING and isinstance(value, (int, float)):
+            value = str(value)
+
         # Coerce string to typed when target is not string
         if isinstance(value, str) and fm.field_type != EventFieldType.STRING:
             coerced = coerce_from_string(value, fm.field_type, fm.format)

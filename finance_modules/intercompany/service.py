@@ -59,6 +59,15 @@ from finance_kernel.logging_config import get_logger
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
+    ModulePostingStatus,
+)
+from finance_modules._posting_helpers import run_workflow_guard
+from finance_kernel.services.party_service import PartyService
+from finance_services.workflow_executor import WorkflowExecutor
+from finance_modules.intercompany.workflows import (
+    IC_GENERATE_ELIMINATIONS_WORKFLOW,
+    IC_POST_TRANSFER_WORKFLOW,
+    IC_POST_TRANSFER_PRICING_ADJUSTMENT_WORKFLOW,
 )
 from finance_modules.intercompany.models import (
     ConsolidationResult,
@@ -97,14 +106,23 @@ class IntercompanyService:
       handles R12/R13).
     """
 
-    def __init__(self, session, role_resolver, clock: Clock | None = None):
+    def __init__(
+        self,
+        session,
+        role_resolver,
+        workflow_executor: WorkflowExecutor,
+        clock: Clock | None = None,
+        party_service: PartyService | None = None,
+    ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
     # =========================================================================
@@ -139,6 +157,29 @@ class IntercompanyService:
         Returns:
             Tuple of (ICTransaction, ModulePostingResult).
         """
+        txn_id = uuid4()
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            IC_POST_TRANSFER_WORKFLOW,
+            "ic_transfer",
+            txn_id,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            placeholder = ICTransaction(
+                id=txn_id,
+                from_entity=from_entity,
+                to_entity=to_entity,
+                amount=amount,
+                currency=currency,
+                transaction_date=effective_date,
+                description=description or "",
+            )
+            return placeholder, failure
+
         try:
             logger.info("ic_transfer_started", extra={
                 "from_entity": from_entity,
@@ -161,7 +202,6 @@ class IntercompanyService:
             )
 
             if result.is_success:
-                txn_id = uuid4()
                 orm_txn = IntercompanyTransactionModel(
                     id=txn_id,
                     from_entity=from_entity,
@@ -182,7 +222,6 @@ class IntercompanyService:
                     "status": result.status.value,
                 })
             else:
-                txn_id = uuid4()
                 self._session.rollback()
 
             transaction = ICTransaction(
@@ -231,6 +270,29 @@ class IntercompanyService:
             Tuple of (ICTransaction, ModulePostingResult).
         """
         try:
+            elim_id = uuid4()
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                IC_GENERATE_ELIMINATIONS_WORKFLOW,
+                "ic_elimination",
+                elim_id,
+                actor_id=actor_id,
+                amount=elimination_amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                placeholder = ICTransaction(
+                    id=elim_id,
+                    from_entity=entity_scope,
+                    to_entity=entity_scope,
+                    amount=elimination_amount,
+                    currency=currency,
+                    transaction_date=effective_date,
+                    description=f"IC elimination: {entity_scope}",
+                )
+                return placeholder, failure
+
             logger.info("ic_elimination_started", extra={
                 "period": period,
                 "entity_scope": entity_scope,
@@ -250,7 +312,6 @@ class IntercompanyService:
             )
 
             if result.is_success:
-                elim_id = uuid4()
                 orm_txn = IntercompanyTransactionModel(
                     id=elim_id,
                     from_entity=entity_scope,
@@ -270,7 +331,6 @@ class IntercompanyService:
                     "entity_scope": entity_scope,
                 })
             else:
-                elim_id = uuid4()
                 self._session.rollback()
 
             transaction = ICTransaction(
@@ -513,6 +573,30 @@ class IntercompanyService:
         markup = base_amount * markup_rate
 
         try:
+            tp_id = uuid4()
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                IC_POST_TRANSFER_PRICING_ADJUSTMENT_WORKFLOW,
+                "ic_transfer_pricing",
+                tp_id,
+                actor_id=actor_id,
+                amount=markup,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                placeholder = ICTransaction(
+                    id=tp_id,
+                    agreement_id=agreement_id,
+                    from_entity=from_entity,
+                    to_entity=to_entity,
+                    amount=markup,
+                    currency=currency,
+                    transaction_date=effective_date,
+                    description=f"Transfer pricing adjustment: {agreement_id}",
+                )
+                return placeholder, failure
+
             logger.info("ic_transfer_pricing_started", extra={
                 "agreement_id": str(agreement_id),
                 "from_entity": from_entity,
@@ -560,7 +644,6 @@ class IntercompanyService:
                     "status": result.status.value,
                 })
             else:
-                tp_id = uuid4()
                 self._session.rollback()
 
             transaction = ICTransaction(

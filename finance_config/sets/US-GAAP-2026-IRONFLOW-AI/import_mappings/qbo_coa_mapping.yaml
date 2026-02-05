@@ -1,0 +1,396 @@
+config_id: US-GAAP-2026-IRONFLOW-AI
+description: QBO to Ironflow system CoA mapping aligned to standard GAAP numbering
+numbering_scheme:
+  assets: 1000-1999
+  liabilities: 2000-2999
+  equity: 3000-3999
+  revenue: 4000-4999
+  cogs: 5000-5999
+  operating_expenses: 6000-6999
+  other: 7000-7999
+
+mappings:
+  # ------------------
+  # Assets (1000–1999)
+  # ------------------
+  - input_name: 'Mercury Checking (3820) - 1'
+    input_code: '3820'
+    input_type: 'Bank'
+    import_row: 1
+    target_code: '1010'
+    target_name: 'Cash - Mercury Checking'
+
+  - input_name: 'Mercury Payroll'
+    input_code: ''
+    input_type: 'Bank'
+    import_row: 2
+    target_code: '1020'
+    target_name: 'Cash - Mercury Payroll'
+
+  - input_name: 'Mercury Savings (5777) - 1'
+    input_code: '5777'
+    input_type: 'Bank'
+    import_row: 3
+    target_code: '1030'
+    target_name: 'Cash - Mercury Savings'
+
+  - input_name: 'Mercury Treasury - 1'
+    input_code: ''
+    input_type: 'Bank'
+    import_row: 4
+    target_code: '1040'
+    target_name: 'Cash - Mercury Treasury'
+
+  - input_name: 'Mercury Treasury - 1:Unrealized Investment Activity'
+    input_code: ''
+    input_type: 'Bank'
+    import_row: 5
+    target_code: '1180'
+    target_name: 'Unrealized Investment Activity (Treasury)'
+
+  - input_name: 'Operating fund'
+    input_code: ''
+    input_type: 'Bank'
+    import_row: 6
+    target_code: '1050'
+    target_name: 'Cash - Operating Fund'
+
+  - input_name: 'Employee Advances'
+    input_code: ''
+    input_type: 'Other Current Assets'
+    import_row: 40
+    target_code: '1200'
+    target_name: 'Employee Advances Receivable'
+
+  - input_name: 'Prepayments'
+    input_code: ''
+    input_type: 'Other Current Assets'
+    import_row: 41
+    target_code: '1210'
+    target_name: 'Prepaid Expenses'
+
+  - input_name: 'Uncategorized Asset'
+    input_code: ''
+    input_type: 'Other Current Assets'
+    import_row: 42
+    target_code: '1220'
+    target_name: 'Other Current Assets'
+
+  - input_name: 'Undeposited Funds'
+    input_code: ''
+    input_type: 'Other Current Assets'
+    import_row: 43
+    target_code: '1230'
+    target_name: 'Undeposited Funds'
+
+  - input_name: 'Computer & Office Equipment'
+    input_code: ''
+    input_type: 'Fixed Assets'
+    import_row: 31
+    target_code: '1500'
+    target_name: 'Computer & Office Equipment'
+
+  - input_name: 'Less-Accumulated Depreciation'
+    input_code: ''
+    input_type: 'Fixed Assets'
+    import_row: 32
+    target_code: '1510'
+    target_name: 'Accumulated Depreciation'
+
+  - input_name: 'Investment At Cost'
+    input_code: ''
+    input_type: 'Other Assets'
+    import_row: 39
+    target_code: '1800'
+    target_name: 'Long-Term Investments'
+
+  # ----------------------
+  # Liabilities (2000–2999)
+  # ----------------------
+  - input_name: 'Mercury Credit (4635) - 1'
+    input_code: '4635'
+    input_type: 'Credit Card'
+    import_row: 8
+    target_code: '2010'
+    target_name: 'Credit Card Payable - Mercury'
+
+  - input_name: 'Line of Credit'
+    input_code: ''
+    input_type: 'Long Term Liabilities'
+    import_row: 36
+    target_code: '2100'
+    target_name: 'Line of Credit'
+
+  - input_name: 'SAFE Investments'
+    input_code: ''
+    input_type: 'Long Term Liabilities'
+    import_row: 37
+    target_code: '2200'
+    target_name: 'SAFE Notes / Equity Instruments'
+
+  - input_name: 'Suspense'
+    input_code: ''
+    input_type: 'Long Term Liabilities'
+    import_row: 38
+    target_code: '2300'
+    target_name: 'Suspense / Clearing Liability'
+
+  - input_name: 'Federal Payroll Liability'
+    input_code: ''
+    input_type: 'Other Current Liabilities'
+    import_row: 44
+    target_code: '2400'
+    target_name: 'Payroll Taxes Payable - Federal'
+
+  - input_name: 'State Payroll Liability'
+    input_code: ''
+    input_type: 'Other Current Liabilities'
+    import_row: 47
+    target_code: '2410'
+    target_name: 'Payroll Taxes Payable - State'
+
+  - input_name: 'Other Payroll Liability'
+    input_code: ''
+    input_type: 'Other Current Liabilities'
+    import_row: 45
+    target_code: '2420'
+    target_name: 'Other Payroll Liabilities'
+
+  - input_name: 'Payroll Wages Payable'
+    input_code: ''
+    input_type: 'Other Current Liabilities'
+    import_row: 46
+    target_code: '2430'
+    target_name: 'Accrued Wages Payable'
+
+  # ------------------
+  # Equity (3000–3999)
+  # ------------------
+  - input_name: 'Opening Balance Equity'
+    input_code: ''
+    input_type: 'Equity'
+    import_row: 9
+    target_code: '3010'
+    target_name: 'Opening Balance Equity'
+
+  - input_name: "Owner's Capital"
+    input_code: ''
+    input_type: 'Equity'
+    import_row: 10
+    target_code: '3100'
+    target_name: "Owner's Capital"
+
+  - input_name: 'Retained Earnings'
+    input_code: ''
+    input_type: 'Equity'
+    import_row: 11
+    target_code: '3200'
+    target_name: 'Retained Earnings'
+
+  # ------------------
+  # Revenue (4000–4999)
+  # ------------------
+  - input_name: 'Billable Expense Income'
+    input_code: ''
+    input_type: 'Income'
+    import_row: 33
+    target_code: '4100'
+    target_name: 'Billable Expense Income'
+
+  - input_name: 'Sales'
+    input_code: ''
+    input_type: 'Income'
+    import_row: 34
+    target_code: '4000'
+    target_name: 'Sales Revenue'
+
+  - input_name: 'Uncategorized Income'
+    input_code: ''
+    input_type: 'Income'
+    import_row: 35
+    target_code: '4200'
+    target_name: 'Other Operating Income'
+
+  - input_name: 'CC Rewards'
+    input_code: ''
+    input_type: 'Other Income'
+    import_row: 51
+    target_code: '4300'
+    target_name: 'Credit Card Rewards Income'
+
+  - input_name: 'Interest Income'
+    input_code: ''
+    input_type: 'Other Income'
+    import_row: 52
+    target_code: '4400'
+    target_name: 'Interest Income'
+
+  # ------------------
+  # COGS / Direct Costs (5000–5999)
+  # ------------------
+  - input_name: 'Direct Costs'
+    input_code: ''
+    input_type: 'Cost of Goods Sold'
+    import_row: 7
+    target_code: '5000'
+    target_name: 'Direct Costs / Cost of Sales'
+
+  # ------------------
+  # Operating Expenses (6000–6999)
+  # ------------------
+  - input_name: 'Advertising'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 12
+    target_code: '6000'
+    target_name: 'Advertising Expense'
+
+  - input_name: 'Bank Service Charges'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 13
+    target_code: '6010'
+    target_name: 'Bank Fees'
+
+  - input_name: 'Business License & Fees'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 14
+    target_code: '6020'
+    target_name: 'Licenses & Regulatory Fees'
+
+  - input_name: 'Conference Expenses'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 15
+    target_code: '6030'
+    target_name: 'Conferences & Events'
+
+  - input_name: 'Dues & Subscriptions'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 16
+    target_code: '6040'
+    target_name: 'Subscriptions & Memberships'
+
+  - input_name: 'Independent Contractors'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 17
+    target_code: '6050'
+    target_name: 'Contractor Expense'
+
+  - input_name: 'Independent Contractors:Independent Contractors - Global'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 18
+    target_code: '6051'
+    target_name: 'Contractor Expense - Global'
+
+  - input_name: 'Insurance'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 19
+    target_code: '6060'
+    target_name: 'Insurance Expense'
+
+  - input_name: 'Legal & Professional Fees'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 20
+    target_code: '6070'
+    target_name: 'Legal & Professional Fees'
+
+  - input_name: 'Meals (100%)'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 21
+    target_code: '6080'
+    target_name: 'Meals & Entertainment - Non-deductible'
+
+  - input_name: 'Meals (50%)'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 22
+    target_code: '6081'
+    target_name: 'Meals & Entertainment - Deductible'
+
+  - input_name: 'Office Rent'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 23
+    target_code: '6090'
+    target_name: 'Rent Expense'
+
+  - input_name: 'Office & Software Expenses'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 24
+    target_code: '6100'
+    target_name: 'Office & Software Expense'
+
+  - input_name: 'Payroll Benefits Expense'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 25
+    target_code: '6110'
+    target_name: 'Employee Benefits'
+
+  - input_name: 'Payroll Tax Expense'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 26
+    target_code: '6120'
+    target_name: 'Payroll Taxes'
+
+  - input_name: 'Reimbursable Expense'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 27
+    target_code: '6130'
+    target_name: 'Reimbursable Expenses'
+
+  - input_name: 'Travel'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 28
+    target_code: '6140'
+    target_name: 'Travel Expense'
+
+  - input_name: 'Uncategorized Expense'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 29
+    target_code: '6990'
+    target_name: 'Uncategorized Operating Expense'
+
+  - input_name: 'Wages & Salaries'
+    input_code: ''
+    input_type: 'Expenses'
+    import_row: 30
+    target_code: '6150'
+    target_name: 'Wages & Salaries'
+
+  # ------------------
+  # Other / Non-operating (7000–7999)
+  # ------------------
+  - input_name: 'Bad Debt'
+    input_code: ''
+    input_type: 'Other Expense'
+    import_row: 48
+    target_code: '7010'
+    target_name: 'Bad Debt Expense'
+
+  - input_name: 'Depreciation'
+    input_code: ''
+    input_type: 'Other Expense'
+    import_row: 49
+    target_code: '7020'
+    target_name: 'Depreciation Expense'
+
+  - input_name: 'Reconciliation Discrepancies'
+    input_code: ''
+    input_type: 'Other Expense'
+    import_row: 50
+    target_code: '7030'
+    target_name: 'Reconciliation Adjustments'

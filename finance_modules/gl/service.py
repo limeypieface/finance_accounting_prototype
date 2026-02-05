@@ -24,6 +24,15 @@ Invariants enforced
 * L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
 * R4  -- Double-entry balance enforced downstream by ``JournalWriter``.
 * R12 -- Closed-period enforcement via kernel ``PeriodService``.
+* R25 -- Kernel primitives only: Money from finance_kernel; no parallel
+          financial types in this module.
+* R26 -- Journal + link graph are the system of record; GL module ORM
+          (e.g. RecurringEntryModel, AccountReconciliationModel) is an
+          operational projection, persisted in the same transaction where used.
+* R27 -- Ledger impact is defined by kernel policy (profiles); this
+          module does not branch on operational results to choose accounts.
+* Workflow executor required; every financial action calls
+  ``execute_transition`` (guards enforced, no bypass).
 
 Failure modes
 -------------
@@ -40,7 +49,8 @@ journal entries feed the kernel audit chain (R11).
 
 Usage::
 
-    service = GeneralLedgerService(session, role_resolver, clock)
+    # workflow_executor is required — guards are always enforced (no bypass).
+    service = GeneralLedgerService(session, role_resolver, workflow_executor, clock=clock)
     result = service.record_journal_entry(
         entry_id=uuid4(), description="Monthly accrual",
         lines=[{"account": "5100", "debit": "1000.00"}],
@@ -54,7 +64,7 @@ from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -63,10 +73,28 @@ from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_modules._posting_helpers import commit_or_rollback, run_workflow_guard
+from finance_modules.gl.workflows import (
+    GL_ADJUSTMENT_WORKFLOW,
+    GL_CLOSING_ENTRY_WORKFLOW,
+    GL_CTA_WORKFLOW,
+    GL_DEFERRED_EXPENSE_RECOGNITION_WORKFLOW,
+    GL_DEFERRED_REVENUE_RECOGNITION_WORKFLOW,
+    GL_DIVIDEND_DECLARED_WORKFLOW,
+    GL_FX_REALIZED_GAIN_WORKFLOW,
+    GL_FX_REALIZED_LOSS_WORKFLOW,
+    GL_FX_UNREALIZED_GAIN_WORKFLOW,
+    GL_FX_UNREALIZED_LOSS_WORKFLOW,
+    GL_INTERCOMPANY_TRANSFER_WORKFLOW,
+    GL_JOURNAL_ENTRY_WORKFLOW,
+    GL_RECURRING_ENTRY_WORKFLOW,
+    GL_RETAINED_EARNINGS_ROLL_WORKFLOW,
 )
 from finance_modules.gl.models import (
     AccountReconciliation,
@@ -81,6 +109,7 @@ from finance_modules.gl.orm import (
     AccountReconciliationModel,
     RecurringEntryModel,
 )
+from finance_services.workflow_executor import WorkflowExecutor
 
 logger = get_logger("modules.gl.service")
 
@@ -121,17 +150,21 @@ class GeneralLedgerService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor  # Required: guards always enforced
 
-        # Kernel posting (auto_commit=False -- we own the boundary)
+        # Kernel posting (auto_commit=False -- we own the boundary). G14: actor validation mandatory.
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
         # Stateless engines
@@ -176,6 +209,19 @@ class GeneralLedgerService:
                 "description": description[:80],
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_JOURNAL_ENTRY_WORKFLOW,
+                "gl_journal_entry",
+                entry_id,
+                actor_id=actor_id,
+                amount=posting_amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="gl.journal_entry",
                 payload={
@@ -191,10 +237,7 @@ class GeneralLedgerService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -249,6 +292,19 @@ class GeneralLedgerService:
             if original_entry_id is not None:
                 payload["original_entry_id"] = str(original_entry_id)
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_ADJUSTMENT_WORKFLOW,
+                "gl_adjustment",
+                entry_id,
+                actor_id=actor_id,
+                amount=posting_amount,
+                currency=currency,
+                context={"adjustment_type": adjustment_type},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="gl.adjustment",
                 payload=payload,
@@ -258,10 +314,7 @@ class GeneralLedgerService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -296,6 +349,19 @@ class GeneralLedgerService:
                 "net_income": str(net_income) if net_income is not None else None,
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_CLOSING_ENTRY_WORKFLOW,
+                "gl_closing_entry",
+                uuid4(),
+                actor_id=actor_id,
+                amount=posting_amount,
+                currency=currency,
+                context={"period_id": period_id},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="gl.year_end_close",
                 payload={
@@ -309,10 +375,7 @@ class GeneralLedgerService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -373,6 +436,19 @@ class GeneralLedgerService:
                 "amount": str(amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_INTERCOMPANY_TRANSFER_WORKFLOW,
+                "gl_intercompany_transfer",
+                transfer_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"from_entity": from_entity, "to_entity": to_entity},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="gl.intercompany_transfer",
                 payload={
@@ -387,10 +463,7 @@ class GeneralLedgerService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -421,6 +494,19 @@ class GeneralLedgerService:
                 "amount": str(amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_DIVIDEND_DECLARED_WORKFLOW,
+                "gl_dividend_declared",
+                dividend_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="gl.dividend_declared",
                 payload={
@@ -433,10 +519,7 @@ class GeneralLedgerService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -484,6 +567,19 @@ class GeneralLedgerService:
         })
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_DEFERRED_REVENUE_RECOGNITION_WORKFLOW,
+                "gl_deferred_revenue_recognition",
+                recognition_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="deferred.revenue_recognition",
                 payload=payload,
@@ -494,10 +590,7 @@ class GeneralLedgerService:
                 description=description,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -542,6 +635,19 @@ class GeneralLedgerService:
         })
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_DEFERRED_EXPENSE_RECOGNITION_WORKFLOW,
+                "gl_deferred_expense_recognition",
+                recognition_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="deferred.expense_recognition",
                 payload=payload,
@@ -552,10 +658,7 @@ class GeneralLedgerService:
                 description=description,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -590,6 +693,19 @@ class GeneralLedgerService:
         })
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_FX_UNREALIZED_GAIN_WORKFLOW,
+                "gl_fx_unrealized_gain",
+                uuid4(),
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"original_currency": original_currency},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="fx.unrealized_gain",
                 payload=payload,
@@ -600,10 +716,7 @@ class GeneralLedgerService:
                 description=description,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -634,6 +747,19 @@ class GeneralLedgerService:
         })
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_FX_UNREALIZED_LOSS_WORKFLOW,
+                "gl_fx_unrealized_loss",
+                uuid4(),
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"original_currency": original_currency},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="fx.unrealized_loss",
                 payload=payload,
@@ -644,10 +770,7 @@ class GeneralLedgerService:
                 description=description,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -682,6 +805,19 @@ class GeneralLedgerService:
         })
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_FX_REALIZED_GAIN_WORKFLOW,
+                "gl_fx_realized_gain",
+                uuid4(),
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"original_currency": original_currency},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="fx.realized_gain",
                 payload=payload,
@@ -692,10 +828,7 @@ class GeneralLedgerService:
                 description=description,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -726,6 +859,19 @@ class GeneralLedgerService:
         })
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_FX_REALIZED_LOSS_WORKFLOW,
+                "gl_fx_realized_loss",
+                uuid4(),
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"original_currency": original_currency},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="fx.realized_loss",
                 payload=payload,
@@ -736,10 +882,7 @@ class GeneralLedgerService:
                 description=description,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -795,6 +938,19 @@ class GeneralLedgerService:
         })
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_RECURRING_ENTRY_WORKFLOW,
+                "gl_recurring_entry",
+                template.id,
+                actor_id=actor_id,
+                amount=posting_amount,
+                currency=currency,
+                context={"template_name": template.name},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="gl.recurring_entry",
                 payload={
@@ -813,9 +969,7 @@ class GeneralLedgerService:
                 orm_entry = RecurringEntryModel.from_dto(template, created_by_id=actor_id)
                 orm_entry.last_generated_date = effective_date
                 self._session.add(orm_entry)
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -853,6 +1007,19 @@ class GeneralLedgerService:
         })
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_RETAINED_EARNINGS_ROLL_WORKFLOW,
+                "gl_retained_earnings_roll",
+                uuid4(),
+                actor_id=actor_id,
+                amount=posting_amount,
+                currency=currency,
+                context={"fiscal_year": fiscal_year},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="gl.retained_earnings_roll",
                 payload={
@@ -865,10 +1032,7 @@ class GeneralLedgerService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -1000,6 +1164,19 @@ class GeneralLedgerService:
                 "source_currency": source_currency,
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                GL_CTA_WORKFLOW,
+                "gl_cta",
+                uuid4(),
+                actor_id=actor_id,
+                amount=posting_amount,
+                currency=currency,
+                context={"entity_id": entity_id, "period": period},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="fx.translation_adjustment",
                 payload={
@@ -1014,10 +1191,7 @@ class GeneralLedgerService:
                 currency=currency,
             )
 
-            if result.is_success:
-                self._session.commit()
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:

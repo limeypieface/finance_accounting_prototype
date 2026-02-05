@@ -109,6 +109,15 @@ class ExpenseConfig:
     allow_policy_exceptions: bool = True
     require_exception_justification: bool = True
 
+    # DCAA Travel & Expense Controls
+    require_pre_travel_authorization: bool = True
+    gsa_enforcement_enabled: bool = True
+    default_conus_lodging_rate: Decimal = Decimal("107")
+    default_conus_meals_rate: Decimal = Decimal("68")
+    allow_lodging_actuals_above_gsa: bool = False
+    first_last_day_meal_percentage: Decimal = Decimal("75")
+    overage_tolerance_pct: Decimal = Decimal("10")
+
     def __post_init__(self):
         # Validate receipt threshold
         if self.receipt_required_above < 0:
@@ -166,6 +175,16 @@ class ExpenseConfig:
                 f"cannot exceed single_expense_approval_threshold "
                 f"({self.single_expense_approval_threshold})"
             )
+
+        # Validate DCAA travel & expense controls
+        if self.default_conus_lodging_rate < 0:
+            raise ValueError("default_conus_lodging_rate cannot be negative")
+        if self.default_conus_meals_rate < 0:
+            raise ValueError("default_conus_meals_rate cannot be negative")
+        if self.first_last_day_meal_percentage < 0 or self.first_last_day_meal_percentage > 100:
+            raise ValueError("first_last_day_meal_percentage must be between 0 and 100")
+        if self.overage_tolerance_pct < 0:
+            raise ValueError("overage_tolerance_pct cannot be negative")
 
         logger.info(
             "expense_config_initialized",

@@ -24,6 +24,15 @@ Invariants enforced
 * L1  -- Account ROLES in profiles; COA resolution deferred to kernel.
 * L5  -- Atomicity: link creation and journal posting share a single
           transaction (``auto_commit=False``).
+* R25 -- Kernel primitives only: Money, ArtifactRef from finance_kernel;
+          no parallel financial types in this module.
+* R26 -- Journal + link graph are the system of record; AR ORM (e.g.
+          ARInvoiceModel, ARReceiptModel) is an operational projection,
+          persisted in the same transaction as posting.
+* R27 -- Ledger impact is defined by kernel policy (profiles); this
+          module does not branch on operational results to choose accounts.
+* Workflow executor required; every financial action calls
+  ``execute_transition`` (guards enforced, no bypass).
 
 Failure modes
 -------------
@@ -40,7 +49,8 @@ entries feed the kernel audit chain (R11).
 
 Usage::
 
-    service = ARService(session, role_resolver, clock)
+    # workflow_executor is required — guards are always enforced (no bypass).
+    service = ARService(session, role_resolver, workflow_executor, clock=clock)
     result = service.record_invoice(
         invoice_id=uuid4(), customer_id=uuid4(),
         amount=Decimal("10000.00"),
@@ -53,7 +63,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -69,10 +79,22 @@ from finance_kernel.domain.values import Money
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
 from finance_kernel.services.link_graph_service import LinkGraphService
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_modules._posting_helpers import commit_or_rollback, run_workflow_guard
+from finance_modules.ar.workflows import (
+    AR_CREDIT_MEMO_WORKFLOW,
+    AR_DEFERRED_REVENUE_WORKFLOW,
+    AR_FINANCE_CHARGE_WORKFLOW,
+    AR_INVOICE_WORKFLOW,
+    AR_RECEIPT_APPLICATION_WORKFLOW,
+    AR_RECEIPT_WORKFLOW,
+    AR_REFUND_WORKFLOW,
+    AR_WRITE_OFF_WORKFLOW,
 )
 from finance_modules.ar.models import (
     AutoApplyRule,
@@ -88,6 +110,7 @@ from finance_modules.ar.orm import (
     ARReceiptModel,
 )
 from finance_services.reconciliation_service import ReconciliationManager
+from finance_services.workflow_executor import WorkflowExecutor
 
 logger = get_logger("modules.ar.service")
 
@@ -130,17 +153,22 @@ class ARService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor  # Required: guards always enforced
+        self._party_service = party_service  # For credit-check guard context (CREDIT_CHECK_PASSED)
 
-        # Kernel posting (auto_commit=False -- we own the boundary)
+        # Kernel posting (auto_commit=False -- we own the boundary). G14: actor validation mandatory.
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
         # Stateful engines (share session for atomicity)
@@ -196,7 +224,36 @@ class ARService:
                 "amount": str(amount),
             })
 
-            # Kernel: post journal entry
+            # Credit-check guard (CREDIT_CHECK_PASSED) needs current_balance, proposed_amount, credit_limit.
+            credit_context: dict = {
+                "current_balance": Decimal("0"),  # TODO: from AR subledger when available
+                "proposed_amount": amount,
+                "credit_limit": None,
+            }
+            if self._party_service is not None:
+                try:
+                    party_info = self._party_service.get_by_id(customer_id)
+                    credit_context["credit_limit"] = party_info.credit_limit
+                except Exception:
+                    # Party not found or inactive; guard will evaluate with credit_limit=None (allow)
+                    pass
+
+            workflow_outcomes: list[dict] = []
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_INVOICE_WORKFLOW,
+                "ar_invoice",
+                invoice_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=credit_context,
+                outcome_sink=workflow_outcomes.append,
+            )
+            if failure is not None:
+                return failure
+
+            # Kernel: post journal entry (workflow outcomes in decision_log for trace)
             result = self._poster.post_event(
                 event_type="ar.invoice",
                 payload=payload,
@@ -204,6 +261,7 @@ class ARService:
                 actor_id=actor_id,
                 amount=amount,
                 currency=currency,
+                preamble_log=workflow_outcomes if workflow_outcomes else None,
             )
 
             if result.is_success:
@@ -223,13 +281,11 @@ class ARService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_invoice)
-                self._session.commit()
                 logger.info("ar_record_invoice_committed", extra={
                     "invoice_id": str(invoice_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -272,6 +328,20 @@ class ARService:
                 "amount": str(amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_RECEIPT_WORKFLOW,
+                "ar_payment",
+                payment_id,
+                current_state="unallocated",
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             # Kernel: post journal entry
             result = self._poster.post_event(
                 event_type="ar.payment",
@@ -297,13 +367,11 @@ class ARService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_receipt)
-                self._session.commit()
                 logger.info("ar_record_payment_committed", extra={
                     "payment_id": str(payment_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -335,6 +403,19 @@ class ARService:
         Profile: ar.receipt_applied (or ar.receipt_applied with has_discount)
         """
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_RECEIPT_APPLICATION_WORKFLOW,
+                "ar_receipt_applied",
+                payment_id,
+                actor_id=actor_id,
+                amount=payment_amount or sum(invoice_amounts or [Decimal("0")]),
+                currency=currency,
+                context={"invoice_ids": [str(i) for i in invoice_ids]},
+            )
+            if failure is not None:
+                return failure
+
             payment_ref = ArtifactRef.payment(payment_id)
 
             # If specific per-invoice amounts are provided, apply directly
@@ -421,13 +502,11 @@ class ARService:
             )
 
             if result.is_success:
-                self._session.commit()
                 logger.info("ar_apply_payment_committed", extra={
                     "payment_id": str(payment_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -528,6 +607,20 @@ class ARService:
                 "amount": str(amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_RECEIPT_WORKFLOW,
+                "ar_receipt",
+                receipt_id,
+                current_state="unallocated",
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ar.receipt",
                 payload=payload,
@@ -552,13 +645,11 @@ class ARService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_receipt)
-                self._session.commit()
                 logger.info("ar_record_receipt_committed", extra={
                     "receipt_id": str(receipt_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -608,6 +699,19 @@ class ARService:
                 "reason_code": reason_code,
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_CREDIT_MEMO_WORKFLOW,
+                "ar_credit_memo",
+                memo_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"reason_code": reason_code},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ar.credit_memo",
                 payload=payload,
@@ -631,14 +735,12 @@ class ARService:
                     created_by_id=actor_id,
                 )
                 self._session.add(orm_memo)
-                self._session.commit()
                 logger.info("ar_record_credit_memo_committed", extra={
                     "memo_id": str(memo_id),
                     "reason_code": reason_code,
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -679,6 +781,19 @@ class ARService:
                 "amount": str(amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_WRITE_OFF_WORKFLOW,
+                "ar_write_off",
+                write_off_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"invoice_id": str(invoice_id)},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ar.write_off",
                 payload=payload,
@@ -693,13 +808,11 @@ class ARService:
                 if existing is not None:
                     existing.status = "written_off"
                     existing.balance_due = Decimal("0")
-                self._session.commit()
                 logger.info("ar_record_write_off_committed", extra={
                     "write_off_id": str(write_off_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -737,6 +850,19 @@ class ARService:
                 "period_id": period_id,
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_WRITE_OFF_WORKFLOW,
+                "ar_bad_debt_provision",
+                provision_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"period_id": period_id},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ar.bad_debt_provision",
                 payload=payload,
@@ -747,13 +873,11 @@ class ARService:
             )
 
             if result.is_success:
-                self._session.commit()
                 logger.info("ar_record_bad_debt_provision_committed", extra={
                     "provision_id": str(provision_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -793,6 +917,19 @@ class ARService:
                 "amount": str(amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_DEFERRED_REVENUE_WORKFLOW,
+                "ar_deferred_revenue",
+                deferred_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ar.deferred_revenue_recorded",
                 payload=payload,
@@ -803,13 +940,11 @@ class ARService:
             )
 
             if result.is_success:
-                self._session.commit()
                 logger.info("ar_record_deferred_revenue_committed", extra={
                     "deferred_id": str(deferred_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -845,6 +980,19 @@ class ARService:
                 "amount": str(amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_DEFERRED_REVENUE_WORKFLOW,
+                "ar_deferred_revenue_recognized",
+                recognition_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"original_deferred_id": str(original_deferred_id)},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ar.deferred_revenue_recognized",
                 payload=payload,
@@ -855,13 +1003,11 @@ class ARService:
             )
 
             if result.is_success:
-                self._session.commit()
                 logger.info("ar_recognize_deferred_revenue_committed", extra={
                     "recognition_id": str(recognition_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -903,6 +1049,19 @@ class ARService:
                 "amount": str(amount),
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_REFUND_WORKFLOW,
+                "ar_refund",
+                refund_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ar.refund",
                 payload=payload,
@@ -913,13 +1072,11 @@ class ARService:
             )
 
             if result.is_success:
-                self._session.commit()
                 logger.info("ar_record_refund_committed", extra={
                     "refund_id": str(refund_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:
@@ -1046,6 +1203,19 @@ class ARService:
                 "payment_amount": str(payment_amount),
                 "invoice_count": len(invoice_ids),
             })
+
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_RECEIPT_APPLICATION_WORKFLOW,
+                "ar_auto_apply",
+                payment_id,
+                actor_id=actor_id,
+                amount=payment_amount,
+                currency=currency,
+                context={"invoice_ids": [str(i) for i in invoice_ids]},
+            )
+            if failure is not None:
+                return failure
 
             # Delegate to existing apply_payment (FIFO allocation + reconciliation)
             result = self.apply_payment(
@@ -1264,6 +1434,19 @@ class ARService:
                 "period": period,
             })
 
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                AR_FINANCE_CHARGE_WORKFLOW,
+                "ar_finance_charge",
+                charge_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context={"period": period},
+            )
+            if failure is not None:
+                return failure
+
             result = self._poster.post_event(
                 event_type="ar.finance_charge",
                 payload=payload,
@@ -1274,13 +1457,11 @@ class ARService:
             )
 
             if result.is_success:
-                self._session.commit()
                 logger.info("ar_record_finance_charge_committed", extra={
                     "charge_id": str(charge_id),
                     "status": result.status.value,
                 })
-            else:
-                self._session.rollback()
+            commit_or_rollback(self._session, result)
             return result
 
         except Exception:

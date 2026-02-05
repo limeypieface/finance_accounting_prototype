@@ -20,10 +20,8 @@ import finance_kernel.domain.schemas.definitions.dcaa  # noqa: F401
 from finance_kernel.domain.policy_selector import PolicySelector
 from finance_kernel.domain.schemas.registry import EventSchemaRegistry
 
-# DCAA profiles now live in finance_modules.contracts
-from finance_modules.contracts.profiles import register as register_contracts
-
-register_contracts()
+# Contract/DCAA profiles are registered via register_modules fixture (conftest).
+pytestmark = pytest.mark.usefixtures("register_modules")
 
 
 # ============================================================================

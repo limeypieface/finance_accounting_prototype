@@ -1,41 +1,12 @@
-"""
-Tax Workflows.
+"""Tax Workflows.
 
 State machine for tax return processing.
 """
 
-from dataclasses import dataclass
-
 from finance_kernel.logging_config import get_logger
+from finance_kernel.domain.workflow import Guard, Transition, Workflow
 
 logger = get_logger("modules.tax.workflows")
-
-
-@dataclass(frozen=True)
-class Guard:
-    """A condition for a transition."""
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class Transition:
-    """A valid state transition."""
-    from_state: str
-    to_state: str
-    action: str
-    guard: Guard | None = None
-    posts_entry: bool = False
-
-
-@dataclass(frozen=True)
-class Workflow:
-    """A state machine definition."""
-    name: str
-    description: str
-    initial_state: str
-    states: tuple[str, ...]
-    transitions: tuple[Transition, ...]
 
 
 # -----------------------------------------------------------------------------
@@ -94,6 +65,26 @@ TAX_RETURN_WORKFLOW = Workflow(
         Transition("amended", "filed", action="refile"),
     ),
 )
+
+def _tax_draft_posted(name: str, description: str) -> Workflow:
+    """Simple draft -> posted lifecycle for tax posting actions (R28)."""
+    return Workflow(
+        name=name,
+        description=description,
+        initial_state="draft",
+        states=("draft", "posted"),
+        transitions=(Transition("draft", "posted", action="post", posts_entry=True),),
+    )
+
+
+# Action-specific workflows for posting methods (R28: no generic workflow)
+TAX_RECORD_OBLIGATION_WORKFLOW = _tax_draft_posted("tax_record_obligation", "Record tax obligation")
+TAX_RECORD_PAYMENT_WORKFLOW = _tax_draft_posted("tax_record_payment", "Record tax payment")
+TAX_RECORD_VAT_SETTLEMENT_WORKFLOW = _tax_draft_posted("tax_record_vat_settlement", "Record VAT settlement")
+TAX_RECORD_DEFERRED_ASSET_WORKFLOW = _tax_draft_posted("tax_record_deferred_asset", "Record deferred tax asset")
+TAX_RECORD_DEFERRED_LIABILITY_WORKFLOW = _tax_draft_posted("tax_record_deferred_liability", "Record deferred tax liability")
+TAX_RECORD_MULTI_JURISDICTION_WORKFLOW = _tax_draft_posted("tax_record_multi_jurisdiction", "Record multi-jurisdiction tax")
+TAX_RECORD_ADJUSTMENT_WORKFLOW = _tax_draft_posted("tax_record_adjustment", "Record tax adjustment")
 
 logger.info(
     "tax_return_workflow_registered",

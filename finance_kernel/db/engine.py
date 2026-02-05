@@ -69,6 +69,10 @@ def get_session() -> Session:
     """Get a new session instance."""
     if _SessionFactory is None:
         raise RuntimeError("Engine not initialized. Call init_engine_from_url() first.")
+    logger.info(
+        "session_created",
+        extra={"trace_type": "FINANCE_DB_SESSION"},
+    )
     return _SessionFactory()
 
 

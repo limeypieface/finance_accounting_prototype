@@ -1,0 +1,219 @@
+policies:
+- name: ExpenseReportApproved
+  version: 1
+  module: expense
+  description: Expense report approved for payment
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: expense.report_approved
+  meaning:
+    economic_type: EXPENSE_RECOGNITION
+    quantity_field: payload.total_amount
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE
+    credit_role: EMPLOYEE_PAYABLE
+  guards:
+  - guard_type: reject
+    expression: payload.total_amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Report total must be positive
+  line_mappings:
+  - role: EXPENSE
+    side: debit
+    foreach: expense_lines
+  - role: EMPLOYEE_PAYABLE
+    side: credit
+- name: ExpenseReportBillable
+  version: 1
+  module: expense
+  description: Billable expense report approved
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: expense.report_approved
+    where:
+    - field: payload.billable
+      value: true
+  meaning:
+    economic_type: EXPENSE_CAPITALIZATION
+    quantity_field: payload.total_amount
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+  ledger_effects:
+  - ledger: GL
+    debit_role: PROJECT_WIP
+    credit_role: EMPLOYEE_PAYABLE
+  guards:
+  - guard_type: reject
+    expression: payload.total_amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Report total must be positive
+  line_mappings:
+  - role: PROJECT_WIP
+    side: debit
+    foreach: expense_lines
+  - role: EMPLOYEE_PAYABLE
+    side: credit
+- name: ExpenseReimbursementPaid
+  version: 1
+  module: expense
+  description: Employee reimbursement paid
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: expense.reimbursement_paid
+  meaning:
+    economic_type: EXPENSE_SETTLEMENT
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: EMPLOYEE_PAYABLE
+    credit_role: CASH
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Reimbursement amount must be positive
+  line_mappings:
+  - role: EMPLOYEE_PAYABLE
+    side: debit
+  - role: CASH
+    side: credit
+- name: ExpenseCardStatement
+  version: 1
+  module: expense
+  description: Corporate card statement received
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: expense.card_statement
+  meaning:
+    economic_type: EXPENSE_RECOGNITION
+    quantity_field: payload.statement_total
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE
+    credit_role: CORPORATE_CARD_LIABILITY
+  guards:
+  - guard_type: reject
+    expression: payload.statement_total <= 0
+    reason_code: INVALID_AMOUNT
+    message: Statement total must be positive
+  line_mappings:
+  - role: EXPENSE
+    side: debit
+    foreach: card_transactions
+  - role: CORPORATE_CARD_LIABILITY
+    side: credit
+- name: ExpenseCardPayment
+  version: 1
+  module: expense
+  description: Corporate card statement paid
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: expense.card_payment
+  meaning:
+    economic_type: EXPENSE_SETTLEMENT
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: CORPORATE_CARD_LIABILITY
+    credit_role: CASH
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Payment amount must be positive
+  line_mappings:
+  - role: CORPORATE_CARD_LIABILITY
+    side: debit
+  - role: CASH
+    side: credit
+- name: ExpenseAdvanceIssued
+  version: 1
+  module: expense
+  description: Travel advance issued to employee
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: expense.advance_issued
+  meaning:
+    economic_type: ADVANCE_DISBURSEMENT
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ADVANCE_CLEARING
+    credit_role: CASH
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Advance amount must be positive
+  line_mappings:
+  - role: ADVANCE_CLEARING
+    side: debit
+  - role: CASH
+    side: credit
+- name: ExpenseAdvanceCleared
+  version: 1
+  module: expense
+  description: Travel advance cleared against expense report
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: expense.advance_cleared
+  meaning:
+    economic_type: ADVANCE_SETTLEMENT
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: EMPLOYEE_PAYABLE
+    credit_role: ADVANCE_CLEARING
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Clearing amount must be positive
+  line_mappings:
+  - role: EMPLOYEE_PAYABLE
+    side: debit
+  - role: ADVANCE_CLEARING
+    side: credit
+- name: ExpenseReceiptMatched
+  version: 1
+  module: expense
+  description: Expense receipt matched to corporate card transaction
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: expense.receipt_matched
+  meaning:
+    economic_type: EXPENSE_RECONCILIATION
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE
+    credit_role: CORPORATE_CARD_LIABILITY
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Match amount must be positive
+  line_mappings:
+  - role: EXPENSE
+    side: debit
+  - role: CORPORATE_CARD_LIABILITY
+    side: credit

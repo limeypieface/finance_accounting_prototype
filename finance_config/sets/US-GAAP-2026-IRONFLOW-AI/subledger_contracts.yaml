@@ -1,0 +1,63 @@
+# Subledger control contracts — declarative reconciliation rules.
+#
+# Each contract binds a subledger to its GL control account and defines
+# reconciliation timing, tolerance, and enforcement behavior.
+#
+# SL-G3: All contracts default to per-currency reconciliation.
+# Reconciliation and G9 comparison occur per currency, not on
+# FX-converted aggregates.
+
+contracts:
+  - subledger_id: AP
+    owner_module: ap
+    control_account_role: AP_CONTROL
+    entry_types: [INVOICE, PAYMENT, CREDIT_MEMO, REVERSAL, ADJUSTMENT]
+    is_debit_normal: false       # Credit normal (liability)
+    timing: real_time
+    tolerance_type: absolute
+    tolerance_amount: "0.01"
+    enforce_on_post: true
+    enforce_on_close: true
+
+  - subledger_id: AR
+    owner_module: ar
+    control_account_role: AR_CONTROL
+    entry_types: [INVOICE, PAYMENT, CREDIT_MEMO]
+    is_debit_normal: true        # Debit normal (asset)
+    timing: real_time
+    tolerance_type: absolute
+    tolerance_amount: "0.01"
+    enforce_on_post: true
+    enforce_on_close: true
+
+  - subledger_id: INVENTORY
+    owner_module: inventory
+    control_account_role: INVENTORY_CONTROL
+    entry_types: [RECEIPT, ISSUE, ADJUSTMENT, REVALUATION, TRANSFER]
+    is_debit_normal: true        # Debit normal (asset)
+    timing: period_end
+    tolerance_type: absolute
+    tolerance_amount: "0.05"
+    enforce_on_post: false
+    enforce_on_close: true
+
+  - subledger_id: BANK
+    owner_module: gl
+    control_account_role: CASH_CONTROL
+    entry_types: [DEPOSIT, WITHDRAWAL, TRANSFER, BANK_FEE, INTEREST]
+    is_debit_normal: true        # Debit normal (asset)
+    timing: daily
+    tolerance_type: none
+    enforce_on_post: true
+    enforce_on_close: true
+
+  - subledger_id: WIP
+    owner_module: contracts
+    control_account_role: CONTRACT_WIP_CONTROL
+    entry_types: [COST_INCURRENCE, BILLING, FEE]
+    is_debit_normal: true        # Debit normal (asset)
+    timing: period_end
+    tolerance_type: percentage
+    tolerance_percentage: "1.0"
+    enforce_on_post: false
+    enforce_on_close: true

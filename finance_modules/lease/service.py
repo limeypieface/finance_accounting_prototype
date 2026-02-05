@@ -55,10 +55,21 @@ from sqlalchemy.orm import Session
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_modules._posting_helpers import run_workflow_guard
+from finance_services.workflow_executor import WorkflowExecutor
+from finance_modules.lease.workflows import (
+    LEASE_ACCRUE_INTEREST_WORKFLOW,
+    LEASE_MODIFY_LEASE_WORKFLOW,
+    LEASE_RECORD_AMORTIZATION_WORKFLOW,
+    LEASE_RECORD_INITIAL_RECOGNITION_WORKFLOW,
+    LEASE_RECORD_PERIODIC_PAYMENT_WORKFLOW,
+    LEASE_TERMINATE_EARLY_WORKFLOW,
 )
 from finance_modules.lease.calculations import (
     build_amortization_schedule,
@@ -121,16 +132,20 @@ class LeaseAccountingService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor
 
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
     # =========================================================================
@@ -228,6 +243,19 @@ class LeaseAccountingService:
         })
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                LEASE_RECORD_INITIAL_RECOGNITION_WORKFLOW,
+                "lease",
+                lease_id,
+                actor_id=actor_id,
+                amount=liability_value,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return rou, liability, failure
+
             result = self._poster.post_event(
                 event_type=event_type,
                 payload={
@@ -332,12 +360,25 @@ class LeaseAccountingService:
 
         Posts via lease.payment_made (Dr Lease Liability / Cr Cash).
         """
-        logger.info("lease_payment_recorded", extra={
-            "lease_id": str(lease_id),
-            "amount": str(payment_amount),
-        })
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                LEASE_RECORD_PERIODIC_PAYMENT_WORKFLOW,
+                "lease",
+                lease_id,
+                actor_id=actor_id,
+                amount=payment_amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            logger.info("lease_payment_recorded", extra={
+                "lease_id": str(lease_id),
+                "amount": str(payment_amount),
+            })
+
             result = self._poster.post_event(
                 event_type="lease.payment_made",
                 payload={
@@ -388,12 +429,25 @@ class LeaseAccountingService:
 
         Posts via lease.interest_accrued (Dr Lease Interest / Cr Lease Liability).
         """
-        logger.info("lease_interest_accrued", extra={
-            "lease_id": str(lease_id),
-            "interest_amount": str(interest_amount),
-        })
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                LEASE_ACCRUE_INTEREST_WORKFLOW,
+                "lease",
+                lease_id,
+                actor_id=actor_id,
+                amount=interest_amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            logger.info("lease_interest_accrued", extra={
+                "lease_id": str(lease_id),
+                "interest_amount": str(interest_amount),
+            })
+
             result = self._poster.post_event(
                 event_type="lease.interest_accrued",
                 payload={
@@ -440,13 +494,26 @@ class LeaseAccountingService:
             else "lease.amortization_operating"
         )
 
-        logger.info("lease_amortization_recorded", extra={
-            "lease_id": str(lease_id),
-            "amount": str(amortization_amount),
-            "classification": classification.value,
-        })
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                LEASE_RECORD_AMORTIZATION_WORKFLOW,
+                "lease",
+                lease_id,
+                actor_id=actor_id,
+                amount=amortization_amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            logger.info("lease_amortization_recorded", extra={
+                "lease_id": str(lease_id),
+                "amount": str(amortization_amount),
+                "classification": classification.value,
+            })
+
             result = self._poster.post_event(
                 event_type=event_type,
                 payload={
@@ -499,12 +566,25 @@ class LeaseAccountingService:
 
         posting_amount = abs(remeasurement_amount)
 
-        logger.info("lease_modification", extra={
-            "lease_id": str(lease_id),
-            "remeasurement_amount": str(remeasurement_amount),
-        })
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                LEASE_MODIFY_LEASE_WORKFLOW,
+                "lease",
+                lease_id,
+                actor_id=actor_id,
+                amount=posting_amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return modification, failure
+
+            logger.info("lease_modification", extra={
+                "lease_id": str(lease_id),
+                "remeasurement_amount": str(remeasurement_amount),
+            })
+
             result = self._poster.post_event(
                 event_type="lease.modified",
                 payload={
@@ -547,12 +627,25 @@ class LeaseAccountingService:
 
         Posts via lease.terminated_early.
         """
-        logger.info("lease_early_termination", extra={
-            "lease_id": str(lease_id),
-            "remaining_liability": str(remaining_liability),
-        })
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                LEASE_TERMINATE_EARLY_WORKFLOW,
+                "lease",
+                lease_id,
+                actor_id=actor_id,
+                amount=remaining_liability,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            logger.info("lease_early_termination", extra={
+                "lease_id": str(lease_id),
+                "remaining_liability": str(remaining_liability),
+            })
+
             result = self._poster.post_event(
                 event_type="lease.terminated_early",
                 payload={

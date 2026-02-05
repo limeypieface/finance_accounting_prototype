@@ -1,0 +1,226 @@
+policies:
+- name: LeaseFinanceInitial
+  version: 1
+  module: lease
+  description: Finance lease initial recognition
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: lease.finance_initial
+  meaning:
+    economic_type: LEASE_INITIAL_RECOGNITION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ROU_ASSET
+    credit_role: LEASE_LIABILITY
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Initial recognition amount must be positive
+  line_mappings:
+  - role: ROU_ASSET
+    side: debit
+  - role: LEASE_LIABILITY
+    side: credit
+- name: LeaseOperatingInitial
+  version: 1
+  module: lease
+  description: Operating lease initial recognition
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: lease.operating_initial
+  meaning:
+    economic_type: LEASE_INITIAL_RECOGNITION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ROU_ASSET
+    credit_role: LEASE_LIABILITY
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Initial recognition amount must be positive
+  line_mappings:
+  - role: ROU_ASSET
+    side: debit
+  - role: LEASE_LIABILITY
+    side: credit
+- name: LeasePaymentMade
+  version: 1
+  module: lease
+  description: Lease payment reducing liability
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: lease.payment_made
+  meaning:
+    economic_type: LEASE_PAYMENT
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: LEASE_LIABILITY
+    credit_role: CASH
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Payment amount must be positive
+  line_mappings:
+  - role: LEASE_LIABILITY
+    side: debit
+  - role: CASH
+    side: credit
+- name: LeaseInterestAccrued
+  version: 1
+  module: lease
+  description: Interest accrual on lease liability
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: lease.interest_accrued
+  meaning:
+    economic_type: LEASE_INTEREST
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: LEASE_INTEREST
+    credit_role: LEASE_LIABILITY
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Interest amount must be positive
+  line_mappings:
+  - role: LEASE_INTEREST
+    side: debit
+  - role: LEASE_LIABILITY
+    side: credit
+- name: LeaseAmortizationFinance
+  version: 1
+  module: lease
+  description: Finance lease ROU asset amortization
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: lease.amortization_finance
+  meaning:
+    economic_type: LEASE_AMORTIZATION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ROU_AMORTIZATION
+    credit_role: ROU_ASSET
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Amortization amount must be positive
+  line_mappings:
+  - role: ROU_AMORTIZATION
+    side: debit
+  - role: ROU_ASSET
+    side: credit
+- name: LeaseAmortizationOperating
+  version: 1
+  module: lease
+  description: Operating lease ROU asset amortization
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: lease.amortization_operating
+  meaning:
+    economic_type: LEASE_AMORTIZATION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ROU_AMORTIZATION
+    credit_role: ROU_ASSET
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Amortization amount must be positive
+  line_mappings:
+  - role: ROU_AMORTIZATION
+    side: debit
+  - role: ROU_ASSET
+    side: credit
+- name: LeaseModified
+  version: 1
+  module: lease
+  description: Lease modification remeasurement
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: lease.modified
+  meaning:
+    economic_type: LEASE_MODIFICATION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: ROU_ASSET
+    credit_role: LEASE_LIABILITY
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Modification amount must be positive
+  line_mappings:
+  - role: ROU_ASSET
+    side: debit
+  - role: LEASE_LIABILITY
+    side: credit
+- name: LeaseTerminatedEarly
+  version: 1
+  module: lease
+  description: Early lease termination
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: lease.terminated_early
+  meaning:
+    economic_type: LEASE_TERMINATION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: LEASE_LIABILITY
+    credit_role: ROU_ASSET
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Termination amount must be positive
+  line_mappings:
+  - role: LEASE_LIABILITY
+    side: debit
+  - role: ROU_ASSET
+    side: credit
+- name: LeaseImpairment
+  version: 1
+  module: lease
+  description: ROU asset impairment
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: lease.impairment
+  meaning:
+    economic_type: LEASE_IMPAIRMENT
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: IMPAIRMENT_LOSS
+    credit_role: ROU_ASSET
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Impairment amount must be positive
+  line_mappings:
+  - role: IMPAIRMENT_LOSS
+    side: debit
+  - role: ROU_ASSET
+    side: credit

@@ -204,6 +204,7 @@ def parse_policy(data: dict[str, Any]) -> PolicyDefinition:
         precedence=precedence,
         valuation_model=data.get("valuation_model"),
         line_mappings=line_mappings,
+        intent_source=data.get("intent_source"),
         required_engines=tuple(data.get("required_engines", ())),
         engine_parameters_ref=data.get("engine_parameters_ref"),
         variance_disposition=data.get("variance_disposition"),

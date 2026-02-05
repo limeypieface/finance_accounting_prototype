@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from finance_kernel.domain.validation import require_decimal
+
 
 def calculate_temporary_differences(
     book_basis: Decimal,
@@ -44,8 +46,8 @@ def calculate_temporary_differences(
           or ``'none'`` (zero difference).
         - ``difference_amount`` >= 0.
     """
-    assert isinstance(book_basis, Decimal), "book_basis must be Decimal"
-    assert isinstance(tax_basis, Decimal), "tax_basis must be Decimal"
+    require_decimal(book_basis, "book_basis")
+    require_decimal(tax_basis, "tax_basis")
     diff = book_basis - tax_basis
     if diff > 0:
         return diff, "taxable"

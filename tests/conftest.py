@@ -6,14 +6,29 @@ Provides:
 - Test data generators
 - Common test utilities
 
+Database isolation:
+- Tests use a SEPARATE database (finance_kernel_pytest by default) so that
+  interactive.py and scripts (run_import, seed_data, etc.) can use
+  finance_kernel_test without tests ever dropping or truncating that data.
+- The only way to reset/drop interactive data is via the user (X in interactive.py).
+- Create the pytest DB once: createdb -U finance finance_kernel_pytest
+- Override with DATABASE_URL to point tests at a different DB.
+
+Plugins:
+- tests.reality.plugin: dependency reality detector (patch-based; checks @pytest.mark.system)
+- tests.architecture_log.plugin: log-based architecture verification (markers in logs per test)
+
 Environment Variables:
-- DATABASE_URL: PostgreSQL connection URL (e.g., postgresql://user:pass@localhost/db)
-  If not set, uses default local PostgreSQL URL.
+- DATABASE_URL: PostgreSQL connection URL for pytest (default: finance_kernel_pytest).
+  Do not point this at finance_kernel_test if you want to preserve interactive data.
 
 Requirements:
 - PostgreSQL must be running locally (brew services start postgresql@15)
-- Database 'finance_kernel_test' must exist with user 'finance'
+- Database finance_kernel_pytest must exist (createdb -U finance finance_kernel_pytest)
 """
+
+# Reality detector (patch-based) + architecture log verification (log-based markers)
+pytest_plugins = ["tests.reality.plugin", "tests.architecture_log.plugin"]
 
 import json
 import logging
@@ -24,6 +39,11 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import StringIO
 from uuid import UUID, uuid4
+
+# Mutation kill-rate audit: apply one seam mutation before any kernel imports (see tests/mutation/)
+if os.environ.get("MUTATION_NAME"):
+    from tests.mutation.mutations import apply_mutation
+    apply_mutation(os.environ["MUTATION_NAME"])
 
 import pytest
 from sqlalchemy import text
@@ -93,6 +113,17 @@ from finance_kernel.services.period_service import PeriodService
 TEST_ACTOR_ID = uuid4()
 
 
+def pytest_addoption(parser):
+    """Register -T / --show-trace so you can run: pytest -T -s ... instead of SHOW_TRACE=1 pytest -s ..."""
+    parser.addoption(
+        "--show-trace",
+        "-T",
+        action="store_true",
+        default=False,
+        help="Print workflow/interpretation trace for every posted event (same as SHOW_TRACE=1)",
+    )
+
+
 # =============================================================================
 # Logging fixtures
 # =============================================================================
@@ -113,6 +144,52 @@ def _clear_log_context():
     LogContext.clear()
     yield
     LogContext.clear()
+
+
+# =============================================================================
+# Trace output (decision journal) — always available when you want it
+# =============================================================================
+
+
+@pytest.fixture
+def show_trace(session):
+    """Return a callable to print the full audit trace for an event_id.
+
+    Use in any test that posts an event when you want to see the decision
+    journal (workflow + interpretation + journal write). Run with -s so
+    output is visible.
+
+    Example::
+
+        def test_record_invoice(session, ar_service, show_trace, ...):
+            result = ar_service.record_invoice(...)
+            assert result.is_success
+            show_trace(result.event_id)   # no import needed
+    """
+    from tests.trace.show_trace import show_trace_for_event
+    return lambda event_id: show_trace_for_event(session, event_id)
+
+
+@pytest.fixture(autouse=True)
+def _show_trace_after_post_if_enabled(session, request):
+    """When -T/--show-trace or SHOW_TRACE=1, print trace for every event posted in this test (global, no per-test code).
+
+    Queries the session for InterpretationOutcome rows in this transaction (works after flush).
+    Run: pytest -T -s tests/modules/test_ar_service.py -k test_record_payment_posts
+    """
+    yield
+    show_trace = request.config.getoption("show_trace", default=False) or os.environ.get("SHOW_TRACE")
+    if not show_trace:
+        return
+    from sqlalchemy import select
+    from finance_kernel.models.interpretation_outcome import InterpretationOutcome
+    from tests.trace.show_trace import show_trace_for_event
+    seen: set = set()
+    for row in session.scalars(select(InterpretationOutcome)).all():
+        eid = row.source_event_id
+        if eid not in seen:
+            seen.add(eid)
+            show_trace_for_event(session, eid)
 
 
 @pytest.fixture
@@ -141,12 +218,20 @@ def captured_logs():
 
     root.removeHandler(handler)
 
-# Default PostgreSQL URL for local installation
-DEFAULT_POSTGRES_URL = "postgresql://finance:finance_test_pwd@localhost:5432/finance_kernel_test"
+# Interactive/scripts use finance_kernel_test; pytest uses a separate DB so tests
+# never drop or truncate interactive data. Create once: createdb -U finance finance_kernel_pytest
+PYTEST_DEFAULT_DB = "finance_kernel_pytest"
+PYTEST_DEFAULT_URL = "postgresql://finance:finance_test_pwd@localhost:5432/finance_kernel_pytest"
+# Legacy name for code that still references this (e.g. docs); tests should use PYTEST_DEFAULT_URL
+DEFAULT_POSTGRES_URL = PYTEST_DEFAULT_URL
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """Fallback cleanup: kill orphaned connections even if fixtures fail."""
+    """Fallback cleanup: kill orphaned connections. Mutation audit: fail if all passed under mutation."""
+    if os.environ.get("MUTATION_NAME") and exitstatus == 0:
+        print("\nREGRESSION: All tests passed under mutation. Expected at least one failure.")
+        print(f"Mutation: {os.environ['MUTATION_NAME']}")
+        pytest.exit(1)
     _kill_orphaned_connections()
 
 
@@ -158,18 +243,24 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "slow_locks: mark test as potentially waiting for DB locks"
     )
+    config.addinivalue_line(
+        "markers", "system: full-stack test; must log config_load, db_session, persistence (architecture log + reality)"
+    )
+    config.addinivalue_line(
+        "markers", "service: integration test using test fixtures; DB/persistence not required to hit get_session/get_active_config"
+    )
 
 
 def _kill_orphaned_connections():
     """
-    Kill any orphaned database connections from previous test runs.
+    Kill orphaned connections to the TEST database only (from get_database_url()).
 
-    This prevents tests from hanging when previous runs left connections
-    open with uncommitted transactions holding locks.
+    Never touches finance_kernel_test (interactive/scripts DB). This prevents
+    tests from hanging when a previous test run left connections open.
     """
     import psycopg2
     try:
-        # Connect to postgres database (not the test database) to kill connections
+        db_name = _database_name_from_url(get_database_url())
         conn = psycopg2.connect(
             dbname="postgres",
             user="finance",
@@ -178,25 +269,35 @@ def _kill_orphaned_connections():
         )
         conn.autocommit = True
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT pg_terminate_backend(pid)
             FROM pg_stat_activity
-            WHERE datname = 'finance_kernel_test'
+            WHERE datname = %s
             AND pid <> pg_backend_pid()
-        """)
+            """,
+            (db_name,),
+        )
         terminated = cur.rowcount
         cur.close()
         conn.close()
         if terminated > 0:
-            print(f"\n[conftest] Killed {terminated} orphaned DB connection(s)")
+            print(f"\n[conftest] Killed {terminated} orphaned connection(s) to {db_name}")
     except Exception as e:
         # Don't fail if we can't connect - DB might not be running
         print(f"\n[conftest] Could not clean orphaned connections: {e}")
 
 
 def get_database_url() -> str:
-    """Get database URL from environment, or use default PostgreSQL URL."""
-    return os.environ.get("DATABASE_URL", DEFAULT_POSTGRES_URL)
+    """Get database URL for pytest. Default: finance_kernel_pytest (never finance_kernel_test)."""
+    return os.environ.get("DATABASE_URL", PYTEST_DEFAULT_URL)
+
+
+def _database_name_from_url(url: str) -> str:
+    """Extract database name from PostgreSQL URL (path after last /)."""
+    from urllib.parse import urlparse
+    path = urlparse(url).path
+    return (path.lstrip("/").split("/")[0] or "postgres").split("?")[0]
 
 
 # =============================================================================
@@ -371,6 +472,21 @@ def db_tables(db_engine):
     from finance_modules._orm_registry import create_all_tables
     create_all_tables()
 
+    # Sanity check: ensure core tables exist so we fail fast with a clear message
+    # instead of hundreds of "relation X does not exist" errors.
+    with db_engine.connect() as conn:
+        r = conn.execute(
+            text("SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'accounts'")
+        )
+        if r.scalar() is None:
+            db_name = _database_name_from_url(get_database_url())
+            raise RuntimeError(
+                f"Schema creation did not create 'accounts' in database {db_name!r}. "
+                "Ensure DATABASE_URL points to the test DB (default: finance_kernel_pytest), "
+                "that the DB exists (createdb -U finance finance_kernel_pytest), "
+                "and that create_all_tables() did not raise during setup."
+            )
+
     # ORM-level immutability listeners (defense layer 1, separate from
     # the DB triggers installed by create_all_tables).
     register_immutability_listeners()
@@ -432,10 +548,15 @@ def session(db_tables, db_engine) -> Generator[Session, None, None]:
       changes made during the test
 
     This gives perfect per-test isolation with zero DDL churn.
+
+    Trace helper (always available when you have session):
+        session.show_trace(event_id)  # prints human-readable audit trace (use pytest -s)
     """
     conn = db_engine.connect()
     trans = conn.begin()
     sess = Session(bind=conn, join_transaction_mode="create_savepoint", expire_on_commit=False)
+    from tests.trace.show_trace import show_trace_for_event
+    sess.show_trace = lambda event_id: show_trace_for_event(sess, event_id)
     yield sess
     try:
         sess.close()
@@ -556,6 +677,24 @@ def auditor_service(session: Session, deterministic_clock):
 
 
 @pytest.fixture
+def approval_service(session, auditor_service, deterministic_clock):
+    """ApprovalService for WorkflowExecutor (used when testing guards in production path)."""
+    from finance_kernel.services.approval_service import ApprovalService
+    return ApprovalService(session, auditor_service, deterministic_clock)
+
+
+@pytest.fixture
+def workflow_executor(approval_service, deterministic_clock):
+    """WorkflowExecutor with default guard evaluators (used when testing guards in production path)."""
+    from finance_services.workflow_executor import WorkflowExecutor
+    return WorkflowExecutor(
+        approval_service=approval_service,
+        approval_policies={},
+        clock=deterministic_clock,
+    )
+
+
+@pytest.fixture
 def ingestor_service(session: Session, deterministic_clock, auditor_service):
     """Provide an IngestorService instance."""
     return IngestorService(session, deterministic_clock, auditor_service)
@@ -565,6 +704,34 @@ def ingestor_service(session: Session, deterministic_clock, auditor_service):
 def period_service(session: Session, deterministic_clock) -> PeriodService:
     """Provide a PeriodService instance."""
     return PeriodService(session, deterministic_clock)
+
+
+@pytest.fixture
+def party_service(session: Session):
+    """PartyService for G14 actor validation at posting boundary."""
+    from finance_kernel.services.party_service import PartyService
+    return PartyService(session)
+
+
+@pytest.fixture
+def test_actor_party(session: Session, test_actor_id: UUID):
+    """Create the Party for test_actor_id so posting can satisfy G14 (actor validation mandatory)."""
+    from finance_kernel.models.party import Party, PartyStatus, PartyType
+    existing = session.get(Party, test_actor_id)
+    if existing is not None:
+        return existing
+    party = Party(
+        id=test_actor_id,
+        party_type=PartyType.EMPLOYEE,
+        party_code="TEST-ACTOR",
+        name="Test Actor",
+        status=PartyStatus.ACTIVE,
+        is_active=True,
+        created_by_id=test_actor_id,
+    )
+    session.add(party)
+    session.flush()
+    return party
 
 
 # =============================================================================
@@ -1006,6 +1173,37 @@ def make_lines():
 
 
 # =============================================================================
+# Policy registry (global state) — reset to avoid duplicate / shadowing
+# =============================================================================
+
+
+def policy_registry_reset() -> None:
+    """Clear PolicySelector and ModulePolicyRegistry (process-wide state).
+
+    Call before (re)registering profiles so that:
+    - No duplicate registration (same process, multiple test modules).
+    - No profile shadowing (last-writer-wins).
+    - Policy selection order is deterministic.
+
+    Safe to call multiple times. Used by register_modules and by domain tests
+    that register a subset of profiles and need a clean slate.
+    """
+    from finance_kernel.domain.policy_bridge import ModulePolicyRegistry
+    from finance_kernel.domain.policy_selector import PolicySelector
+
+    PolicySelector.clear()
+    ModulePolicyRegistry.clear()
+
+
+@pytest.fixture
+def policy_registry_reset_fixture():
+    """Fixture that resets policy registries (for tests that register profiles manually)."""
+    policy_registry_reset()
+    yield
+    policy_registry_reset()
+
+
+# =============================================================================
 # Module integration fixtures
 # =============================================================================
 
@@ -1015,19 +1213,18 @@ def register_modules():
     """Register all module profiles in kernel registries.
 
     Session-scoped: runs once per test session.
-    Populates PolicySelector and ModulePolicyRegistry with all
-    module-defined AccountingPolicys and their line mappings.
+    Explicitly resets PolicySelector and ModulePolicyRegistry before and after
+    so that parallel runs (-n) or reuse of the same process across test modules
+    do not cause duplicate registration, profile shadowing, or nondeterministic
+    policy selection. Populates both registries with all module-defined
+    AccountingPolicys and their line mappings.
     """
-    from finance_kernel.domain.policy_bridge import ModulePolicyRegistry
-    from finance_kernel.domain.policy_selector import PolicySelector
     from finance_modules import register_all_modules
 
-    PolicySelector.clear()
-    ModulePolicyRegistry.clear()
+    policy_registry_reset()
     register_all_modules()
     yield
-    PolicySelector.clear()
-    ModulePolicyRegistry.clear()
+    policy_registry_reset()
 
 
 @pytest.fixture
@@ -1747,11 +1944,12 @@ def module_role_resolver(module_accounts):
 
 
 @pytest.fixture
-def module_posting_service(session, module_role_resolver, deterministic_clock, register_modules):
+def module_posting_service(session, module_role_resolver, deterministic_clock, register_modules, party_service, test_actor_party):
     """Provide a ModulePostingService for integration testing.
 
     Depends on register_modules (session-scoped) to ensure all module
     profiles are registered before any posting is attempted.
+    G14: party_service and test_actor_party required — actor validation is mandatory for all POSTED outcomes.
     """
     from finance_kernel.services.module_posting_service import ModulePostingService
 
@@ -1760,6 +1958,7 @@ def module_posting_service(session, module_role_resolver, deterministic_clock, r
         role_resolver=module_role_resolver,
         clock=deterministic_clock,
         auto_commit=False,
+        party_service=party_service,
     )
 
 

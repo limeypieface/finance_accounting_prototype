@@ -1,0 +1,320 @@
+policies:
+- name: YearEndClose
+  version: 1
+  module: gl
+  description: Close revenue/expense to retained earnings
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: gl.year_end_close
+  meaning:
+    economic_type: YEAR_END_CLOSE
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INCOME_SUMMARY
+    credit_role: RETAINED_EARNINGS
+  line_mappings:
+  - role: INCOME_SUMMARY
+    side: debit
+  - role: RETAINED_EARNINGS
+    side: credit
+- name: DividendDeclared
+  version: 1
+  module: gl
+  description: Dividend declared from retained earnings
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: gl.dividend_declared
+  meaning:
+    economic_type: DIVIDEND_DECLARED
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: RETAINED_EARNINGS
+    credit_role: DIVIDENDS
+  line_mappings:
+  - role: RETAINED_EARNINGS
+    side: debit
+  - role: DIVIDENDS
+    side: credit
+- name: FXRevaluation
+  version: 1
+  module: gl
+  description: Foreign currency revaluation gain/loss
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: gl.fx_revaluation
+  meaning:
+    economic_type: FX_REVALUATION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: FOREIGN_CURRENCY_BALANCE
+    credit_role: FOREIGN_EXCHANGE_GAIN_LOSS
+  line_mappings:
+  - role: FOREIGN_CURRENCY_BALANCE
+    side: debit
+  - role: FOREIGN_EXCHANGE_GAIN_LOSS
+    side: credit
+- name: IntercompanyTransfer
+  version: 1
+  module: gl
+  description: Intercompany transaction
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: gl.intercompany_transfer
+  meaning:
+    economic_type: INTERCOMPANY_TRANSFER
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INTERCOMPANY_DUE_FROM
+    credit_role: INTERCOMPANY_DUE_TO
+  line_mappings:
+  - role: INTERCOMPANY_DUE_FROM
+    side: debit
+  - role: INTERCOMPANY_DUE_TO
+    side: credit
+- name: DeferredRevenueRecognition
+  version: 1
+  module: gl
+  description: Records recognition of deferred revenue over service period
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: deferred.revenue_recognition
+  meaning:
+    economic_type: REVENUE_RECOGNITION
+    dimensions:
+    - org_unit
+    - cost_center
+    - project
+  ledger_effects:
+  - ledger: GL
+    debit_role: DEFERRED_REVENUE
+    credit_role: REVENUE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Recognition amount must be positive
+  - guard_type: reject
+    expression: payload.remaining_deferred < 0
+    reason_code: OVER_RECOGNITION
+    message: Cannot recognize more than deferred balance
+  line_mappings:
+  - role: DEFERRED_REVENUE
+    side: debit
+  - role: REVENUE
+    side: credit
+- name: DeferredExpenseRecognition
+  version: 1
+  module: gl
+  description: Records recognition of prepaid expense over benefit period
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: deferred.expense_recognition
+  meaning:
+    economic_type: EXPENSE_RECOGNITION
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE
+    credit_role: PREPAID_EXPENSE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Recognition amount must be positive
+  - guard_type: reject
+    expression: payload.remaining_deferred < 0
+    reason_code: OVER_RECOGNITION
+    message: Cannot recognize more than prepaid balance
+  line_mappings:
+  - role: EXPENSE
+    side: debit
+  - role: PREPAID_EXPENSE
+    side: credit
+- name: FXUnrealizedGain
+  version: 1
+  module: gl
+  description: Records unrealized FX gain from period-end revaluation
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: fx.unrealized_gain
+  meaning:
+    economic_type: FX_GAIN
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: FOREIGN_CURRENCY_BALANCE
+    credit_role: UNREALIZED_FX_GAIN
+  line_mappings:
+  - role: FOREIGN_CURRENCY_BALANCE
+    side: debit
+  - role: UNREALIZED_FX_GAIN
+    side: credit
+- name: FXUnrealizedLoss
+  version: 1
+  module: gl
+  description: Records unrealized FX loss from period-end revaluation
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: fx.unrealized_loss
+  meaning:
+    economic_type: FX_LOSS
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: UNREALIZED_FX_LOSS
+    credit_role: FOREIGN_CURRENCY_BALANCE
+  line_mappings:
+  - role: UNREALIZED_FX_LOSS
+    side: debit
+  - role: FOREIGN_CURRENCY_BALANCE
+    side: credit
+- name: FXRealizedGain
+  version: 1
+  module: gl
+  description: Records realized FX gain from settled transaction
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: fx.realized_gain
+  meaning:
+    economic_type: FX_GAIN
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: FOREIGN_CURRENCY_BALANCE
+    credit_role: REALIZED_FX_GAIN
+  line_mappings:
+  - role: FOREIGN_CURRENCY_BALANCE
+    side: debit
+  - role: REALIZED_FX_GAIN
+    side: credit
+- name: FXRealizedLoss
+  version: 1
+  module: gl
+  description: Records realized FX loss from settled transaction
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: fx.realized_loss
+  meaning:
+    economic_type: FX_LOSS
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: REALIZED_FX_LOSS
+    credit_role: FOREIGN_CURRENCY_BALANCE
+  line_mappings:
+  - role: REALIZED_FX_LOSS
+    side: debit
+  - role: FOREIGN_CURRENCY_BALANCE
+    side: credit
+- name: GLRecurringEntry
+  version: 1
+  module: gl
+  description: Generate journal entry from recurring template
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: gl.recurring_entry
+  meaning:
+    economic_type: RECURRING_ENTRY
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+    - cost_center
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE
+    credit_role: ACCRUED_LIABILITY
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Recurring entry amount must be positive
+  line_mappings:
+  - role: EXPENSE
+    side: debit
+  - role: ACCRUED_LIABILITY
+    side: credit
+- name: GLRetainedEarningsRoll
+  version: 1
+  module: gl
+  description: 'Year-end retained earnings roll: P&L to retained earnings'
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: gl.retained_earnings_roll
+  meaning:
+    economic_type: RETAINED_EARNINGS_ROLL
+    quantity_field: payload.amount
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: INCOME_SUMMARY
+    credit_role: RETAINED_EARNINGS
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: Retained earnings roll amount must be positive
+  line_mappings:
+  - role: INCOME_SUMMARY
+    side: debit
+  - role: RETAINED_EARNINGS
+    side: credit
+# Historical journal import (QBO/ERP): migration-only; intent from payload.lines; full pipeline validation.
+# Hard-gate (producer=ingestion, actor_type in system|migration_service, metadata.migration_batch_id) enforced in ModulePostingService.
+- name: ImportHistoricalJournal
+  version: 1
+  module: gl
+  description: Historical journal entry import (migration-only); lines from payload, full kernel validation
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: import.historical_journal
+  meaning:
+    economic_type: IMPORT_HISTORICAL_JOURNAL
+    dimensions: []
+  intent_source: payload_lines
+  ledger_effects:
+  - ledger: GL
+    debit_role: EXPENSE
+    credit_role: EXPENSE
+  line_mappings: []
+
+# Multi-Currency Deepening
+- name: FXTranslationAdjustment
+  version: 1
+  module: gl
+  description: Records cumulative translation adjustment for foreign currency translation (ASC 830)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: fx.translation_adjustment
+  meaning:
+    economic_type: FX_TRANSLATION
+    dimensions:
+    - org_unit
+  ledger_effects:
+  - ledger: GL
+    debit_role: UNREALIZED_FX_LOSS
+    credit_role: CUMULATIVE_TRANSLATION_ADJ
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_AMOUNT
+    message: CTA amount must be positive
+  line_mappings:
+  - role: UNREALIZED_FX_LOSS
+    side: debit
+  - role: CUMULATIVE_TRANSLATION_ADJ
+    side: credit

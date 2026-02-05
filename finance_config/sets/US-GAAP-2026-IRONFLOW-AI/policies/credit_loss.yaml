@@ -1,0 +1,101 @@
+policies:
+- name: CreditLossProvision
+  version: 1
+  module: credit_loss
+  description: Records credit loss provision (CECL)
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: credit_loss.provision
+  meaning:
+    economic_type: CREDIT_LOSS_PROVISION
+    dimensions:
+    - segment
+  ledger_effects:
+  - ledger: GL
+    debit_role: BAD_DEBT_EXPENSE
+    credit_role: ALLOWANCE_DOUBTFUL
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_PROVISION
+    message: Provision amount must be positive
+  line_mappings:
+  - role: BAD_DEBT_EXPENSE
+    side: debit
+  - role: ALLOWANCE_DOUBTFUL
+    side: credit
+- name: CreditLossAdjustment
+  version: 1
+  module: credit_loss
+  description: Adjusts credit loss provision
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: credit_loss.adjustment
+  meaning:
+    economic_type: CREDIT_LOSS_ADJUSTMENT
+    dimensions:
+    - segment
+  ledger_effects:
+  - ledger: GL
+    debit_role: BAD_DEBT_EXPENSE
+    credit_role: ALLOWANCE_DOUBTFUL
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_ADJUSTMENT
+    message: Adjustment amount must be positive
+  line_mappings:
+  - role: BAD_DEBT_EXPENSE
+    side: debit
+  - role: ALLOWANCE_DOUBTFUL
+    side: credit
+- name: CreditLossWriteOff
+  version: 1
+  module: credit_loss
+  description: Write-off against allowance
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: credit_loss.write_off
+  meaning:
+    economic_type: CREDIT_LOSS_WRITE_OFF
+    dimensions:
+    - segment
+  ledger_effects:
+  - ledger: GL
+    debit_role: ALLOWANCE_DOUBTFUL
+    credit_role: ACCOUNTS_RECEIVABLE
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_WRITE_OFF
+    message: Write-off amount must be positive
+  line_mappings:
+  - role: ALLOWANCE_DOUBTFUL
+    side: debit
+  - role: ACCOUNTS_RECEIVABLE
+    side: credit
+- name: CreditLossRecovery
+  version: 1
+  module: credit_loss
+  description: Recovery of previously written-off amount
+  effective_from: '2024-01-01'
+  trigger:
+    event_type: credit_loss.recovery
+  meaning:
+    economic_type: CREDIT_LOSS_RECOVERY
+    dimensions:
+    - segment
+  ledger_effects:
+  - ledger: GL
+    debit_role: ACCOUNTS_RECEIVABLE
+    credit_role: ALLOWANCE_DOUBTFUL
+  guards:
+  - guard_type: reject
+    expression: payload.amount <= 0
+    reason_code: INVALID_RECOVERY
+    message: Recovery amount must be positive
+  line_mappings:
+  - role: ACCOUNTS_RECEIVABLE
+    side: debit
+  - role: ALLOWANCE_DOUBTFUL
+    side: credit

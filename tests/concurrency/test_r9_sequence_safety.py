@@ -67,11 +67,23 @@ class TestR9SequenceImplementation:
 
         R9: Row-level lock required for safe counter increment.
         """
-        source = inspect.getsource(SequenceService.next_value)
+        # Use source file so we see the real implementation, not a pytest-plugin wrapper
+        # (e.g. reality detector wraps next_value; inspect.getsource would see the wrapper).
+        path = Path(inspect.getfile(SequenceService))
+        source = path.read_text()
+        # Find the next_value method body: from "def next_value" to next "    def " or end of file
+        match = re.search(
+            r"def next_value\s*\([^)]*\).*?(?=\n    def \w|\nclass \w|\Z)",
+            source,
+            re.DOTALL,
+        )
+        assert match, "SequenceService.next_value not found in source"
+        method_source = match.group(0)
 
         # Must contain with_for_update()
-        assert 'with_for_update()' in source, \
+        assert "with_for_update()" in method_source, (
             "SequenceService.next_value must use with_for_update() for row-level locking"
+        )
 
     def test_no_max_seq_pattern_in_sequence_service(self):
         """

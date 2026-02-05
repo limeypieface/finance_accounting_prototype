@@ -1,41 +1,12 @@
-"""
-Procurement Workflows.
+"""Procurement Workflows.
 
 State machines for requisition and purchase order processing.
 """
 
-from dataclasses import dataclass
-
 from finance_kernel.logging_config import get_logger
+from finance_kernel.domain.workflow import Guard, Transition, Workflow
 
 logger = get_logger("modules.procurement.workflows")
-
-
-@dataclass(frozen=True)
-class Guard:
-    """A condition for a transition."""
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class Transition:
-    """A valid state transition."""
-    from_state: str
-    to_state: str
-    action: str
-    guard: Guard | None = None
-    posts_entry: bool = False
-
-
-@dataclass(frozen=True)
-class Workflow:
-    """A state machine definition."""
-    name: str
-    description: str
-    initial_state: str
-    states: tuple[str, ...]
-    transitions: tuple[Transition, ...]
 
 
 # -----------------------------------------------------------------------------
@@ -78,6 +49,50 @@ logger.info(
             FULLY_INVOICED.name,
         ],
     },
+)
+
+
+def _procurement_draft_posted(name: str, description: str) -> Workflow:
+    """Simple draft -> posted lifecycle for procurement actions (no guards)."""
+    return Workflow(
+        name=name,
+        description=description,
+        initial_state="draft",
+        states=("draft", "posted"),
+        transitions=(Transition("draft", "posted", action="post", posts_entry=True),),
+    )
+
+
+# Action-specific workflows for posting methods (R28: no generic workflow)
+PROCUREMENT_CREATE_PO_WORKFLOW = _procurement_draft_posted(
+    "procurement_create_po", "Create purchase order and post encumbrance"
+)
+PROCUREMENT_RECORD_COMMITMENT_WORKFLOW = _procurement_draft_posted(
+    "procurement_record_commitment", "Record purchase commitment (memo)"
+)
+PROCUREMENT_RELIEVE_COMMITMENT_WORKFLOW = _procurement_draft_posted(
+    "procurement_relieve_commitment", "Relieve purchase commitment"
+)
+PROCUREMENT_RECEIVE_GOODS_WORKFLOW = _procurement_draft_posted(
+    "procurement_receive_goods", "Receive goods against PO and relieve encumbrance"
+)
+PROCUREMENT_RECORD_PRICE_VARIANCE_WORKFLOW = _procurement_draft_posted(
+    "procurement_record_price_variance", "Record purchase price variance (PPV)"
+)
+PROCUREMENT_CREATE_REQUISITION_WORKFLOW = _procurement_draft_posted(
+    "procurement_create_requisition", "Create purchase requisition"
+)
+PROCUREMENT_CONVERT_REQUISITION_TO_PO_WORKFLOW = _procurement_draft_posted(
+    "procurement_convert_requisition_to_po", "Convert requisition to PO (relief + encumbrance)"
+)
+PROCUREMENT_AMEND_PO_WORKFLOW = _procurement_draft_posted(
+    "procurement_amend_po", "Amend PO and adjust encumbrance"
+)
+PROCUREMENT_MATCH_RECEIPT_TO_PO_WORKFLOW = _procurement_draft_posted(
+    "procurement_match_receipt_to_po", "Match receipt to PO (3-way match)"
+)
+PROCUREMENT_RECORD_QUANTITY_VARIANCE_WORKFLOW = _procurement_draft_posted(
+    "procurement_record_quantity_variance", "Record quantity variance PO vs receipt"
 )
 
 
@@ -141,7 +156,7 @@ PURCHASE_ORDER_WORKFLOW = Workflow(
     ),
     transitions=(
         Transition("draft", "pending_approval", action="submit"),
-        Transition("pending_approval", "approved", action="approve", guard=APPROVAL_COMPLETE, posts_entry=True),
+        Transition("pending_approval", "approved", action="approve", posts_entry=True),
         Transition("pending_approval", "draft", action="reject"),
         Transition("approved", "sent", action="send", guard=VENDOR_APPROVED),
         Transition("sent", "acknowledged", action="acknowledge"),

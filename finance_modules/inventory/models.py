@@ -19,6 +19,7 @@ Invariants
 - ``StockLevel`` enforces non-negative ``quantity_on_hand`` and
   ``quantity_reserved``, and validates that
   ``quantity_available == quantity_on_hand - quantity_reserved``.
+- ``Item`` requires ``standard_cost > 0`` (standard costing business rule).
 - All monetary fields use ``Decimal`` -- never ``float`` (R16/R17).
 
 Failure Modes
@@ -93,6 +94,8 @@ class Item:
 
     Contract: Immutable value object.  ``standard_cost`` is expressed in the
     entity's functional currency and uses ``Decimal`` (never float).
+    Business rule: ``standard_cost`` must be positive (required for standard
+    costing and COGS; zero-cost items are not supported).
     """
     id: UUID
     code: str
@@ -107,6 +110,20 @@ class Item:
     reorder_quantity: Decimal | None = None
     gl_asset_account: str | None = None
     gl_expense_account: str | None = None  # for consumables
+
+    def __post_init__(self):
+        if self.standard_cost <= 0:
+            logger.warning(
+                "item_standard_cost_invalid",
+                extra={
+                    "item_id": str(self.id),
+                    "code": self.code,
+                    "standard_cost": str(self.standard_cost),
+                },
+            )
+            raise ValueError(
+                f"standard_cost must be positive (got {self.standard_cost})"
+            )
 
 
 @dataclass(frozen=True)
@@ -225,7 +242,7 @@ class InventoryIssue:
     unit_cost: Decimal
     total_cost: Decimal
     status: IssueStatus = IssueStatus.REQUESTED
-    destination_type: str | None = None  # work_order, sales_order, scrap
+    destination_type: str | None = None  # manufacturing_order, sales_order, scrap
     destination_id: UUID | None = None
     lot_number: str | None = None
 

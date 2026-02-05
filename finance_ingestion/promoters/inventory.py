@@ -28,6 +28,7 @@ class ItemPromoter:
         session: Session,
         actor_id: UUID,
         clock: Any,
+        **kwargs: Any,
     ) -> PromoteResult:
         return PromoteResult(
             success=False,
@@ -49,6 +50,7 @@ class LocationPromoter:
         session: Session,
         actor_id: UUID,
         clock: Any,
+        **kwargs: Any,
     ) -> PromoteResult:
         return PromoteResult(
             success=False,

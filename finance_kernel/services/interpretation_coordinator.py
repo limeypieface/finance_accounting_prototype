@@ -136,11 +136,19 @@ class InterpretationCoordinator:
         trace_id: UUID | None = None,
         compiled_policy: Any | None = None,
         event_payload: dict[str, Any] | None = None,
+        preamble_log: list[dict] | None = None,
+        policy_fingerprint: str | None = None,
+        profile_source: str | None = None,
     ) -> InterpretationResult:
         """Interpret an event and post to ledgers atomically.
 
         L5 Compliance: All operations happen in the current transaction.
         The caller must commit to finalize or rollback to abort.
+
+        preamble_log: Optional records (e.g. workflow transition outcomes) to
+        prepend to the decision_log for traceability and lookback.
+        policy_fingerprint: Optional canonical_fingerprint of the config pack (audit).
+        profile_source: Optional source of the profile (e.g. compiled_policy_pack).
         """
         correlation_id = str(_uuid4())
         capture = LogCapture()
@@ -151,6 +159,7 @@ class InterpretationCoordinator:
                 event_id=str(accounting_intent.source_event_id),
                 trace_id=str(trace_id) if trace_id else None,
             ):
+                LogContext.set_snapshot()
                 t0 = time.monotonic()
                 try:
                     result = self._do_interpret_and_post(
@@ -160,6 +169,8 @@ class InterpretationCoordinator:
                         trace_id=trace_id,
                         compiled_policy=compiled_policy,
                         event_payload=event_payload,
+                        policy_fingerprint=policy_fingerprint,
+                        profile_source=profile_source,
                     )
                     duration_ms = round((time.monotonic() - t0) * 1000, 2)
                     logger.info(
@@ -171,9 +182,11 @@ class InterpretationCoordinator:
                         },
                     )
 
-                    # Persist decision journal on the outcome
+                    # Persist decision journal on the outcome (preamble + capture)
                     if result.outcome is not None:
-                        result.outcome.decision_log = capture.records
+                        result.outcome.decision_log = (
+                            list(preamble_log) if preamble_log else []
+                        ) + capture.take_records()
                         self._session.flush()
 
                     return result
@@ -185,6 +198,8 @@ class InterpretationCoordinator:
                         exc_info=True,
                     )
                     raise
+                finally:
+                    LogContext.clear_snapshot()
         finally:
             capture.uninstall()
 
@@ -196,6 +211,8 @@ class InterpretationCoordinator:
         trace_id: UUID | None = None,
         compiled_policy: Any | None = None,
         event_payload: dict[str, Any] | None = None,
+        policy_fingerprint: str | None = None,
+        profile_source: str | None = None,
     ) -> InterpretationResult:
         """Internal interpret and post logic (within LogContext)."""
         logger.info(
@@ -207,6 +224,8 @@ class InterpretationCoordinator:
                 "econ_event_id": str(accounting_intent.econ_event_id),
                 "effective_date": str(accounting_intent.effective_date),
                 "ledger_count": len(accounting_intent.ledger_intents),
+                "profile_source": profile_source or "policy_selector",
+                "policy_fingerprint": policy_fingerprint,
             },
         )
 
@@ -218,6 +237,8 @@ class InterpretationCoordinator:
                 "source_event_id": str(accounting_intent.source_event_id),
                 "profile_id": accounting_intent.profile_id,
                 "profile_version": accounting_intent.profile_version,
+                "profile_source": profile_source or "policy_selector",
+                "policy_fingerprint": policy_fingerprint,
                 "coa_version": snapshot.coa_version if snapshot else None,
                 "dimension_schema_version": snapshot.dimension_schema_version if snapshot else None,
                 "rounding_policy_version": snapshot.rounding_policy_version if snapshot else None,
@@ -244,6 +265,37 @@ class InterpretationCoordinator:
                 compiled_policy, event_payload,
             )
 
+            # INVARIANT: No engine run → no success trace → no all_succeeded=True.
+            # Reject results that claim success without one success trace per required engine.
+            required = list(compiled_policy.required_engines)
+            if required:
+                traces_ok = (
+                    len(engine_result.traces) == len(required)
+                    and all(t.success for t in engine_result.traces)
+                )
+                if not traces_ok or not engine_result.all_succeeded:
+                    error_msg = (
+                        "; ".join(engine_result.errors)
+                        if engine_result.errors
+                        else (
+                            f"Expected {len(required)} success trace(s), got "
+                            f"{len(engine_result.traces)} (all_succeeded={engine_result.all_succeeded})"
+                        )
+                    )
+                    logger.error(
+                        "engine_dispatch_failed",
+                        extra={
+                            "errors": list(engine_result.errors),
+                            "policy_name": getattr(compiled_policy, "name", "unknown"),
+                            "required_engines": required,
+                            "trace_count": len(engine_result.traces),
+                        },
+                    )
+                    return InterpretationResult.failure(
+                        error_code="ENGINE_DISPATCH_FAILED",
+                        error_message=f"Engine dispatch failed: {error_msg}",
+                    )
+
             # Log each engine trace record to the decision journal
             for trace in engine_result.traces:
                 logger.info(
@@ -258,20 +310,6 @@ class InterpretationCoordinator:
                         "error": trace.error,
                         "parameters": trace.parameters_used,
                     },
-                )
-
-            if not engine_result.all_succeeded:
-                error_msg = "; ".join(engine_result.errors)
-                logger.error(
-                    "engine_dispatch_failed",
-                    extra={
-                        "errors": list(engine_result.errors),
-                        "policy_name": getattr(compiled_policy, "name", "unknown"),
-                    },
-                )
-                return InterpretationResult.failure(
-                    error_code="ENGINE_DISPATCH_FAILED",
-                    error_message=f"Engine dispatch failed: {error_msg}",
                 )
 
             logger.info(
@@ -349,12 +387,14 @@ class InterpretationCoordinator:
 
         entry_ids = [str(eid) for eid in journal_result.entry_ids]
 
+        ledger_ids = [li.ledger_id for li in accounting_intent.ledger_intents]
         logger.info(
             "interpretation_posted",
             extra={
                 "outcome_id": str(outcome.id) if hasattr(outcome, "id") else None,
                 "entry_ids": entry_ids,
                 "entry_count": len(entry_ids),
+                "ledger_ids": ledger_ids,
             },
         )
 
@@ -697,10 +737,10 @@ class InterpretationCoordinator:
                 f"No outcome found for event {source_event_id}",
             )
 
-        if existing_outcome.status != OutcomeStatus.BLOCKED:
+        if existing_outcome.status_enum != OutcomeStatus.BLOCKED:
             return InterpretationResult.failure(
                 "INVALID_TRANSITION",
-                f"Cannot transition from {existing_outcome.status.value} to POSTED",
+                f"Cannot transition from {existing_outcome.status_str} to POSTED",
             )
 
         # Create economic event

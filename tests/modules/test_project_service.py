@@ -52,12 +52,17 @@ from tests.modules.conftest import TEST_PROJECT_ID
 
 
 @pytest.fixture
-def project_service(session, module_role_resolver, deterministic_clock, register_modules):
-    """Provide ProjectService for integration testing."""
+def project_service(
+    session, module_role_resolver, deterministic_clock, register_modules, workflow_executor,
+    party_service, test_actor_party,
+):
+    """Provide ProjectService for integration testing. party_service + test_actor_party for G14."""
     return ProjectService(
         session=session,
         role_resolver=module_role_resolver,
+        workflow_executor=workflow_executor,
         clock=deterministic_clock,
+        party_service=party_service,
     )
 
 

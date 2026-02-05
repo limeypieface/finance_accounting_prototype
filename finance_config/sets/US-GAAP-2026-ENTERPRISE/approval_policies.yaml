@@ -41,3 +41,60 @@ approval_policies:
         required_roles: ["treasury_manager", "cfo"]
         min_approvers: 1
         guard_expression: "payload.amount > 0"
+
+  # DCAA Timesheet Approval (D2: DCAA CAM 6-406)
+  - policy_name: "timesheet_approval"
+    version: 1
+    applies_to_workflow: "timesheet"
+    applies_to_action: "approve"
+    policy_currency: "USD"
+    rules:
+      - rule_name: "supervisor_approval"
+        priority: 10
+        required_roles: ["supervisor", "project_manager", "department_manager"]
+        min_approvers: 1
+        description: "Direct supervisor or project manager must approve all timesheets"
+
+  # DCAA Travel Authorization Approval (D6: FAR 31.205-46)
+  - policy_name: "travel_auth_approval"
+    version: 1
+    applies_to_workflow: "travel_authorization"
+    applies_to_action: "approve"
+    policy_currency: "USD"
+    rules:
+      - rule_name: "supervisor_travel"
+        priority: 10
+        max_amount: "2500.00"
+        required_roles: ["supervisor", "project_manager"]
+        min_approvers: 1
+        description: "Supervisor approval for travel under $2,500"
+      - rule_name: "manager_travel"
+        priority: 20
+        min_amount: "2500.00"
+        required_roles: ["department_manager", "finance_manager"]
+        min_approvers: 1
+        description: "Manager approval for travel $2,500+"
+
+  # Expense Report Approval (supports D6/D7 compliance)
+  - policy_name: "expense_report_approval"
+    version: 1
+    applies_to_workflow: "expense_report"
+    applies_to_action: "approve"
+    policy_currency: "USD"
+    rules:
+      - rule_name: "auto_approve_small"
+        priority: 10
+        auto_approve_below: "100.00"
+        description: "Auto-approve expense reports under $100"
+      - rule_name: "supervisor_expense"
+        priority: 20
+        min_amount: "100.00"
+        max_amount: "5000.00"
+        required_roles: ["supervisor", "project_manager"]
+        min_approvers: 1
+      - rule_name: "finance_expense"
+        priority: 30
+        min_amount: "5000.00"
+        required_roles: ["finance_manager", "cfo"]
+        min_approvers: 1
+        description: "Finance review for expense reports $5,000+"

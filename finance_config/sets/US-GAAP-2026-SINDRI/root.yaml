@@ -1,0 +1,42 @@
+# US-GAAP-2026-SINDRI: Full config set for a company using Sindri (Ironflow) as the
+# operational system. Finance owns ledger, policies, posting; Sindri sends events
+# via integration (validate_contract + post_event_from_external). All profiles and
+# controls are enabled for comprehensive ERP-style operation.
+config_id: US-GAAP-2026-SINDRI
+version: 1
+status: published
+predecessor: US-GAAP-2026-ENTERPRISE
+scope:
+  legal_entity: ENTERPRISE
+  jurisdiction: US
+  regulatory_regime: GAAP
+  currency: USD
+  effective_from: '2024-01-01'
+  effective_to: null
+capabilities:
+  inventory: true
+  payroll: true
+  cash: true
+  gl: true
+  expense: true
+  ap: true
+  ar: true
+  assets: true
+  tax: true
+  procurement: true
+  wip: true
+  contracts: true
+  reporting: true
+  revenue: true
+  lease: true
+  budget: true
+  intercompany: true
+  credit_loss: true
+  project: true
+  dcaa: false
+  ifrs: false
+  multicurrency: false
+precedence_rules:
+- name: specificity_first
+  description: More specific where-clause wins over generic
+  rule_type: specificity

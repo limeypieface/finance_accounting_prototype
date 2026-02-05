@@ -1647,6 +1647,95 @@ CONTRACT_COST_DISALLOWED_MAPPINGS = (
 
 
 # =============================================================================
+# Rate Reconciliation Profiles (DCAA D8)
+# =============================================================================
+
+
+# --- Rate Reconciliation Underapplied ----------------------------------------
+
+CONTRACT_RATE_RECON_UNDERAPPLIED = AccountingPolicy(
+    name="ContractRateReconciliationUnderapplied",
+    version=1,
+    trigger=PolicyTrigger(
+        event_type="contract.rate_reconciliation",
+        schema_version=3,
+        where=(("payload.direction", "UNDERAPPLIED"),),
+    ),
+    meaning=PolicyMeaning(
+        economic_type="RATE_RECONCILIATION",
+        dimensions=("org_unit", "rate_type"),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="WIP_RATE_ADJUSTMENT",
+            credit_role="INDIRECT_RATE_VARIANCE",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.adjustment_amount <= 0",
+            reason_code="INVALID_ADJUSTMENT",
+            message="Underapplied adjustment amount must be positive",
+        ),
+    ),
+    description=(
+        "Records underapplied rate adjustment: actual indirect costs "
+        "exceeded provisional rates. Dr WIP Rate Adj / Cr Indirect Rate Variance."
+    ),
+)
+
+CONTRACT_RATE_RECON_UNDERAPPLIED_MAPPINGS = (
+    ModuleLineMapping(role="WIP_RATE_ADJUSTMENT", side="debit", ledger="GL"),
+    ModuleLineMapping(role="INDIRECT_RATE_VARIANCE", side="credit", ledger="GL"),
+)
+
+
+# --- Rate Reconciliation Overapplied ----------------------------------------
+
+CONTRACT_RATE_RECON_OVERAPPLIED = AccountingPolicy(
+    name="ContractRateReconciliationOverapplied",
+    version=1,
+    trigger=PolicyTrigger(
+        event_type="contract.rate_reconciliation",
+        schema_version=3,
+        where=(("payload.direction", "OVERAPPLIED"),),
+    ),
+    meaning=PolicyMeaning(
+        economic_type="RATE_RECONCILIATION",
+        dimensions=("org_unit", "rate_type"),
+    ),
+    ledger_effects=(
+        LedgerEffect(
+            ledger="GL",
+            debit_role="INDIRECT_RATE_VARIANCE",
+            credit_role="WIP_RATE_ADJUSTMENT",
+        ),
+    ),
+    effective_from=date(2024, 1, 1),
+    guards=(
+        GuardCondition(
+            guard_type=GuardType.REJECT,
+            expression="payload.adjustment_amount <= 0",
+            reason_code="INVALID_ADJUSTMENT",
+            message="Overapplied adjustment amount must be positive",
+        ),
+    ),
+    description=(
+        "Records overapplied rate adjustment: provisional rates exceeded "
+        "actual indirect costs. Dr Indirect Rate Variance / Cr WIP Rate Adj."
+    ),
+)
+
+CONTRACT_RATE_RECON_OVERAPPLIED_MAPPINGS = (
+    ModuleLineMapping(role="INDIRECT_RATE_VARIANCE", side="debit", ledger="GL"),
+    ModuleLineMapping(role="WIP_RATE_ADJUSTMENT", side="credit", ledger="GL"),
+)
+
+
+# =============================================================================
 # Profile + Mapping pairs for registration
 # =============================================================================
 
@@ -1696,6 +1785,9 @@ _ALL_PROFILES: tuple[tuple[AccountingPolicy, tuple[ModuleLineMapping, ...]], ...
     (CONTRACT_SUBCOST, CONTRACT_SUBCOST_MAPPINGS),
     (CONTRACT_EQUITABLE_ADJ, CONTRACT_EQUITABLE_ADJ_MAPPINGS),
     (CONTRACT_COST_DISALLOWED, CONTRACT_COST_DISALLOWED_MAPPINGS),
+    # Rate reconciliation (2)
+    (CONTRACT_RATE_RECON_UNDERAPPLIED, CONTRACT_RATE_RECON_UNDERAPPLIED_MAPPINGS),
+    (CONTRACT_RATE_RECON_OVERAPPLIED, CONTRACT_RATE_RECON_OVERAPPLIED_MAPPINGS),
 )
 
 

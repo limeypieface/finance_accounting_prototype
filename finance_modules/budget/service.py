@@ -51,10 +51,20 @@ from sqlalchemy.orm import Session
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
-    ModulePostingStatus,
+)
+from finance_modules._posting_helpers import run_workflow_guard
+from finance_services.workflow_executor import WorkflowExecutor
+from finance_modules.budget.workflows import (
+    BUDGET_CANCEL_ENCUMBRANCE_WORKFLOW,
+    BUDGET_POST_ENTRY_WORKFLOW,
+    BUDGET_RECORD_ENCUMBRANCE_WORKFLOW,
+    BUDGET_RELIEVE_ENCUMBRANCE_WORKFLOW,
+    BUDGET_TRANSFER_WORKFLOW,
+    BUDGET_UPDATE_FORECAST_WORKFLOW,
 )
 from finance_modules.budget.models import (
     BudgetEntry,
@@ -102,16 +112,20 @@ class BudgetService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor
 
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
     # =========================================================================
@@ -140,14 +154,27 @@ class BudgetService:
             dimensions=dimensions,
         )
 
-        logger.info("budget_entry_posted", extra={
-            "version_id": str(version_id),
-            "account_code": account_code,
-            "period": period,
-            "amount": str(amount),
-        })
-
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                BUDGET_POST_ENTRY_WORKFLOW,
+                "budget_entry",
+                entry.id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return entry, failure
+
+            logger.info("budget_entry_posted", extra={
+                "version_id": str(version_id),
+                "account_code": account_code,
+                "period": period,
+                "amount": str(amount),
+            })
+
             result = self._poster.post_event(
                 event_type="budget.entry",
                 payload={
@@ -187,13 +214,27 @@ class BudgetService:
         currency: str = "USD",
     ) -> ModulePostingResult:
         """Transfer budget between accounts."""
-        logger.info("budget_transfer", extra={
-            "from_account": from_account,
-            "to_account": to_account,
-            "amount": str(amount),
-        })
-
         try:
+            transfer_id = uuid4()
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                BUDGET_TRANSFER_WORKFLOW,
+                "budget_transfer",
+                transfer_id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return failure
+
+            logger.info("budget_transfer", extra={
+                "from_account": from_account,
+                "to_account": to_account,
+                "amount": str(amount),
+            })
+
             result = self._poster.post_event(
                 event_type="budget.transfer",
                 payload={
@@ -281,6 +322,19 @@ class BudgetService:
         )
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                BUDGET_RECORD_ENCUMBRANCE_WORKFLOW,
+                "encumbrance",
+                encumbrance.id,
+                actor_id=actor_id,
+                amount=amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return encumbrance, failure
+
             result = self._poster.post_event(
                 event_type="budget.encumbrance_commit",
                 payload={
@@ -324,6 +378,19 @@ class BudgetService:
         )
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                BUDGET_RELIEVE_ENCUMBRANCE_WORKFLOW,
+                "encumbrance",
+                encumbrance.id,
+                actor_id=actor_id,
+                amount=relief_amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return updated, failure
+
             result = self._poster.post_event(
                 event_type="budget.encumbrance_relieve",
                 payload={
@@ -359,6 +426,19 @@ class BudgetService:
         )
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                BUDGET_CANCEL_ENCUMBRANCE_WORKFLOW,
+                "encumbrance",
+                encumbrance.id,
+                actor_id=actor_id,
+                amount=remaining,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return updated, failure
+
             result = self._poster.post_event(
                 event_type="budget.encumbrance_cancel",
                 payload={
@@ -455,6 +535,19 @@ class BudgetService:
         )
 
         try:
+            failure = run_workflow_guard(
+                self._workflow_executor,
+                BUDGET_UPDATE_FORECAST_WORKFLOW,
+                "forecast_entry",
+                entry.id,
+                actor_id=actor_id,
+                amount=forecast_amount,
+                currency=currency,
+                context=None,
+            )
+            if failure is not None:
+                return entry, failure
+
             result = self._poster.post_event(
                 event_type="budget.forecast_update",
                 payload={

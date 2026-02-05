@@ -1,0 +1,126 @@
+# QuickBooks Online import mappings (CSV export from QBO Reports / Export).
+# Column names match standard QBO export headers where applicable.
+# See: Account List, Vendor Contact List, Customer Contact List exports.
+
+import_mappings:
+  # Chart of Accounts (Reports > Account List > Export to Excel/CSV)
+  - name: qbo_chart_of_accounts
+    version: 1
+    entity_type: account
+    source_format: csv
+    source_options:
+      delimiter: ","
+      encoding: "utf-8"
+      has_header: true
+    dependency_tier: 0
+    field_mappings:
+      - source: "Account Number"
+        target: "code"
+        field_type: string
+        required: true
+        transform: strip
+      - source: "Account Name"
+        target: "name"
+        field_type: string
+        required: true
+        transform: strip
+      - source: "Type"
+        target: "account_type"
+        field_type: string
+        required: true
+        transform: lower
+        # QBO types: Bank, Accounts Receivable, Other Current Asset, Fixed Asset,
+        # Accounts Payable, Credit Card, Other Current Liability, Long Term Liability,
+        # Equity, Income, Other Income, Cost of Goods Sold, Expense, Other Expense
+    validations:
+      - rule_type: unique
+        fields: ["code"]
+        scope: batch
+        message: "Duplicate account code within batch"
+      - rule_type: unique
+        fields: ["code"]
+        scope: system
+        message: "Account code already exists"
+
+  # Vendors (Reports > Vendor Contact List > Export, or Vendors list export)
+  - name: qbo_vendors
+    version: 1
+    entity_type: vendor
+    source_format: csv
+    source_options:
+      delimiter: ","
+      encoding: "utf-8"
+      has_header: true
+    dependency_tier: 2
+    field_mappings:
+      - source: "Vendor Name"
+        target: "code"
+        field_type: string
+        required: true
+        transform: strip
+      - source: "Vendor Name"
+        target: "name"
+        field_type: string
+        required: true
+        transform: strip
+      - source: "Tax Identification Number"
+        target: "tax_id"
+        field_type: string
+      - source: "Payment Terms"
+        target: "payment_terms_days"
+        field_type: integer
+        default: 30
+    validations:
+      - rule_type: unique
+        fields: ["code"]
+        scope: batch
+        message: "Duplicate vendor within batch"
+      - rule_type: unique
+        fields: ["code"]
+        scope: system
+        message: "Vendor already exists"
+
+  # Customers (Reports > Customer Contact List or Customers > Export)
+  - name: qbo_customers
+    version: 1
+    entity_type: customer
+    source_format: csv
+    source_options:
+      delimiter: ","
+      encoding: "utf-8"
+      has_header: true
+    dependency_tier: 2
+    field_mappings:
+      - source: "Name"
+        target: "code"
+        field_type: string
+        required: true
+        transform: strip
+      - source: "Name"
+        target: "name"
+        field_type: string
+        required: true
+        transform: strip
+      - source: "Tax Identification Number"
+        target: "tax_id"
+        field_type: string
+      - source: "Payment Terms"
+        target: "payment_terms_days"
+        field_type: integer
+        default: 30
+      - source: "Balance"
+        target: "credit_limit"
+        field_type: decimal
+      - source: "Currency"
+        target: "credit_currency"
+        field_type: currency
+        default: "USD"
+    validations:
+      - rule_type: unique
+        fields: ["code"]
+        scope: batch
+        message: "Duplicate customer within batch"
+      - rule_type: unique
+        fields: ["code"]
+        scope: system
+        message: "Customer already exists"

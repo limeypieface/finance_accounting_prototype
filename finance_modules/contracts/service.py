@@ -77,13 +77,35 @@ from finance_engines.ice import (
     ICESubmission,
     compile_ice_submission,
 )
+from finance_engines.rate_compliance import (
+    compute_all_reconciliations,
+    verify_labor_rate,
+)
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.logging_config import get_logger
 from finance_kernel.services.journal_writer import RoleResolver
+from finance_kernel.services.party_service import PartyService
 from finance_kernel.services.module_posting_service import (
     ModulePostingResult,
     ModulePostingService,
     ModulePostingStatus,
+)
+from finance_modules._posting_helpers import run_workflow_guard
+from finance_services.workflow_executor import WorkflowExecutor
+from finance_modules.contracts.workflows import (
+    CONTRACTS_GENERATE_BILLING_WORKFLOW,
+    CONTRACTS_RATE_RECONCILIATION_WORKFLOW,
+    CONTRACTS_RECORD_COST_DISALLOWANCE_WORKFLOW,
+    CONTRACTS_RECORD_COST_INCURRENCE_WORKFLOW,
+    CONTRACTS_RECORD_EQUITABLE_ADJUSTMENT_WORKFLOW,
+    CONTRACTS_RECORD_FEE_ACCRUAL_WORKFLOW,
+    CONTRACTS_RECORD_FUNDING_WORKFLOW,
+    CONTRACTS_RECORD_INDIRECT_ALLOCATION_WORKFLOW,
+    CONTRACTS_RECORD_INDIRECT_RATE_WORKFLOW,
+    CONTRACTS_RECORD_MODIFICATION_WORKFLOW,
+    CONTRACTS_RECORD_RATE_ADJUSTMENT_WORKFLOW,
+    CONTRACTS_RECORD_SUBCONTRACT_COST_WORKFLOW,
+    CONTRACTS_VERIFY_LABOR_RATE_WORKFLOW,
 )
 from finance_modules.contracts.models import (
     AuditFinding,
@@ -92,6 +114,22 @@ from finance_modules.contracts.models import (
     Subcontract,
 )
 from finance_modules.contracts.orm import ContractBillingModel, ContractFundingModel
+from finance_modules.contracts.rate_orm import (
+    ContractRateCeilingModel,
+    IndirectRateModel,
+    LaborRateScheduleModel,
+    RateReconciliationModel,
+)
+from finance_modules.contracts.rate_types import (
+    ContractRateCeiling,
+    IndirectRateRecord,
+    IndirectRateType,
+    LaborRateSchedule,
+    RateReconciliationRecord,
+    RateSource,
+    RateVerificationResult,
+    ReconciliationDirection,
+)
 
 logger = get_logger("modules.contracts.service")
 
@@ -137,17 +175,21 @@ class GovernmentContractsService:
         self,
         session: Session,
         role_resolver: RoleResolver,
+        workflow_executor: WorkflowExecutor,
         clock: Clock | None = None,
+        party_service: PartyService | None = None,
     ):
         self._session = session
         self._clock = clock or SystemClock()
+        self._workflow_executor = workflow_executor
 
-        # Kernel posting (auto_commit=False -- we own the boundary)
+        # Kernel posting (auto_commit=False -- we own the boundary). G14: actor validation mandatory.
         self._poster = ModulePostingService(
             session=session,
             role_resolver=role_resolver,
             clock=self._clock,
             auto_commit=False,
+            party_service=party_service,
         )
 
     # =========================================================================
@@ -175,6 +217,20 @@ class GovernmentContractsService:
         Supported cost_types: DIRECT_LABOR, DIRECT_MATERIAL, SUBCONTRACT,
         TRAVEL, ODC, INDIRECT_FRINGE, INDIRECT_OVERHEAD, INDIRECT_GA.
         """
+        contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CONTRACTS_RECORD_COST_INCURRENCE_WORKFLOW,
+            "contract_cost",
+            contract_uuid,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         payload: dict[str, Any] = {
             "contract_number": contract_id,
             "cost_type": cost_type,
@@ -238,9 +294,25 @@ class GovernmentContractsService:
         Profile dispatch: contract.billing_provisional with where-clause
         on billing_type (COST_REIMBURSEMENT, TIME_AND_MATERIALS, LABOR_HOUR).
         """
+        contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+        # Pre-compute amount for transition (engine is pure)
+        billing_result_pre = calculate_billing(billing_input)
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CONTRACTS_GENERATE_BILLING_WORKFLOW,
+            "contract_billing",
+            contract_uuid,
+            actor_id=actor_id,
+            amount=billing_result_pre.net_billing.amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return billing_result_pre, failure
+
         try:
             # Engine: calculate billing amounts (pure)
-            billing_result = calculate_billing(billing_input)
+            billing_result = billing_result_pre
 
             logger.info("contract_billing_calculated", extra={
                 "contract_id": contract_id,
@@ -346,6 +418,20 @@ class GovernmentContractsService:
         Profile dispatch: contract.funding_action.
         Supported action_types: OBLIGATION, DEOBLIGATION, INCREMENTAL_FUNDING.
         """
+        contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CONTRACTS_RECORD_FUNDING_WORKFLOW,
+            "contract_funding",
+            contract_uuid,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         payload: dict[str, Any] = {
             "contract_number": contract_id,
             "action_type": action_type,
@@ -421,6 +507,20 @@ class GovernmentContractsService:
         Profile dispatch: contract.indirect_allocation with where-clause
         on indirect_type (FRINGE, OVERHEAD, G_AND_A).
         """
+        contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CONTRACTS_RECORD_INDIRECT_ALLOCATION_WORKFLOW,
+            "contract_indirect_allocation",
+            contract_uuid,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         payload: dict[str, Any] = {
             "contract_number": contract_id,
             "indirect_type": indirect_type,
@@ -482,6 +582,20 @@ class GovernmentContractsService:
 
         Profile dispatch: contract.rate_adjustment.
         """
+        contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CONTRACTS_RECORD_RATE_ADJUSTMENT_WORKFLOW,
+            "contract_rate_adjustment",
+            contract_uuid,
+            actor_id=actor_id,
+            amount=abs(adjustment_amount),
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         payload: dict[str, Any] = {
             "contract_number": contract_id,
             "indirect_type": indirect_type,
@@ -543,6 +657,20 @@ class GovernmentContractsService:
         Profile dispatch: contract.fee_accrual with where-clause on fee_type.
         Supported fee_types: FIXED_FEE, INCENTIVE_FEE, AWARD_FEE.
         """
+        contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CONTRACTS_RECORD_FEE_ACCRUAL_WORKFLOW,
+            "contract_fee_accrual",
+            contract_uuid,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         payload: dict[str, Any] = {
             "contract_number": contract_id,
             "fee_type": fee_type,
@@ -628,6 +756,29 @@ class GovernmentContractsService:
         """
         Record a contract modification (scope, funding, admin).
         """
+        contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CONTRACTS_RECORD_MODIFICATION_WORKFLOW,
+            "contract_modification",
+            contract_uuid,
+            actor_id=actor_id,
+            amount=amount_change,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            mod_placeholder = ContractModification(
+                id=uuid4(),
+                contract_id=contract_id,
+                modification_number=modification_number,
+                modification_type=modification_type,
+                effective_date=effective_date,
+                description=description or "",
+                amount_change=amount_change,
+            )
+            return mod_placeholder, failure
+
         from uuid import uuid4
         mod = ContractModification(
             id=uuid4(),
@@ -683,6 +834,28 @@ class GovernmentContractsService:
         """
         Record subcontract cost flow-down.
         """
+        contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CONTRACTS_RECORD_SUBCONTRACT_COST_WORKFLOW,
+            "contract_subcontract_cost",
+            contract_uuid,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            sub_placeholder = Subcontract(
+                id=uuid4(),
+                contract_id=contract_id,
+                subcontractor_name=subcontractor_name,
+                subcontract_number=subcontract_number,
+                amount=amount,
+                description=description or "",
+            )
+            return sub_placeholder, failure
+
         from uuid import uuid4
         sub = Subcontract(
             id=uuid4(),
@@ -736,6 +909,20 @@ class GovernmentContractsService:
         """
         Record an equitable adjustment (REA processing).
         """
+        contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CONTRACTS_RECORD_EQUITABLE_ADJUSTMENT_WORKFLOW,
+            "contract_equitable_adjustment",
+            contract_uuid,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return failure
+
         payload: dict[str, Any] = {
             "contract_number": contract_id,
             "amount": str(amount),
@@ -869,6 +1056,28 @@ class GovernmentContractsService:
         """
         Record a DCAA cost disallowance (moves cost to unallowable).
         """
+        contract_uuid = uuid5(NAMESPACE_DNS, contract_id)
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CONTRACTS_RECORD_COST_DISALLOWANCE_WORKFLOW,
+            "contract_cost_disallowance",
+            contract_uuid,
+            actor_id=actor_id,
+            amount=amount,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            disallowance_placeholder = CostDisallowance(
+                id=uuid4(),
+                contract_id=contract_id,
+                cost_type=cost_type,
+                amount=amount,
+                reason=reason,
+                disallowance_date=effective_date,
+            )
+            return disallowance_placeholder, failure
+
         from uuid import uuid4
         disallowance = CostDisallowance(
             id=uuid4(),
@@ -901,6 +1110,351 @@ class GovernmentContractsService:
             else:
                 self._session.rollback()
             return disallowance, result
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # DCAA Labor Rate Verification (D8 / FAR 31.201-3)
+    # =========================================================================
+
+    def verify_and_record_labor_rate(
+        self,
+        employee_id: UUID,
+        employee_classification: str,
+        labor_category: str,
+        charged_rate: Decimal,
+        contract_id: UUID | None,
+        charge_date: date,
+        actor_id: UUID,
+        currency: str = "USD",
+    ) -> RateVerificationResult:
+        """
+        Verify a labor charge rate against approved schedules and ceilings (D8).
+
+        Loads the current rate schedule and contract ceilings from the
+        database, delegates to the pure ``verify_labor_rate`` engine, and
+        posts an audit event if a violation is detected.
+
+        Args:
+            employee_id: The employee being charged.
+            employee_classification: Employee's classification.
+            labor_category: DCAA labor category code.
+            charged_rate: The hourly rate being charged.
+            contract_id: The contract being charged (None for indirect).
+            charge_date: The date of the labor charge.
+            actor_id: Who initiated the verification.
+            currency: ISO 4217 currency code.
+
+        Returns:
+            RateVerificationResult with validity and violation details.
+        """
+        entity_id = contract_id if contract_id is not None else employee_id
+        transition_result = self._workflow_executor.execute_transition(
+            workflow=CONTRACTS_VERIFY_LABOR_RATE_WORKFLOW,
+            entity_type="contract_labor_rate",
+            entity_id=entity_id,
+            current_state="draft",
+            action="post",
+            actor_id=actor_id,
+            actor_role="",
+            amount=charged_rate,
+            currency=currency,
+            context=None,
+        )
+        if not transition_result.success:
+            status = (
+                ModulePostingStatus.GUARD_BLOCKED
+                if transition_result.approval_required
+                else ModulePostingStatus.GUARD_REJECTED
+            )
+            return RateVerificationResult(
+                is_valid=False,
+                employee_id=employee_id,
+                charged_rate=charged_rate,
+                approved_rate=charged_rate,
+                ceiling_rate=None,
+                violation_type=None,
+                message=transition_result.reason or "Guard rejected",
+            )
+
+        try:
+            # Load rate schedules from DB
+            orm_schedules = (
+                self._session.query(LaborRateScheduleModel)
+                .filter_by(
+                    employee_classification=employee_classification,
+                    labor_category=labor_category,
+                )
+                .all()
+            )
+            rate_schedule = tuple(s.to_dto() for s in orm_schedules)
+
+            # Load contract ceilings if contract specified
+            contract_ceilings: tuple[ContractRateCeiling, ...] | None = None
+            if contract_id is not None:
+                orm_ceilings = (
+                    self._session.query(ContractRateCeilingModel)
+                    .filter_by(
+                        contract_id=contract_id,
+                        labor_category=labor_category,
+                    )
+                    .all()
+                )
+                contract_ceilings = tuple(c.to_dto() for c in orm_ceilings)
+
+            # Engine: verify rate (pure)
+            result = verify_labor_rate(
+                employee_id=employee_id,
+                employee_classification=employee_classification,
+                labor_category=labor_category,
+                charged_rate=charged_rate,
+                rate_schedule=rate_schedule,
+                contract_ceilings=contract_ceilings,
+                contract_id=contract_id,
+                charge_date=charge_date,
+            )
+
+            logger.info("labor_rate_verified", extra={
+                "employee_id": str(employee_id),
+                "charged_rate": str(charged_rate),
+                "is_valid": result.is_valid,
+                "violation_type": result.violation_type.value if result.violation_type else None,
+            })
+
+            # Post audit event for violations
+            if not result.is_valid:
+                self._poster.post_event(
+                    event_type="contract.rate_ceiling_exceeded",
+                    payload={
+                        "employee_id": str(employee_id),
+                        "employee_classification": employee_classification,
+                        "labor_category": labor_category,
+                        "charged_rate": str(charged_rate),
+                        "approved_rate": str(result.approved_rate),
+                        "ceiling_rate": str(result.ceiling_rate) if result.ceiling_rate else None,
+                        "excess_amount": str(result.excess_amount),
+                        "violation_type": result.violation_type.value if result.violation_type else None,
+                        "contract_id": str(contract_id) if contract_id else None,
+                        "charge_date": str(charge_date),
+                        "message": result.message,
+                    },
+                    effective_date=charge_date,
+                    actor_id=actor_id,
+                    amount=result.excess_amount,
+                    currency=currency,
+                )
+                self._session.commit()
+            else:
+                # Post successful verification for audit trail
+                self._poster.post_event(
+                    event_type="contract.rate_verified",
+                    payload={
+                        "employee_id": str(employee_id),
+                        "labor_category": labor_category,
+                        "charged_rate": str(charged_rate),
+                        "approved_rate": str(result.approved_rate),
+                        "ceiling_rate": str(result.ceiling_rate) if result.ceiling_rate else None,
+                        "is_valid": True,
+                        "contract_id": str(contract_id) if contract_id else None,
+                        "charge_date": str(charge_date),
+                    },
+                    effective_date=charge_date,
+                    actor_id=actor_id,
+                    amount=Decimal("0"),
+                    currency=currency,
+                )
+                self._session.commit()
+
+            return result
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Indirect Rate Management
+    # =========================================================================
+
+    def record_indirect_rate(
+        self,
+        rate: IndirectRateRecord,
+        actor_id: UUID,
+    ) -> IndirectRateModel:
+        """
+        Record a provisional or final indirect cost rate.
+
+        Persists the rate to the database.  Final rates trigger
+        year-end reconciliation when ``run_fiscal_year_rate_reconciliation``
+        is called.
+
+        Args:
+            rate: The indirect rate record to persist.
+            actor_id: Who recorded the rate.
+
+        Returns:
+            The persisted IndirectRateModel.
+        """
+        try:
+            orm_rate = IndirectRateModel.from_dto(rate, created_by_id=actor_id)
+            self._session.add(orm_rate)
+            self._session.commit()
+
+            logger.info("indirect_rate_recorded", extra={
+                "rate_id": str(rate.rate_id),
+                "rate_type": rate.rate_type.value,
+                "rate_value": str(rate.rate_value),
+                "fiscal_year": rate.fiscal_year,
+                "rate_status": rate.rate_status.value,
+            })
+
+            return orm_rate
+
+        except Exception:
+            self._session.rollback()
+            raise
+
+    # =========================================================================
+    # Fiscal Year Rate Reconciliation
+    # =========================================================================
+
+    def run_fiscal_year_rate_reconciliation(
+        self,
+        fiscal_year: int,
+        base_amounts: dict[IndirectRateType, Decimal],
+        actor_id: UUID,
+        effective_date: date | None = None,
+        currency: str = "USD",
+    ) -> list[tuple[RateReconciliationRecord, ModulePostingResult]]:
+        """
+        Run provisional-to-final rate reconciliation for a fiscal year.
+
+        Loads all provisional and final rates, computes adjustments via
+        the pure engine, persists reconciliation records, and posts
+        ``contract.rate_reconciliation`` events that produce GL entries
+        through the underapplied/overapplied profiles.
+
+        Args:
+            fiscal_year: The fiscal year to reconcile.
+            base_amounts: Total base dollars by rate type.
+            actor_id: Who initiated the reconciliation.
+            effective_date: Journal entry date (defaults to today).
+            currency: ISO 4217 currency code.
+
+        Returns:
+            List of (RateReconciliationRecord, ModulePostingResult) tuples.
+        """
+        eff_date = effective_date or self._clock.now().date()
+        # Single transition for the reconciliation run (before any post_event in loop)
+        recon_entity_id = uuid5(NAMESPACE_DNS, f"contract.rate_reconciliation.{fiscal_year}")
+        total_base = sum(base_amounts.values()) if base_amounts else Decimal("0")
+        failure = run_workflow_guard(
+            self._workflow_executor,
+            CONTRACTS_RATE_RECONCILIATION_WORKFLOW,
+            "contract_rate_reconciliation",
+            recon_entity_id,
+            actor_id=actor_id,
+            amount=total_base,
+            currency=currency,
+            context=None,
+        )
+        if failure is not None:
+            return [(RateReconciliationRecord(
+                reconciliation_id=uuid4(),
+                fiscal_year=fiscal_year,
+                rate_type=IndirectRateType.FRINGE,
+                provisional_rate=Decimal("0"),
+                final_rate=Decimal("0"),
+                base_amount=Decimal("0"),
+                adjustment_amount=Decimal("0"),
+                direction=ReconciliationDirection.EXACT,
+            ), failure)]
+
+        try:
+            # Load all rates for the fiscal year
+            orm_rates = (
+                self._session.query(IndirectRateModel)
+                .filter_by(fiscal_year=fiscal_year)
+                .all()
+            )
+            all_rates = tuple(r.to_dto() for r in orm_rates)
+
+            provisional = tuple(
+                r for r in all_rates
+                if r.rate_status == RateSource.PROVISIONAL
+            )
+            final = tuple(
+                r for r in all_rates
+                if r.rate_status == RateSource.FINAL
+            )
+
+            if not provisional or not final:
+                logger.info("rate_reconciliation_skipped", extra={
+                    "fiscal_year": fiscal_year,
+                    "provisional_count": len(provisional),
+                    "final_count": len(final),
+                    "reason": "missing provisional or final rates",
+                })
+                return []
+
+            # Engine: compute reconciliations (pure)
+            reconciliations = compute_all_reconciliations(
+                fiscal_year=fiscal_year,
+                provisional_rates=provisional,
+                final_rates=final,
+                base_amounts=base_amounts,
+                reconciliation_id_factory=uuid4,
+            )
+
+            results: list[tuple[RateReconciliationRecord, ModulePostingResult]] = []
+
+            for recon in reconciliations:
+                if recon.direction == ReconciliationDirection.EXACT:
+                    continue  # no adjustment needed
+
+                # Persist reconciliation record
+                orm_recon = RateReconciliationModel.from_dto(
+                    recon, created_by_id=actor_id,
+                )
+                self._session.add(orm_recon)
+
+                # Post journal entry via reconciliation profile
+                result = self._poster.post_event(
+                    event_type="contract.rate_reconciliation",
+                    payload={
+                        "reconciliation_id": str(recon.reconciliation_id),
+                        "fiscal_year": recon.fiscal_year,
+                        "rate_type": recon.rate_type.value,
+                        "provisional_rate": str(recon.provisional_rate),
+                        "final_rate": str(recon.final_rate),
+                        "rate_difference": str(recon.rate_difference),
+                        "base_amount": str(recon.base_amount),
+                        "adjustment_amount": str(abs(recon.adjustment_amount)),
+                        "direction": recon.direction.value,
+                    },
+                    effective_date=eff_date,
+                    actor_id=actor_id,
+                    amount=abs(recon.adjustment_amount),
+                    currency=currency,
+                )
+                results.append((recon, result))
+
+                if not result.is_success:
+                    self._session.rollback()
+                    return results
+
+            self._session.commit()
+
+            logger.info("rate_reconciliation_completed", extra={
+                "fiscal_year": fiscal_year,
+                "reconciliation_count": len(results),
+                "total_adjustment": str(sum(
+                    abs(r.adjustment_amount) for r, _ in results
+                )),
+            })
+
+            return results
+
         except Exception:
             self._session.rollback()
             raise

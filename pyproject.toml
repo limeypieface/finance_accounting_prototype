@@ -24,6 +24,7 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "pydantic>=2.0.0",
     "psycopg2-binary>=2.9.0",  # PostgreSQL driver
+    "openpyxl>=3.1.0",  # XLSX journal/list import
 ]
 
 [project.optional-dependencies]
@@ -56,6 +57,10 @@ markers = [
     "postgres: Tests requiring PostgreSQL (true concurrency)",
     "slow_locks: Tests that wait for database locks (may hang if orphaned connections exist)",
     "benchmark: Performance benchmark tests (run separately via tests/benchmarks/)",
+    "unit: Pure logic; no DB/config/persistence required",
+    "service: Service layer; may mock DB/config; reality detector does not enforce boundaries",
+    "system: Full pipeline; reality detector requires real DB + config load + persistence write",
+    "adversarial: Adversarial test; may use system or service tier",
 ]
 
 [tool.black]

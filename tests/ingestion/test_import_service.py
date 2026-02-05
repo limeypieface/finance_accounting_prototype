@@ -230,3 +230,65 @@ class TestImportServiceLoadAndValidate:
             assert has_dup_error
         finally:
             path.unlink(missing_ok=True)
+
+
+class TestImportServiceSystemUniqueness:
+    """Full validation engine: scope=system and rule_type=exists must flag issues before ingestion."""
+
+    def test_system_uniqueness_flags_duplicate_account(self, session, deterministic_clock, test_actor_id):
+        """Validation must flag records that duplicate an existing account in the system."""
+        from finance_kernel.models.account import Account, AccountType, NormalBalance
+        from finance_ingestion.promoters import default_promoter_registry
+        from finance_ingestion.services.promotion_service import PromotionService
+        from finance_kernel.services.auditor_service import AuditorService
+
+        # Create an account in the DB (simulates already-ingested data)
+        existing = Account(
+            code="EXISTING",
+            name="Already There",
+            account_type=AccountType.ASSET,
+            normal_balance=NormalBalance.DEBIT,
+            is_active=True,
+            created_by_id=test_actor_id,
+            updated_by_id=None,
+        )
+        session.add(existing)
+        session.flush()
+
+        mapping = ImportMapping(
+            name="accounts_with_system_unique",
+            version=1,
+            entity_type="account",
+            source_format="csv",
+            source_options={"has_header": True},
+            field_mappings=(
+                FieldMapping(source="code", target="code", field_type=EventFieldType.STRING, required=True),
+                FieldMapping(source="name", target="name", field_type=EventFieldType.STRING, required=True),
+                FieldMapping(source="type", target="account_type", field_type=EventFieldType.STRING, required=True),
+            ),
+            validations=(
+                ImportValidationRule(rule_type="unique", fields=("code",), scope="batch", message="Duplicate in batch"),
+                ImportValidationRule(rule_type="unique", fields=("code",), scope="system", message="Account code already exists"),
+            ),
+            dependency_tier=0,
+        )
+        service = ImportService(
+            session,
+            clock=deterministic_clock,
+            mapping_registry={mapping.name: mapping},
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, newline="") as f:
+            f.write("code,name,type\nEXISTING,Duplicate Row,asset\nNEWONE,New Account,asset\n")
+            path = Path(f.name)
+        try:
+            batch = service.load_batch(path, mapping, test_actor_id)
+            validated = service.validate_batch(batch.batch_id)
+            # Row 1 (EXISTING) must be invalid; row 2 (NEWONE) valid
+            assert validated.invalid_records == 1
+            assert validated.valid_records == 1
+            errors = service.get_batch_errors(batch.batch_id)
+            assert len(errors) == 1
+            err_codes = [e.code for rec in errors for e in rec.validation_errors]
+            assert "DUPLICATE_IN_SYSTEM" in err_codes
+        finally:
+            path.unlink(missing_ok=True)

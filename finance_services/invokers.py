@@ -65,6 +65,7 @@ from finance_engines.matching import (
 from finance_engines.tax import TaxCalculator, TaxRate
 from finance_engines.variance import VarianceCalculator
 from finance_services.engine_dispatcher import EngineDispatcher, EngineInvoker
+from finance_services.observability import log_match_accepted, log_match_suggested
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -222,13 +223,23 @@ def _invoke_matching(payload: dict, params: FrozenEngineParams) -> Any:
         match_type_str = payload.get("match_type", match_strategy)
         match_type = MatchType(match_type_str) if isinstance(match_type_str, str) else match_type_str
         match_date_str = payload.get("as_of_date") or payload.get("match_date")
-        as_of_date = date.fromisoformat(match_date_str) if match_date_str else date.today()
-        return engine.create_match(
+        if not match_date_str:
+            raise ValueError(
+                "create_match requires an explicit as_of_date or match_date in the payload "
+                "for determinism; do not rely on server date"
+            )
+        as_of_date = date.fromisoformat(match_date_str)
+        result = engine.create_match(
             documents=candidates,
             match_type=match_type,
             as_of_date=as_of_date,
             tolerance=tolerance,
         )
+        log_match_accepted(
+            context="engine",
+            match_type=match_type.value if hasattr(match_type, "value") else str(match_type),
+        )
+        return result
     else:
         target_raw = payload.get("match_target")
         target = target_raw if isinstance(target_raw, MatchCandidate) else _coerce_match_candidate(target_raw)
@@ -237,11 +248,18 @@ def _invoke_matching(payload: dict, params: FrozenEngineParams) -> Any:
             c if isinstance(c, MatchCandidate) else _coerce_match_candidate(c)
             for c in candidates_raw
         ]
-        return engine.find_matches(
+        result = engine.find_matches(
             target=target,
             candidates=candidates,
             tolerance=tolerance,
         )
+        log_match_suggested(
+            context="engine",
+            suggestion_count=len(result),
+            target_id=str(target.document_id) if getattr(target, "document_id", None) is not None else None,
+            candidate_count=len(candidates),
+        )
+        return result
 
 
 def _invoke_tax(payload: dict, params: FrozenEngineParams) -> Any:

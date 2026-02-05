@@ -51,6 +51,8 @@ def _make_policy(
     name: str = "test_policy",
     required_engines: tuple[str, ...] = (),
     engine_parameters_ref: str | None = None,
+    variance_disposition: str | None = None,
+    valuation_model: str | None = None,
 ) -> CompiledPolicy:
     """Create a minimal CompiledPolicy for testing."""
     from datetime import date
@@ -66,11 +68,12 @@ def _make_policy(
         effective_to=None,
         scope="entity",
         precedence=None,
-        valuation_model=None,
+        valuation_model=valuation_model,
         line_mappings=(),
+        intent_source=None,
         required_engines=required_engines,
         engine_parameters_ref=engine_parameters_ref,
-        variance_disposition=None,
+        variance_disposition=variance_disposition,
         capability_tags=(),
         description="Test policy",
         module="test",
@@ -426,6 +429,70 @@ class TestParameterResolution:
         assert result.all_succeeded
         assert result.engine_outputs["orphan"]["params"] == {}
         assert result.traces[0].parameters_used == {}
+
+    def test_variance_disposition_merged_into_variance_params(self):
+        """policy.variance_disposition is merged into params when dispatching to variance engine."""
+        pack = _make_pack(
+            resolved_engine_params={
+                "variance": FrozenEngineParams(
+                    engine_name="variance",
+                    parameters={"threshold": "0.02"},
+                ),
+            },
+        )
+        dispatcher = EngineDispatcher(pack)
+
+        def _capture_params(payload: dict, params: FrozenEngineParams) -> dict:
+            return {"params": dict(params.parameters)}
+
+        dispatcher.register("variance", EngineInvoker(
+            engine_name="variance",
+            engine_version="1.0",
+            invoke=_capture_params,
+        ))
+
+        policy = _make_policy(
+            required_engines=("variance",),
+            variance_disposition="capitalize",
+        )
+        result = dispatcher.dispatch(policy, {})
+
+        assert result.all_succeeded
+        assert result.engine_outputs["variance"]["params"]["variance_disposition"] == "capitalize"
+        assert result.engine_outputs["variance"]["params"]["threshold"] == "0.02"
+        assert result.traces[0].parameters_used.get("variance_disposition") == "capitalize"
+
+    def test_valuation_model_merged_into_valuation_params(self):
+        """policy.valuation_model is merged into params when dispatching to valuation engine."""
+        pack = _make_pack(
+            resolved_engine_params={
+                "valuation": FrozenEngineParams(
+                    engine_name="valuation",
+                    parameters={"cost_method": "FIFO"},
+                ),
+            },
+        )
+        dispatcher = EngineDispatcher(pack)
+
+        def _capture_params(payload: dict, params: FrozenEngineParams) -> dict:
+            return {"params": dict(params.parameters)}
+
+        dispatcher.register("valuation", EngineInvoker(
+            engine_name="valuation",
+            engine_version="1.0",
+            invoke=_capture_params,
+        ))
+
+        policy = _make_policy(
+            required_engines=("valuation",),
+            valuation_model="receipt_standard",
+        )
+        result = dispatcher.dispatch(policy, {})
+
+        assert result.all_succeeded
+        assert result.engine_outputs["valuation"]["params"]["valuation_model"] == "receipt_standard"
+        assert result.engine_outputs["valuation"]["params"]["cost_method"] == "FIFO"
+        assert result.traces[0].parameters_used.get("valuation_model") == "receipt_standard"
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ import pytest
 from finance_kernel.domain.clock import DeterministicClock
 from finance_kernel.exceptions import (
     ClosedPeriodError,
+    CrossLedgerReversalError,
     EntryAlreadyReversedError,
     EntryNotPostedError,
 )
@@ -609,3 +610,35 @@ class TestInvariantPreservation:
         trace = auditor_service.get_trace("JournalEntry", result.reversal_entry_id)
         actions = [e.action for e in trace.entries]
         assert AuditAction.JOURNAL_REVERSED in actions
+
+
+# =========================================================================
+# Ledger Boundary Tests (Reversal Hardening #4)
+# =========================================================================
+
+
+class TestReversalLedgerBoundary:
+    """Reversal must be in same ledger as original; cross-ledger is rejected."""
+
+    def test_write_reversal_rejects_mismatched_expected_ledger(
+        self,
+        session,
+        journal_writer,
+        posted_entry,
+        test_actor_id,
+    ):
+        """JournalWriter.write_reversal raises CrossLedgerReversalError when expected_ledger_id does not match original."""
+        # Original entry has ledger_id from posting (default "GL" when unset)
+        with pytest.raises(CrossLedgerReversalError) as exc_info:
+            journal_writer.write_reversal(
+                original_entry=posted_entry,
+                source_event_id=uuid4(),
+                actor_id=test_actor_id,
+                effective_date=posted_entry.effective_date,
+                reason="Cross-ledger test",
+                expected_ledger_id="OTHER_LEDGER",
+            )
+        err = exc_info.value
+        assert err.code == "CROSS_LEDGER_REVERSAL"
+        assert err.journal_entry_id == str(posted_entry.id)
+        assert err.requested_ledger_id == "OTHER_LEDGER"

@@ -11,8 +11,9 @@ Architecture: finance_ingestion/models. Imports from finance_kernel.db.base only
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import date, datetime
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text
@@ -23,6 +24,21 @@ from finance_kernel.db.base import TrackedBase, UUIDString
 
 if TYPE_CHECKING:
     from finance_ingestion.domain.types import ImportBatch, ImportRecord
+
+
+def _to_json_safe(obj: Any) -> Any:
+    """Convert values to JSON-serializable form (Decimal -> str, etc.)."""
+    if isinstance(obj, Decimal):
+        return str(obj)
+    if isinstance(obj, dict):
+        return {k: _to_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_json_safe(v) for v in obj]
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+    if isinstance(obj, UUID):
+        return str(obj)
+    return obj
 
 
 def _validation_errors_to_json(errors: tuple) -> list[dict] | None:
@@ -162,8 +178,8 @@ class ImportRecordModel(TrackedBase):
             source_row=dto.source_row,
             entity_type=dto.entity_type,
             status=dto.status.value,
-            raw_data=dto.raw_data,
-            mapped_data=dto.mapped_data,
+            raw_data=_to_json_safe(dto.raw_data) if dto.raw_data else dto.raw_data,
+            mapped_data=_to_json_safe(dto.mapped_data) if dto.mapped_data else dto.mapped_data,
             validation_errors=_validation_errors_to_json(dto.validation_errors),
             promoted_entity_id=dto.promoted_entity_id,
             promoted_at=dto.promoted_at,

@@ -249,6 +249,11 @@ These six invariants are enforced unconditionally. No config or policy may overr
 | R22 | Rounding line isolation | Only Bookkeeper may create `is_rounding=True` lines |
 | R23 | Strategy lifecycle governance | Version ranges + replay policy per strategy |
 | R24 | Canonical ledger hash | Deterministic hash over sorted entries |
+| R25 | Kernel primitives only | All monetary values, quantities, exchange rates, and artifact identities must use finance_kernel value objects (Money, ArtifactRef, etc.). Modules may not define parallel financial types. |
+| R26 | Journal is the system of record | Module ORM tables are operational projections only and must be derivable from the journal and link graph. Financial truth lives in the journal. |
+| R27 | Matching is operational | Financial variance treatment and ledger impact are defined by kernel policy (profiles, guards), not module logic. Modules call engines; policy decides accounts and posting. |
+| R28 | No generic workflows | Every financial action must bind to a **specific lifecycle workflow** (e.g. AR_INVOICE_WORKFLOW, AR_REFUND_WORKFLOW). Generic/catch-all workflows (e.g. AR_OTHER_WORKFLOW, GL_OTHER_WORKFLOW) are **forbidden**. See docs/WORKFLOW_DIRECTIVE.md. |
+| R29 | Posting status authority | **Only the finance kernel** may assert `ModulePostingStatus.POSTED` (or `REJECTED`). Services may **request** posting; they may not declare posting success. Service layer may return only: `TRANSITION_APPLIED`, `TRANSITION_BLOCKED`, `TRANSITION_REJECTED`, `GUARD_BLOCKED`, `GUARD_REJECTED`. Kernel layer may return: `POSTED`, `REJECTED`, and kernel-originated failure statuses. Use `ModulePostingResult.is_transition` (governance outcome) vs `is_ledger_fact` (journal entry exists) to avoid treating approval as money movement. |
 
 ### Interpretation Layer (L1-L5, P1/P11/P15)
 
@@ -278,26 +283,34 @@ These six invariants are enforced unconditionally. No config or policy may overr
 ### MUST DO
 1. Keep domain code (`finance_kernel/domain/`) pure -- zero I/O, zero imports from db/services/selectors
 2. Use frozen dataclasses for all DTOs and value objects
-3. Use `Decimal` for all monetary amounts -- **NEVER float**
-4. Inject clocks -- **NEVER call `datetime.now()` directly**
-5. Use `SequenceService` for sequence allocation -- **NEVER `MAX(seq)+1`**
-6. Correct via reversal entries -- **NEVER mutate posted records**
-7. Use account ROLES in AccountingIntent, resolve to COA codes at posting time
-8. Add new event types via new strategy + registration only (R14/R15)
-9. Create audit events for all significant actions
-10. Run existing tests before and after changes: `python3 -m pytest tests/ -v --tb=short`
+3. Use kernel value objects for all financial data (R25) -- Money, ArtifactRef, Quantity, ExchangeRate from finance_kernel; **NEVER** define parallel Money/Amount/Currency types in modules
+4. Use `Decimal` for all monetary amounts -- **NEVER float**
+5. Inject clocks -- **NEVER call `datetime.now()` directly**
+6. Use `SequenceService` for sequence allocation -- **NEVER `MAX(seq)+1`**
+7. Correct via reversal entries -- **NEVER mutate posted records**
+8. Use account ROLES in AccountingIntent, resolve to COA codes at posting time
+9. Add new event types via new strategy + registration only (R14/R15)
+10. Treat journal + link graph as system of record (R26); module ORM is derivable projection only
+11. Let kernel policy define variance/ledger impact (R27); do not branch in module code on match result to choose accounts
+12. Create audit events for all significant actions
+13. Run existing tests before and after changes: `python3 -m pytest tests/ -v --tb=short`
 
 ### MUST NOT DO
 1. Import outer layers from `finance_kernel/`
 2. Add I/O to domain code
-3. Use `if/switch` on event_type in the posting engine
-4. Use `MAX(seq)+1` for sequence allocation
-5. Modify posted journal entries or lines
-6. Use floats for money
-7. Read `datetime.now()` or `date.today()` in domain, engine, or service code without clock injection
-8. Bypass immutability protections
-9. Create rounding lines from strategies (only Bookkeeper may, R22)
-10. Skip the audit trail for any state-changing operation
+3. Define parallel Money/Amount/Currency/ArtifactRef types in modules (R25 — use kernel primitives only)
+4. Use `if/switch` on event_type in the posting engine
+5. Use `MAX(seq)+1` for sequence allocation
+6. Modify posted journal entries or lines
+7. Use floats for money
+8. Treat module ORM as source of financial truth — journal and link graph are (R26)
+9. Decide ledger impact (which accounts to debit/credit) from match/variance in module code — kernel policy does (R27)
+10. Use generic/catch-all workflows (e.g. *_OTHER_WORKFLOW) — each action must use an action-specific lifecycle workflow (R28; docs/WORKFLOW_DIRECTIVE.md)
+11. Assert `ModulePostingStatus.POSTED` from the service layer — only the finance kernel may declare posting success (R29)
+12. Read `datetime.now()` or `date.today()` in domain, engine, or service code without clock injection
+13. Bypass immutability protections
+14. Create rounding lines from strategies (only Bookkeeper may, R22)
+15. Skip the audit trail for any state-changing operation
 
 ### Configuration
 - Single entrypoint: `finance_config.get_active_config(legal_entity, as_of_date)`

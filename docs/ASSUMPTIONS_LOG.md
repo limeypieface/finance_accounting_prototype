@@ -5,6 +5,8 @@
 
 **Total entries:** 172 (128 INVARIANT markers, 44 runtime assertions)
 
+**Accuracy (verified 2026-02-04):** The rule descriptions and file locations are still correct, but **line numbers have drifted** in many files due to edits since generation (e.g. `module_posting_service.py` R1/R2 are at 393–394, `journal_writer.py` R5/R21/R9 at 793/821/837, `economic_link.py` L2/L5/L4 at 329/335/343, `period_service.py` R12/R25 at 476/480 and 566/571). Two files with INVARIANT comments are **not** in this table: `finance_kernel/selectors/trace_selector.py` (3 markers) and `finance_kernel/db/types.py` (1 marker). For exact line numbers, grep the codebase for `# INVARIANT` or consider regenerating this log.
+
 | File | Line | Type | Rule | Description |
 |------|------|------|------|-------------|
 | `finance_kernel/services/auditor_service.py` | 209 | INVARIANT | R1 | INVARIANT: R1 -- Append-only: audit events are immutable once flushed |
