@@ -13,13 +13,7 @@ from finance_kernel.domain.accounting_intent import (
     IntentLine,
     LedgerIntent,
 )
-from finance_kernel.domain.accounting_policy import (
-    AccountingPolicy,
-    GuardCondition,
-    LedgerEffect,
-    PolicyMeaning,
-    PolicyTrigger,
-)
+from finance_kernel.domain.accounting_policy import AccountingPolicy
 from finance_kernel.domain.policy_selector import (
     PolicyAlreadyRegisteredError,
     PolicySelector,
@@ -163,56 +157,6 @@ def register_rich_profile(
         raise
 
     return profile
-
-
-# ---------------------------------------------------------------------------
-# Legacy registration (deprecated — use register_rich_profile instead)
-# ---------------------------------------------------------------------------
-
-
-def register_module_profile(
-    module_name: str,
-    profile_key: str,
-    event_type: str,
-    description: str,
-    line_mappings: tuple[ModuleLineMapping, ...],
-    economic_type: str,
-    quantity_field: str | None = None,
-    dimensions: tuple[str, ...] = (),
-    guards: tuple[GuardCondition, ...] = (),
-    effective_from: date = date(2024, 1, 1),
-    ledger_id: str = "GL",
-) -> AccountingPolicy:
-    """Register a module profile from flat parameters (deprecated)."""
-    debit_roles = [m for m in line_mappings if m.side == "debit"]
-    credit_roles = [m for m in line_mappings if m.side == "credit"]
-
-    ledger_effects: tuple[LedgerEffect, ...] = ()
-    if debit_roles and credit_roles:
-        ledger_effects = (
-            LedgerEffect(
-                ledger=ledger_id,
-                debit_role=debit_roles[0].role,
-                credit_role=credit_roles[0].role,
-            ),
-        )
-
-    kernel_profile = AccountingPolicy(
-        name=f"{module_name}.{profile_key}",
-        version=1,
-        trigger=PolicyTrigger(event_type=event_type),
-        meaning=PolicyMeaning(
-            economic_type=economic_type,
-            quantity_field=quantity_field,
-            dimensions=dimensions,
-        ),
-        ledger_effects=ledger_effects,
-        effective_from=effective_from,
-        guards=guards,
-        description=description,
-    )
-
-    return register_rich_profile(module_name, kernel_profile, line_mappings)
 
 
 # ---------------------------------------------------------------------------

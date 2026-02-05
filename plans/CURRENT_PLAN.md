@@ -600,6 +600,7 @@ These can be tackled in any order; investigation views and batch assist are inde
 ## Next Steps
 
 When resuming, check which plan the user wants to work on:
+- **RBAC (design approved):** Read `docs/RBAC_DESIGN.md` — config-driven, holistic roles, boundary-enforced; kernel actor-agnostic; authority role vs assigned roles; SoD (role + permission + lifecycle); temporal snapshotting. Implementation sequence and five design rules documented. Not started.
 - **Reconciliation Tooling (future):** Section 11 — investigation views, inline diff/why-not, batch assist (shadow mode); observability hooks already done
 - **Manufacturing Order Cleanup:** Section 10 above — rename WorkOrder/WorkOrderModel/work_order_id to manufacturing order naming (Python, APIs, optional DB migration)
 - **Guard Wiring:** Read `plans/GUARD_WIRING_PLAN.md` -- planned, not started

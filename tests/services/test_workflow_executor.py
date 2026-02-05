@@ -27,8 +27,9 @@ from finance_kernel.domain.approval import (
     ApprovalRule,
     ApprovalStatus,
 )
+from finance_config.compiler import CompiledRbacConfig
 from finance_kernel.services.approval_service import ApprovalService
-from finance_services.workflow_executor import WorkflowExecutor
+from finance_services.workflow_executor import StaticRoleProvider, WorkflowExecutor
 
 
 # ---------------------------------------------------------------------------
@@ -818,3 +819,125 @@ class TestWorkflowExecutorIntegration:
 
         assert result.success is False
         assert result.approval_required is True
+
+
+# =========================================================================
+# execute_transition() -- RBAC enforcement
+# =========================================================================
+
+
+def _minimal_rbac_config() -> CompiledRbacConfig:
+    """RBAC config that grants ap.invoice.enter to role ap_enter, nothing to viewer."""
+    return CompiledRbacConfig(
+        rbac_version="1",
+        authority_role_required=False,
+        multi_role_actions_allowed=True,
+        role_permissions=(
+            ("ap_enter", frozenset({"ap.invoice.enter"})),
+            ("viewer", frozenset()),
+        ),
+        role_conflicts=(),
+        permission_conflicts_hard=(),
+        permission_conflicts_soft=(),
+        lifecycle_conflicts=(),
+        override_roles=(),
+        inheritance_depth_limit=5,
+    )
+
+
+def _ap_invoice_submit_workflow():
+    """Workflow that maps to permission ap.invoice.enter for action submit."""
+    return FakeWorkflow(
+        name="ap_invoice",
+        transitions=(
+            FakeTransition(
+                from_state="draft",
+                to_state="submitted",
+                action="submit",
+                posts_entry=False,
+            ),
+        ),
+    )
+
+
+class TestExecuteTransitionRbac:
+    """execute_transition() when compiled_rbac is set enforces permission checks."""
+
+    def test_rbac_allows_when_actor_has_permission(self, approval_service, deterministic_clock):
+        """Actor with role that has ap.invoice.enter can execute ap_invoice/submit."""
+        actor_id = uuid4()
+        org = StaticRoleProvider(role_map={actor_id: ("ap_enter",)})
+        executor = WorkflowExecutor(
+            approval_service=approval_service,
+            approval_policies={},
+            clock=deterministic_clock,
+            org_hierarchy=org,
+            compiled_rbac=_minimal_rbac_config(),
+        )
+        wf = _ap_invoice_submit_workflow()
+
+        result = executor.execute_transition(
+            workflow=wf,
+            entity_type="Invoice",
+            entity_id=uuid4(),
+            current_state="draft",
+            action="submit",
+            actor_id=actor_id,
+            actor_role="",
+        )
+
+        assert result.success is True
+        assert result.new_state == "submitted"
+
+    def test_rbac_denies_when_actor_lacks_permission(self, approval_service, deterministic_clock):
+        """Actor with role that lacks permission is denied."""
+        actor_id = uuid4()
+        org = StaticRoleProvider(role_map={actor_id: ("viewer",)})
+        executor = WorkflowExecutor(
+            approval_service=approval_service,
+            approval_policies={},
+            clock=deterministic_clock,
+            org_hierarchy=org,
+            compiled_rbac=_minimal_rbac_config(),
+        )
+        wf = _ap_invoice_submit_workflow()
+
+        result = executor.execute_transition(
+            workflow=wf,
+            entity_type="Invoice",
+            entity_id=uuid4(),
+            current_state="draft",
+            action="submit",
+            actor_id=actor_id,
+            actor_role="",
+        )
+
+        assert result.success is False
+        assert "RBAC" in result.reason
+        assert "permission" in result.reason.lower()
+
+    def test_rbac_skipped_when_compiled_rbac_none(self, approval_service, deterministic_clock):
+        """When compiled_rbac is None, no RBAC check; transition can succeed."""
+        actor_id = uuid4()
+        org = StaticRoleProvider(role_map={actor_id: ("viewer",)})
+        executor = WorkflowExecutor(
+            approval_service=approval_service,
+            approval_policies={},
+            clock=deterministic_clock,
+            org_hierarchy=org,
+            compiled_rbac=None,
+        )
+        wf = _ap_invoice_submit_workflow()
+
+        result = executor.execute_transition(
+            workflow=wf,
+            entity_type="Invoice",
+            entity_id=uuid4(),
+            current_state="draft",
+            action="submit",
+            actor_id=actor_id,
+            actor_role="",
+        )
+
+        assert result.success is True
+        assert result.new_state == "submitted"

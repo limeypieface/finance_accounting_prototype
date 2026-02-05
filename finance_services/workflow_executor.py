@@ -38,11 +38,13 @@ from finance_kernel.domain.approval import (
     ApprovalStatus,
     TransitionResult,
 )
+from finance_config.compiler import CompiledRbacConfig
 from finance_kernel.domain.clock import Clock, SystemClock
 from finance_kernel.domain.workflow import Guard
 from finance_kernel.exceptions import UnauthorizedApproverError
 from finance_kernel.logging_config import LogContext, get_logger
 from finance_kernel.services.approval_service import ApprovalService
+from finance_services.rbac_authority import check_rbac, get_permission_for_transition
 
 logger = get_logger("services.workflow_executor")
 
@@ -55,6 +57,7 @@ OUTCOME_APPROVAL_REQUIRED = "approval_required"
 OUTCOME_NO_POLICY = "no_policy"
 OUTCOME_APPROVAL_REJECTED = "approval_rejected"
 OUTCOME_APPROVAL_PENDING = "approval_pending"
+OUTCOME_RBAC_DENIED = "rbac_denied"
 
 
 def _emit_workflow_trace(
@@ -430,12 +433,14 @@ class WorkflowExecutor:
         clock: Clock | None = None,
         org_hierarchy: StaticRoleProvider | None = None,
         guard_executor: GuardExecutor | None = None,
+        compiled_rbac: CompiledRbacConfig | None = None,
     ) -> None:
         self._approval_service = approval_service
         self._policies = approval_policies or {}
         self._clock = clock or SystemClock()
         self._org_hierarchy = org_hierarchy or StaticRoleProvider()
         self._guard_executor = guard_executor or default_guard_executor()
+        self._compiled_rbac = compiled_rbac
 
     def execute_transition(
         self,
@@ -486,6 +491,34 @@ class WorkflowExecutor:
                 reason=f"No transition from '{current_state}' via action '{action}' "
                        f"in workflow '{workflow.name}'",
             )
+
+        # 1.5 RBAC: enforce permission when config has compiled_rbac and actor has assigned roles
+        if self._compiled_rbac is not None:
+            required_permission = get_permission_for_transition(workflow.name, action)
+            if required_permission is not None:
+                assigned_roles = self._org_hierarchy.get_actor_roles(actor_id)
+                if assigned_roles:
+                    authority_role_val = (actor_role.strip() or None) if actor_role else None
+                    allowed, reason = check_rbac(
+                        self._compiled_rbac,
+                        assigned_roles,
+                        authority_role_val,
+                        required_permission,
+                    )
+                    if not allowed:
+                        duration_ms = (time.monotonic() - t0) * 1000
+                        _emit_workflow_trace(
+                            workflow_name=workflow.name,
+                            action=action,
+                            entity_type=entity_type,
+                            entity_id=entity_id,
+                            from_state=current_state,
+                            outcome=OUTCOME_RBAC_DENIED,
+                            reason=reason,
+                            duration_ms=duration_ms,
+                            outcome_sink=outcome_sink,
+                        )
+                        return TransitionResult(success=False, reason=reason)
 
         # 2. Evaluate guard if present (guard must pass before transition is allowed)
         guard = getattr(transition, "guard", None)

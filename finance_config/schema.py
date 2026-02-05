@@ -333,6 +333,103 @@ class BatchScheduleDef:
 
 
 # ---------------------------------------------------------------------------
+# RBAC (config-driven, role-holistic, boundary-enforced)
+# ---------------------------------------------------------------------------
+
+# Permission taxonomy: valid <domain>.<object>.<authority> (economic verbs only).
+# Compiler rule: every permission in roles/overrides must be in this set;
+# every permission in this set must be assigned to ≥1 role (no orphaning).
+PERMISSION_TAXONOMY: frozenset[str] = frozenset({
+    # AP
+    "ap.invoice.enter", "ap.invoice.view", "ap.invoice.approve",
+    "ap.payment.enter", "ap.payment.release", "ap.payment.approve",
+    "ap.hold.vendor", "ap.aging.view",
+    # AR
+    "ar.invoice.enter", "ar.invoice.view", "ar.credit_memo.issue",
+    "ar.payment.apply", "ar.aging.view",
+    # GL
+    "gl.journal.post", "journal.post.manual", "period.close",
+    "gl.reconcile", "gl.export.full",
+    # Reporting / export
+    "reporting.sensitive", "reporting.export.bulk", "pii.export",
+    # RBAC admin
+    "rbac.role.define", "rbac.sod.modify", "rbac.assignment.approve",
+})
+
+
+@dataclass(frozen=True)
+class RbacConfigMetadata:
+    """RBAC config version and effective dates (migration governance)."""
+
+    version: str
+    effective_from: date
+    supersedes: str | None = None
+
+
+@dataclass(frozen=True)
+class AuthorityRulesDef:
+    """Authority role activation rules."""
+
+    authority_role_required: bool = True
+    multi_role_actions_allowed: bool = False
+
+
+@dataclass(frozen=True)
+class RoleDef:
+    """Single role definition: permissions and optional inheritance."""
+
+    name: str
+    permissions: tuple[str, ...]
+    inherits: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PermissionConflictsDef:
+    """SoD permission/role conflicts by severity."""
+
+    hard_block: tuple[tuple[str, ...], ...] = ()  # e.g. (("ap.invoice.approve", "ap.payment.release"),)
+    soft_warn: tuple[tuple[str, ...], ...] = ()
+
+
+@dataclass(frozen=True)
+class SegregationOfDutiesDef:
+    """SoD: role conflicts, permission conflicts (with severity), lifecycle conflicts."""
+
+    role_conflicts: tuple[tuple[str, ...], ...] = ()  # e.g. (("ap_clerk", "ap_manager"),)
+    permission_conflicts: PermissionConflictsDef = field(default_factory=PermissionConflictsDef)
+    lifecycle_conflicts: tuple[tuple[str, tuple[str, ...]], ...] = ()  # e.g. (("ap_invoice", ("enter", "approve")),)
+
+
+@dataclass(frozen=True)
+class OverrideRoleDef:
+    """Time-bound override role (emergency, DR, etc.)."""
+
+    name: str
+    permissions: tuple[str, ...]
+    expiry: str  # e.g. "24h"
+    requires_dual_approval: bool = True
+
+
+@dataclass(frozen=True)
+class HierarchyRulesDef:
+    """Role hierarchy constraints."""
+
+    inheritance_depth_limit: int = 2
+
+
+@dataclass(frozen=True)
+class RbacConfigDef:
+    """Full RBAC configuration (optional per config set)."""
+
+    rbac_config: RbacConfigMetadata
+    authority_rules: AuthorityRulesDef
+    roles: tuple[RoleDef, ...]
+    segregation_of_duties: SegregationOfDutiesDef
+    override_roles: tuple[OverrideRoleDef, ...] = ()
+    hierarchy_rules: HierarchyRulesDef = field(default_factory=HierarchyRulesDef)
+
+
+# ---------------------------------------------------------------------------
 # Top-level configuration set
 # ---------------------------------------------------------------------------
 
@@ -380,3 +477,4 @@ class AccountingConfigurationSet:
     approval_policies: tuple[ApprovalPolicyDef, ...] = ()
     import_mappings: tuple[ImportMappingDef, ...] = ()
     batch_schedules: tuple[BatchScheduleDef, ...] = ()
+    rbac: RbacConfigDef | None = None

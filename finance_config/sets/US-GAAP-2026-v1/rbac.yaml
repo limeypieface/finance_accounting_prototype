@@ -1,0 +1,75 @@
+# RBAC config (optional). When present, compiler validates DAG, depth, taxonomy, orphaning.
+rbac_config:
+  version: v1
+  effective_from: 2026-01-01
+  supersedes: null
+
+authority_rules:
+  authority_role_required: true
+  multi_role_actions_allowed: false
+
+roles:
+  ap_clerk:
+    permissions:
+      - ap.invoice.enter
+      - ap.invoice.view
+      - ap.payment.enter
+
+  ap_manager:
+    inherits: [ap_clerk]
+    permissions:
+      - ap.invoice.approve
+      - ap.payment.approve
+      - ap.hold.vendor
+      - ap.aging.view
+
+  controller:
+    permissions:
+      - period.close
+      - journal.post.manual
+      - gl.reconcile
+      - gl.export.full
+      - reporting.sensitive
+      - reporting.export.bulk
+      - pii.export
+
+  rbac_admin:
+    permissions:
+      - rbac.role.define
+      - rbac.sod.modify
+      - rbac.assignment.approve
+
+  ar_clerk:
+    permissions:
+      - ar.invoice.enter
+      - ar.invoice.view
+      - ar.payment.apply
+      - ar.aging.view
+
+  ar_manager:
+    permissions:
+      - ar.credit_memo.issue
+
+segregation_of_duties:
+  role_conflicts:
+    - [ap_clerk, ap_manager]
+
+  permission_conflicts:
+    hard_block:
+      - [ap.invoice.approve, ap.payment.release]
+    soft_warn:
+      - [ap_clerk, ap_manager]
+
+  lifecycle_conflicts:
+    ap_invoice:
+      - [enter, approve]
+      - [approve, pay]
+
+override_roles:
+  emergency_controller:
+    permissions: [ap.payment.release]
+    expiry: 24h
+    requires_dual_approval: true
+
+hierarchy_rules:
+  inheritance_depth_limit: 2

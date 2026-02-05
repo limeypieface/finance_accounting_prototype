@@ -68,11 +68,14 @@ from finance_config.schema import (
     ImportMappingDef,
     LedgerEffectDef,
     LineMappingDef,
+    PERMISSION_TAXONOMY,
     PolicyDefinition,
     PolicyMeaningDef,
     PolicyTriggerDef,
     PrecedenceDef,
+    RbacConfigDef,
     RoleBinding,
+    RoleDef,
     SubledgerContractDef,
 )
 from finance_engines.contracts import ENGINE_CONTRACTS, EngineContract
@@ -195,6 +198,26 @@ class CompiledApprovalPolicy:
     effective_from: str | None = None
     effective_to: str | None = None
     policy_hash: str = ""
+
+
+@dataclass(frozen=True)
+class CompiledRbacConfig:
+    """Validated, frozen RBAC config for runtime authorization.
+
+    Role inheritance is expanded into role_permissions (role -> all permissions).
+    SoD and override definitions are preserved for the authorization service.
+    """
+
+    rbac_version: str
+    authority_role_required: bool
+    multi_role_actions_allowed: bool
+    role_permissions: tuple[tuple[str, frozenset[str]], ...]  # (role_name, permissions)
+    role_conflicts: tuple[tuple[str, ...], ...]
+    permission_conflicts_hard: tuple[tuple[str, ...], ...]
+    permission_conflicts_soft: tuple[tuple[str, ...], ...]
+    lifecycle_conflicts: tuple[tuple[str, tuple[str, ...]], ...]
+    override_roles: tuple[tuple[str, tuple[str, ...], str, bool], ...]  # (name, perms, expiry, dual_approval)
+    inheritance_depth_limit: int
 
 
 @dataclass(frozen=True)
@@ -334,6 +357,7 @@ class CompiledPolicyPack:
     subledger_contracts: tuple[SubledgerContractDef, ...] = ()
     approval_policies: tuple[CompiledApprovalPolicy, ...] = ()
     import_mappings: tuple[ImportMappingDef, ...] = ()
+    compiled_rbac: CompiledRbacConfig | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +477,11 @@ def compile_policy_pack(
         config.approval_policies, errors
     )
 
+    # 9. Validate and compile RBAC (if present)
+    compiled_rbac: CompiledRbacConfig | None = None
+    if config.rbac is not None:
+        compiled_rbac = _validate_and_compile_rbac(config.rbac, errors)
+
     # Fail on errors (not warnings)
     actual_errors = [e for e in errors if e.severity == "error"]
     if actual_errors:
@@ -478,6 +507,7 @@ def compile_policy_pack(
         subledger_contracts=config.subledger_contracts,
         approval_policies=tuple(compiled_approval_policies),
         import_mappings=config.import_mappings,
+        compiled_rbac=compiled_rbac,
     )
 
 
@@ -1021,6 +1051,126 @@ def _compile_approval_policies(
         )
 
     return compiled
+
+
+def _validate_and_compile_rbac(
+    rbac: RbacConfigDef,
+    errors: list[CompilationError],
+) -> CompiledRbacConfig | None:
+    """Validate RBAC config (DAG, depth, taxonomy, orphaning) and compile to frozen form."""
+    roles_by_name = {r.name: r for r in rbac.roles}
+    depth_limit = rbac.hierarchy_rules.inheritance_depth_limit
+
+    # 1. DAG and depth: resolve inheritance, detect cycles, enforce depth
+    def _resolve_depth(role_name: str, visited: set[str], path: list[str]) -> int:
+        if role_name in path:
+            errors.append(
+                CompilationError(
+                    category="rbac",
+                    message=f"Role inheritance cycle: {' -> '.join(path)} -> {role_name}",
+                )
+            )
+            return 0
+        if role_name not in roles_by_name:
+            return 0
+        r = roles_by_name[role_name]
+        if not r.inherits:
+            return 1
+        visited.add(role_name)
+        path.append(role_name)
+        max_child = 0
+        for parent in r.inherits:
+            d = _resolve_depth(parent, visited, path) + 1
+            if d > depth_limit:
+                errors.append(
+                    CompilationError(
+                        category="rbac",
+                        message=(
+                            f"Role '{role_name}' exceeds inheritance_depth_limit={depth_limit} "
+                            f"(path includes {parent})"
+                        ),
+                    )
+                )
+            max_child = max(max_child, d)
+        path.pop()
+        return max_child
+
+    for r in rbac.roles:
+        _resolve_depth(r.name, set(), [])
+
+    # 2. Expand role -> all permissions (including inherited)
+    def _expanded_permissions(role_name: str, seen: set[str]) -> frozenset[str]:
+        if role_name in seen or role_name not in roles_by_name:
+            return frozenset()
+        seen.add(role_name)
+        r = roles_by_name[role_name]
+        perms = set(r.permissions)
+        for parent in r.inherits:
+            perms |= _expanded_permissions(parent, seen)
+        return frozenset(perms)
+
+    role_permissions_list: list[tuple[str, frozenset[str]]] = []
+    all_assigned_permissions: set[str] = set()
+    for r in rbac.roles:
+        perms = _expanded_permissions(r.name, set())
+        role_permissions_list.append((r.name, perms))
+        all_assigned_permissions |= perms
+
+    # 3. Every permission in roles must be in taxonomy
+    for r in rbac.roles:
+        for p in r.permissions:
+            if p not in PERMISSION_TAXONOMY:
+                errors.append(
+                    CompilationError(
+                        category="rbac",
+                        message=f"Permission '{p}' in role '{r.name}' is not in PERMISSION_TAXONOMY",
+                    )
+                )
+    for ov in rbac.override_roles:
+        for p in ov.permissions:
+            if p not in PERMISSION_TAXONOMY:
+                errors.append(
+                    CompilationError(
+                        category="rbac",
+                        message=f"Permission '{p}' in override '{ov.name}' is not in PERMISSION_TAXONOMY",
+                    )
+                )
+
+    # 4. Orphaning: every permission in taxonomy must be assigned to >=1 role (or override)
+    for ov in rbac.override_roles:
+        all_assigned_permissions |= set(ov.permissions)
+    for p in PERMISSION_TAXONOMY:
+        if p not in all_assigned_permissions:
+            errors.append(
+                CompilationError(
+                    category="rbac",
+                    message=f"Permission '{p}' is in PERMISSION_TAXONOMY but not assigned to any role (orphan)",
+                )
+            )
+
+    if any(e.category == "rbac" for e in errors):
+        return None
+
+    # Build compiled SoD and override tuples
+    sod = rbac.segregation_of_duties
+    perm_conf = sod.permission_conflicts
+    override_tuples = tuple(
+        (ov.name, ov.permissions, ov.expiry, ov.requires_dual_approval)
+        for ov in rbac.override_roles
+    )
+
+    return CompiledRbacConfig(
+        rbac_version=rbac.rbac_config.version,
+        authority_role_required=rbac.authority_rules.authority_role_required,
+        multi_role_actions_allowed=rbac.authority_rules.multi_role_actions_allowed,
+        role_permissions=tuple(role_permissions_list),
+        role_conflicts=sod.role_conflicts,
+        permission_conflicts_hard=perm_conf.hard_block,
+        permission_conflicts_soft=perm_conf.soft_warn,
+        lifecycle_conflicts=sod.lifecycle_conflicts,
+        override_roles=override_tuples,
+        inheritance_depth_limit=depth_limit,
+    )
 
 
 def _compute_fingerprint(config: AccountingConfigurationSet) -> str:

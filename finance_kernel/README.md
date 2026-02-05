@@ -15,6 +15,16 @@ This kernel treats financial data as immutable facts. Once a transaction is post
 - **Integrity**: Cryptographic hash chain prevents undetected tampering
 - **Determinism**: Replay using stored snapshots produces identical results
 
+**Kernel primitives (R25):** All monetary amounts, quantities, exchange rates, and artifact identities must use **value types defined in the kernel** (`finance_kernel.domain.values` and related). Modules and engines may not define their own Money, Amount, Currency, or ArtifactRef types. The canonical primitives are:
+
+| Primitive | Module | Description |
+|-----------|--------|-------------|
+| **Currency** | `domain/values.py` | ISO 4217 code; decimal places and rounding tolerance from CurrencyRegistry (R16, R17). |
+| **Money** | `domain/values.py` | Decimal amount + Currency; never raw Decimal/float for money. |
+| **Quantity** | `domain/values.py` | Decimal value + unit (e.g. inventory counts, weights); same-unit arithmetic. |
+| **ExchangeRate** | `domain/values.py` | 1 from_currency = rate to_currency; positive Decimal; used for conversion. |
+| **ArtifactRef** | `domain/economic_link.py` | artifact_type (ArtifactType enum) + artifact_id (UUID); pointer to Event, JournalEntry, Invoice, Payment, etc. | This avoids duplicate notions of “amount” or “currency” across the stack and keeps a single place for precision, rounding, and validation.
+
 ---
 
 ## Architecture Layers
@@ -44,18 +54,20 @@ This kernel treats financial data as immutable facts. Once a transaction is post
                                   │
                                   ▼ AccountingIntent
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        SERVICES LAYER                                    │
+│                        SERVICES LAYER (Kernel)                          │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │                PostingOrchestrator (R7)                            │  │
-│  │    Coordinates: Ingestor → Bookkeeper → Ledger → Auditor          │  │
+│  │            ModulePostingService (canonical posting entry)         │  │
+│  │    IngestorService → InterpretationCoordinator (L5) → commit     │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌───────────────────┐    │
-│  │JournalWriter│ │OutcomeRec. │ │  Ledger    │ │   PeriodService   │    │
-│  │(P11: atomic)│ │(P15: unique)│ │            │ │                   │    │
+│  │JournalWriter│ │OutcomeRec. │ │  Ingestor  │ │   PeriodService   │    │
+│  │(P11: atomic)│ │(P15: unique)│ │  Service   │ │                   │    │
 │  └────────────┘ └────────────┘ └────────────┘ └───────────────────┘    │
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌───────────────────┐    │
-│  │  Ingestor  │ │  Auditor   │ │ LinkGraph  │ │ RefSnapshotSvc    │    │
+│  │  Auditor   │ │ LinkGraph  │ │ RefSnapshot│ │ SequenceService   │    │
+│  │  Service   │ │  Service   │ │  Service   │ │                   │    │
 │  └────────────┘ └────────────┘ └────────────┘ └───────────────────┘    │
+│  (PostingOrchestrator lives in finance_services/; it wires kernel svcs)  │
 └─────────────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼ DTOs (Immutable)
@@ -75,8 +87,9 @@ This kernel treats financial data as immutable facts. Once a transaction is post
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        DATABASE LAYER                                    │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │  Models: JournalEntry, JournalLine, EconomicEvent, AuditEvent...  │  │
-│  │          InterpretationOutcome, EconomicLink                       │  │
+│  │  Models: JournalEntry, JournalLine, Event, EconomicEvent,         │  │
+│  │  AuditEvent, InterpretationOutcome, EconomicLink, Party, Contract│  │
+│  │  Account, FiscalPeriod, Approval, CostLot, Subledger...          │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │  ┌────────────────────┐  ┌──────────────────────────────────────────┐  │
 │  │  ORM Immutability  │  │    PostgreSQL Triggers (Defense)         │  │
@@ -163,6 +176,16 @@ These invariants are **non-negotiable**. The system is designed to make violatio
 | **R23** | Strategy lifecycle governance | Each strategy must declare lifecycle versions and replay_policy | StrategyRegistry._validate_lifecycle() |
 | **R24** | Canonical ledger hash | Deterministic hash computable over sorted entries | LedgerSelector.canonical_hash() |
 
+### Governance & Authority Invariants
+
+| Rule | Name | Description | Enforcement |
+|------|------|-------------|-------------|
+| **R25** | Kernel primitives only | Money, ArtifactRef, Quantity, ExchangeRate from kernel; no parallel types in modules | Architecture tests; R25 boundary checks |
+| **R26** | Journal is system of record | Module ORM is derivable projection; financial truth in journal + link graph | Design; no module balance as source of truth |
+| **R27** | Matching is operational | Variance/ledger impact from kernel policy (profiles, guards), not module logic | Policy/guard wiring; module calls engines only |
+| **R28** | No generic workflows | Each action binds to a specific lifecycle workflow; no catch-all workflows | WORKFLOW_DIRECTIVE; architecture tests |
+| **R29** | Posting status authority | Only kernel may assert POSTED; services return transition/guard outcomes | ModulePostingResult.is_ledger_fact vs is_transition |
+
 ### Interpretation Layer Invariants
 
 | Rule | Name | Description | Enforcement |
@@ -180,15 +203,118 @@ These invariants are **non-negotiable**. The system is designed to make violatio
 | **P11** | Multi-ledger atomicity | Multi-ledger postings from single AccountingIntent are atomic | JournalWriter atomic transaction |
 | **P15** | Outcome uniqueness | Every accepted BusinessEvent has exactly one InterpretationOutcome | Unique constraint on source_event_id |
 
+*Full invariant table (R1–R29): see `../CLAUDE.md`.*
+
+---
+
+## Specifications
+
+These sections specify behavior that invariants reference. They ensure independent implementations and audits can reproduce the same semantics.
+
+### Snapshot boundary (R21)
+
+A **ReferenceSnapshot** is a frozen set of component versions captured at posting time. Each component has a single **version** (integer) and **content_hash** (SHA-256 of that component’s state).
+
+| Component | Scope | Granularity |
+|-----------|--------|--------------|
+| **COA** | Chart of accounts | One version per snapshot; full COA tree included via that version. |
+| **DIMENSION_SCHEMA** | Dimension definitions and hierarchy | One version; dimension set is versioned as a whole. |
+| **FX_RATES** | Exchange rates | One version for the **entire rate table** (all currency pairs); not per-pair. |
+| **TAX_RULES** | Tax rule definitions | One version; tax rules versioned independently of policy. |
+| **POLICY_REGISTRY** | Economic policies (profiles) | One version. |
+| **ROUNDING_POLICY** | Rounding rules | One version. |
+| **ACCOUNT_ROLES** | Role-to-account bindings | One version. |
+| **CONFIGURATION_SET** | Configuration set ID + checksum | Optional; links snapshot to a named config set. |
+
+Replay (L4) uses the same snapshot component versions to produce identical results. Dimension hierarchies are part of DIMENSION_SCHEMA, not separate.
+
+### Canonical ledger hash (R24)
+
+The canonical hash is a **SHA-256** digest over all **posted** journal lines in a deterministic order. Same ledger state always yields the same hash.
+
+- **Scope**: All posted `JournalLine` rows (optionally filtered by `as_of_date` and/or `currency`).
+- **Sort order**: Lines are ordered by `(account_id, currency, dimensions_json, entry_seq, line_seq)`. `dimensions_json` is JSON with **sorted keys**; empty dimensions = `""`.
+- **Line representation**: Each line is a single JSON object (sorted keys) with: `account_id`, `currency`, `dimensions`, `entry_seq`, `line_seq`, `side`, `amount`, `is_rounding`. Fed into the hash as `json.dumps(line, sort_keys=True, separators=(",", ":"))` plus newline.
+- **Decimal normalization**: Amounts are stringified from the stored `Numeric(38,9)` value (e.g. `str(row.amount)`). No float; trailing zeros are preserved by the DB type.
+- **Hash**: SHA-256 over the concatenation of these line strings in sort order; result is 64-character hex.
+
+Used for: post-replay verification, tamper detection, distributed consistency checks. Implementation: `LedgerSelector.canonical_hash()`, `_get_canonical_lines()`, `_compute_hash()`.
+
+### Multi-ledger balancing (R4, P11)
+
+- **Per entry**: Every `JournalEntry` must balance **per currency**: sum of debits = sum of credits for each currency in that entry (R4). Rounding may introduce one `is_rounding=true` line per currency (R5).
+- **Per ledger**: An `AccountingIntent` may contain multiple **LedgerIntent**s (one per ledger, e.g. GL, AP, AR). Each `LedgerIntent` must balance **per currency** (`LedgerIntent.is_balanced(currency)`). JournalWriter validates each ledger intent before writing (R4).
+- **Atomicity**: All ledgers in a single intent are written in one transaction (P11). If any ledger fails (e.g. balance check, role resolution), the entire write is rolled back; no partial multi-ledger postings.
+- **Cross-ledger**: There is no requirement that balances *across* ledgers net to zero (e.g. statutory vs management, or local vs functional). Each ledger balances in isolation. FX or inter-ledger bridge entries are modeled as separate lines in the appropriate ledgers.
+
+### Sequence semantics (R9)
+
+- **Source of truth**: A **locked counter row** per named sequence (e.g. `journal_entry`, `audit_event`). `MAX(seq)+1` or any aggregate-based next value is **forbidden** (R9).
+- **Gap policy**: Under normal operation, no values are skipped. If a transaction **rolls back**, the allocated value is **not** reused—the next successful call gets the next number. Gaps are allowed; monotonicity is strict.
+- **Rollback**: Sequence increment is committed only with the caller’s transaction. On rollback, the counter is rolled back; the “consumed” value is effectively discarded and will appear as a gap.
+- **Scope**: Sequences are **global** per name (e.g. one `journal_entry` sequence for the kernel), not per-ledger. Journal entry `seq` is a single monotonic stream across all ledgers.
+- **Well-known names**: `SequenceService.JOURNAL_ENTRY`, `SequenceService.AUDIT_EVENT`. Implementation: `SequenceService.next_value(sequence_name)` with `SELECT ... FOR UPDATE` on the counter row.
+
+### Ingestion and trust boundary
+
+What the kernel **enforces** at ingestion (R1–R3, schema):
+
+- **Event identity and immutability (R1, R2)**: `event_id` unique; same `event_id` with different payload → `PayloadMismatchError` (protocol violation). Payload hash stored and checked.
+- **Idempotency (R3)**: One journal entry per `idempotency_key`; duplicate key returns existing result or blocks until one writer wins.
+- **Schema**: Event payload validated against registered schema for `event_type`; version and field references checked (e.g. `SchemaValidationError`, `InvalidFieldReferenceError`).
+
+**Out of scope** (or deferred): producer authentication, clock skew tolerance, duplicate external IDs beyond `event_id`/idempotency. Adversarial input is mitigated by payload hashing and idempotency; producer identity and clock are caller responsibilities.
+
+---
+
+## Failure outcome matrix and lifecycles
+
+### Failure outcome matrix
+
+| Failure mode | Outcome / status | EconomicEvent? | JournalEntry? | Recoverable? |
+|--------------|------------------|----------------|---------------|--------------|
+| **Guard REJECT** | InterpretationOutcome(REJECTED) | No | No | No (terminal). |
+| **Guard BLOCK** | InterpretationOutcome(BLOCKED) | Yes | No | Yes, via transition_blocked_to_posted(). |
+| **Role resolution failure** | Posting fails; REJECTED or service error | Yes (if intent built) | No | Retry after fixing role bindings. |
+| **Balance failure** (unbalanced intent) | UnbalancedIntentError; transaction rolled back | Yes | No | Fix intent or rounding. |
+| **Closed period** | PeriodError (e.g. ClosedPeriodError); REJECTED | Depends on where checked | No | No for that period. |
+| **Adjustments not allowed** | AdjustmentsNotAllowedError | Depends | No | No unless period allows adjustments. |
+| **Idempotent retry** (same idempotency_key) | AlreadyPostedError or success (no duplicate) | N/A | One entry only | N/A. |
+| **Payload mismatch** (same event_id, different payload) | PayloadMismatchError; protocol violation | No | No | No. |
+
+### Lifecycle: BLOCK → POST
+
+```
+BLOCKED (EconomicEvent exists, no journal rows)
+    │
+    │  transition_blocked_to_posted() when guards no longer block
+    │  (e.g. approval granted, document attached)
+    ▼
+POSTED (InterpretationOutcome.POSTED, JournalEntry + JournalLines created)
+```
+
+### Lifecycle: Reversal
+
+```
+Posted JournalEntry
+    │
+    │  ReversalService.create_reversal_entry(...)
+    │  New entry with inverted lines; link via EconomicLink (REVERSED_BY)
+    ▼
+Reversal JournalEntry (status POSTED); original entry unchanged (immutable)
+```
+
 ---
 
 ## Data Flow: Event Interpretation & Posting
+
+Modules typically call **ModulePostingService.post_event()** (canonical entry point), which delegates to InterpretationCoordinator. The flow below is the kernel interpretation pipeline.
 
 ```
 1. External Module produces Business Event
    │
    ▼
-2. InterpretationCoordinator.interpret_and_post()
+2. ModulePostingService.post_event() → InterpretationCoordinator.interpret_and_post()
    │
    ├─► PolicySelector.find_for_event()
    │   - Match event_type to AccountingPolicy (P1: exactly one match)
@@ -270,6 +396,11 @@ finance_kernel/
 │   ├── subledger_control.py       # Subledger control contracts
 │   ├── economic_link.py           # Event linkage domain logic
 │   ├── event_validator.py         # Event validation logic
+│   ├── approval.py                # Approval domain types
+│   ├── control.py                 # Control rule evaluation
+│   ├── policy_source.py           # Policy source abstraction
+│   ├── validation.py              # Validation helpers
+│   ├── workflow.py                # Workflow/lifecycle types
 │   │
 │   ├── schemas/                   # Event schema definitions
 │   │   ├── registry.py                # Schema registry
@@ -292,23 +423,24 @@ finance_kernel/
 │       ├── __init__.py
 │       └── generic_strategy.py        # Generic posting strategy
 │
-├── services/                  # Stateful services with I/O
-│   ├── posting_orchestrator.py    # Main entry point (legacy)
-│   ├── ingestor_service.py        # Event ingestion
-│   ├── ledger_service.py          # Journal persistence
-│   ├── auditor_service.py         # Audit trail
-│   ├── period_service.py          # Fiscal period management
-│   ├── sequence_service.py        # Monotonic sequence allocation
-│   ├── reference_data_loader.py   # Load reference data
-│   │
-│   │   # === Interpretation Services ===
-│   ├── interpretation_coordinator.py  # L5 atomicity orchestrator
-│   ├── journal_writer.py              # Atomic multi-ledger posting
-│   ├── outcome_recorder.py            # InterpretationOutcome management
-│   ├── reference_snapshot_service.py  # Snapshot capture/retrieval
-│   ├── link_graph_service.py          # Economic event linkage
+├── services/                  # Stateful services with I/O (kernel only)
+│   ├── module_posting_service.py     # Canonical posting entry (modules call this)
+│   ├── ingestor_service.py           # Event ingestion
+│   ├── interpretation_coordinator.py # L5 atomicity: MeaningBuilder → JournalWriter → OutcomeRecorder
+│   ├── journal_writer.py             # Atomic multi-ledger posting
+│   ├── outcome_recorder.py           # InterpretationOutcome management
+│   ├── reference_snapshot_service.py # Snapshot capture/retrieval
+│   ├── auditor_service.py            # Audit trail, hash chain
+│   ├── period_service.py             # Fiscal period management
+│   ├── sequence_service.py           # Monotonic sequence allocation (R9)
+│   ├── link_graph_service.py         # Economic event linkage
 │   ├── contract_service.py            # Contract lifecycle management
-│   └── party_service.py               # Party (customer/supplier) management
+│   ├── party_service.py               # Party (customer/supplier) management
+│   ├── approval_service.py           # Approval requests and decisions
+│   ├── reversal_service.py           # Reversal entry creation
+│   ├── retry_service.py              # Retry/backoff for transient failures
+│   └── log_capture.py                # Structured log capture for outcomes
+│   (PostingOrchestrator, WorkflowExecutor, etc. live in finance_services/)
 │
 ├── models/                    # SQLAlchemy ORM models
 │   ├── journal.py                 # JournalEntry, JournalLine
@@ -324,25 +456,34 @@ finance_kernel/
 │   ├── interpretation_outcome.py  # Terminal interpretation state
 │   ├── economic_link.py           # Event linkage records
 │   ├── party.py                   # Party (Customer/Supplier) with status
-│   └── contract.py                # Contract, ContractLineItem (DCAA)
+│   ├── contract.py                # Contract, ContractLineItem (DCAA)
+│   ├── approval.py                 # Approval request/decision records
+│   ├── cost_lot.py                # Cost lot (valuation) records
+│   └── subledger.py               # Subledger control/balance records
 │
 ├── db/                        # Database infrastructure
+│   ├── base.py                    # Declarative base, session hooks
 │   ├── engine.py                  # Connection management
 │   ├── immutability.py            # ORM-level immutability listeners
 │   ├── triggers.py                # PostgreSQL triggers (defense in depth)
 │   ├── types.py                   # Custom SQLAlchemy types
 │   └── sql/                       # SQL trigger scripts
 │       ├── 01_journal_entry.sql
-│       ├── ...
+│       ├── ... (through 08_exchange_rate.sql)
 │       ├── 09_event_immutability.sql
 │       ├── 10_balance_enforcement.sql
-│       └── 11_economic_link_immutability.sql
+│       ├── 11_economic_link_immutability.sql
+│       ├── 12_cost_lot.sql
+│       ├── 13_outcome_exception_lifecycle.sql
+│       └── 99_drop_all.sql
 │
 ├── selectors/                 # Read-only query services
 │   ├── __init__.py
 │   ├── base.py                    # Base selector class
 │   ├── ledger_selector.py         # Ledger queries, trial balance
-│   └── journal_selector.py        # Journal entry queries
+│   ├── journal_selector.py        # Journal entry queries
+│   ├── subledger_selector.py      # Subledger balance/open-item queries
+│   └── trace_selector.py          # Trace/audit query support
 │
 ├── exceptions.py              # Hierarchical exception system
 └── utils/                     # Utilities (hashing, etc.)
@@ -363,7 +504,15 @@ finance_engines/               # Pure Calculation Engines
 ├── correction/                    # Correction/reversal engines
 │   └── unwind.py                      # Unwind logic
 ├── reconciliation/                # Document reconciliation
-│   └── domain.py                      # Reconciliation domain models
+│   ├── domain.py                      # Reconciliation domain models
+│   ├── checker.py                     # Match/reconciliation checker
+│   ├── bank_checker.py                # Bank reconciliation checker
+│   ├── bank_recon_types.py            # Bank recon types
+│   └── lifecycle_types.py             # Lifecycle state types
+├── approval.py                   # Approval engine (pure)
+├── expense_compliance.py         # Expense/DCAA compliance
+├── rate_compliance.py            # Rate compliance
+├── timesheet_compliance.py       # Timesheet compliance
 └── valuation/                     # Cost layer valuation
     └── cost_lot.py                    # Cost lot tracking
 
@@ -381,66 +530,9 @@ docs/                          # Design Documentation
 
 ## Finance Engines (Pure Functions)
 
-The `finance_engines/` package contains **pure calculation engines** with no I/O or database access. These are reusable across all ERP modules.
+The **finance_engines/** package provides pure calculation engines: no I/O, no database, no session. They are deterministic and reusable across all ERP modules. Stateful orchestration (e.g. CorrectionService, ValuationService) lives in **finance_services** and calls these engines.
 
-### Variance Engine (`variance.py`)
-
-Calculates price, quantity, and FX variances:
-- **PPV (Purchase Price Variance)**: Standard cost vs actual cost
-- **Sales Price Variance**: Expected vs actual selling price
-- **Material Usage Variance**: Standard quantity vs actual quantity
-- **Exchange Rate Variance**: Budgeted vs actual FX rates
-
-```python
-from finance_engines.variance import VarianceCalculator, VarianceType
-
-result = VarianceCalculator.calculate_price_variance(
-    expected_price=Money.of(Decimal("100.00"), "USD"),
-    actual_price=Money.of(Decimal("105.00"), "USD"),
-    quantity=Decimal("10"),
-)
-# result.variance = Money(-50.00, USD)  # Unfavorable
-```
-
-### Allocation Engine (`allocation.py`)
-
-Distributes amounts across targets using various methods:
-- **PRORATA**: Proportional by weight
-- **FIFO**: First-in-first-out by date
-- **LIFO**: Last-in-first-out by date
-- **SPECIFIC**: Explicit target specification
-- **WEIGHTED**: Custom weights
-- **EQUAL**: Even distribution
-
-### Matching Engine (`matching.py`)
-
-Document matching for:
-- **3-Way Match**: PO ↔ Receipt ↔ Invoice
-- **2-Way Match**: PO ↔ Invoice
-- **Shipment Match**: Order ↔ Shipment
-- **Bank Reconciliation**: Statement ↔ Transactions
-
-### Aging Engine (`aging.py`)
-
-Aged analysis for AP, AR, and inventory:
-- Configurable buckets (Current, 1-30, 31-60, 61-90, Over 90)
-- Multiple aggregation methods
-- Slow-moving inventory analysis
-
-### Tax Engine (`tax.py`)
-
-Tax calculations supporting:
-- Sales Tax, VAT, GST
-- Withholding Tax
-- Compound Taxes (tax-on-tax)
-- Inclusive/Exclusive calculations
-
-### Subledger Engine (`subledger.py`)
-
-Base pattern for all subledger implementations:
-- AP, AR, Bank, Inventory, Fixed Assets, Intercompany
-- Open item tracking and reconciliation
-- Balance calculation
+**Engine catalog, one-line descriptions, and usage:** see **finance_engines/README.md**. When you add or change an engine, update that file and `finance_engines/__init__.py`; this README does not duplicate the catalog.
 
 ---
 
@@ -472,27 +564,22 @@ Instead of procedural code, event interpretation is driven by **declarative Acco
 - Creates auditable governance records
 - Supports precedence and override rules
 
-### 3. Account Roles vs COA Codes
+### 3. Kernel primitives (R25)
+
+Monetary values, quantities, exchange rates, and artifact identities use **kernel value types only**. The full set: **Currency**, **Money**, **Quantity**, **ExchangeRate** (`domain/values.py`), **ArtifactRef** (`domain/economic_link.py`). Modules and engines must not introduce parallel types (no module-defined Money or Currency). This keeps precision, rounding, and validation in one place and is enforced by architecture tests. See the Overview table above for a one-line description of each primitive.
+
+### 4. Account Roles vs COA Codes
 
 AccountingIntent uses **semantic account roles** (e.g., `CONTROL_AP`, `EXPENSE_PPV`) instead of COA codes:
 - Roles are resolved to actual accounts at posting time
 - Same intent works across different COA structures
 - Supports multi-entity/multi-book scenarios
 
-### 4. Reference Snapshots for Replay
+### 5. Reference Snapshots for Replay
 
-Every posted entry records a **ReferenceSnapshot** containing version identifiers for:
-- Chart of Accounts (coa_version)
-- Dimension Schema (dimension_schema_version)
-- FX Rates (currency_registry_version)
-- Policies, Rounding Rules, Tax Rules
+Every posted entry records a **ReferenceSnapshot** containing version identifiers for COA, dimension schema, FX rates, tax rules, policy registry, rounding policy, and account roles. **Why?** Deterministic replay (R21), audit trail of "what rules were in effect," and safe schema evolution. See **Specifications § Snapshot boundary (R21)** for the full component list and granularity (e.g. FX as whole table, dimensions as whole schema).
 
-**Why?** This ensures:
-- Deterministic replay (R21)
-- Audit trail of "what rules were in effect"
-- Safe schema evolution
-
-### 5. Defense in Depth for Immutability
+### 6. Defense in Depth for Immutability
 
 Immutability is enforced at **three levels**:
 
@@ -502,7 +589,7 @@ Immutability is enforced at **three levels**:
 
 3. **Session Level**: `before_flush` events catch deletions before the flush plan is finalized.
 
-### 6. Hash Chain Audit Trail
+### 7. Hash Chain Audit Trail
 
 Every AuditEvent and EconomicEvent contains:
 - `payload_hash`: Hash of the event data
@@ -511,7 +598,7 @@ Every AuditEvent and EconomicEvent contains:
 
 This creates a blockchain-like structure where any tampering breaks the chain.
 
-### 7. Pure Calculation Engines
+### 8. Pure Calculation Engines
 
 All calculation logic in `finance_engines/` is **pure functions**:
 - No database access
@@ -523,35 +610,78 @@ All calculation logic in `finance_engines/` is **pure functions**:
 
 ## Exception Hierarchy
 
-All exceptions inherit from `FinanceKernelError` and include:
+All kernel exceptions inherit from `FinanceKernelError` (R18) and include:
 - `code`: Machine-readable error code
-- `message`: Human-readable description
+- Human-readable message
+
+Profile/role resolution errors: **PolicyNotFoundError** lives in `domain.policy_selector`; **RoleResolutionError** is raised by `JournalWriter` (in `services.journal_writer`). Domain validation uses the **ValidationError** dataclass in `domain.dtos` (not an exception).
 
 ```
 FinanceKernelError
-├── ValidationError              # Input validation failures
+├── EventError                   # Event ingestion, schema, payload
+│   ├── PayloadMismatchError, SchemaValidationError, EventNotFoundError, ...
 ├── PostingError                 # Posting-specific errors
-│   ├── PeriodClosedError
-│   ├── AdjustmentsNotAllowedError
-│   ├── UnbalancedEntryError
-│   └── ...
+│   ├── UnbalancedEntryError, AlreadyPostedError, InvalidAccountError, ...
+├── PeriodError                  # Fiscal period
+│   ├── ClosedPeriodError, AdjustmentsNotAllowedError, PeriodNotFoundError, ...
 ├── ImmutabilityError            # Attempted modification of immutable data
-│   ├── ImmutabilityViolationError
-│   └── AccountReferencedError   # Account has posted references
-├── AuditChainBrokenError        # Hash chain validation failure
-├── InterpretationError          # Interpretation layer errors
-│   ├── ProfileNotFoundError
-│   ├── MultipleProfilesMatchError
-│   ├── RoleResolutionError
-│   └── GuardRejectionError
-└── ...
+│   └── ImmutabilityViolationError
+├── AccountError                 # Account lifecycle, references
+│   └── AccountReferencedError, AccountNotFoundError, ...
+├── AuditError
+│   └── AuditChainBrokenError
+├── ReversalError, ConcurrencyError, RoundingError, ReferenceSnapshotError
+├── StrategyLifecycleError       # Strategy version, rounding (R22/R23)
+├── EconomicLinkError            # Links: cycle, duplicate, immutable, ...
+├── ReconciliationError, ValuationError, CorrectionError
+├── PartyError, ContractError, ActorError, ApprovalError
+└── BatchError, ScheduleError
 ```
 
 ---
 
 ## Getting Started
 
-### Interpretation Flow (Recommended)
+### Canonical Posting Entry (Recommended)
+
+All modules should call **ModulePostingService.post_event()**. Inject a **Clock** for testability (avoid `datetime.now()`/`date.today()` in production code).
+
+```python
+from uuid import uuid4
+from datetime import datetime, date
+from zoneinfo import ZoneInfo
+
+from finance_kernel.db.engine import get_session
+from finance_kernel.domain.clock import SystemClock
+from finance_kernel.services.module_posting_service import ModulePostingService
+from finance_kernel.services.journal_writer import RoleResolver
+
+with get_session() as session:
+    clock = SystemClock()  # or DeterministicClock in tests
+    role_resolver = RoleResolver()  # register_binding(...) from config/ledger registry
+    poster = ModulePostingService(session, role_resolver=role_resolver, clock=clock)
+
+    result = poster.post_event(
+        event_id=uuid4(),
+        event_type="ap.invoice.received",
+        occurred_at=clock.now(),
+        effective_date=clock.today(),
+        actor_id=user_id,
+        producer="ap-module",
+        payload={...},
+    )
+
+    if result.is_ledger_fact:
+        print(f"Posted entries: {result.journal_entry_ids}")
+    elif result.is_transition:
+        print(f"Governance: {result.status}")
+    else:
+        print(f"Rejected/blocked: {result.status} {result.reason_detail}")
+```
+
+### Low-Level: InterpretationCoordinator
+
+For callers that need direct access to the interpretation pipeline (e.g. no approval/guard orchestration):
 
 ```python
 from finance_kernel.services.interpretation_coordinator import InterpretationCoordinator
@@ -559,7 +689,6 @@ from finance_kernel.db.engine import get_session
 
 with get_session() as session:
     coordinator = InterpretationCoordinator(session)
-
     result = coordinator.interpret_and_post(
         event_id=uuid4(),
         event_type="ap.invoice.received",
@@ -569,37 +698,20 @@ with get_session() as session:
         producer="ap-module",
         payload={...},
     )
-
-    match result.outcome.status:
-        case OutcomeStatus.POSTED:
-            print(f"Posted entries: {result.journal_result.entry_ids}")
-        case OutcomeStatus.BLOCKED:
-            print(f"Blocked: {result.outcome.reason_code}")
-        case OutcomeStatus.REJECTED:
-            print(f"Rejected: {result.outcome.reason_detail}")
+    # result.outcome.status: POSTED | BLOCKED | REJECTED
 ```
 
-### Legacy Posting Flow
+### PostingOrchestrator (finance_services)
+
+**PostingOrchestrator** lives in **finance_services** and wires kernel services (ModulePostingService, policy source, approval). Use it when you need the full DI/configuration stack.
 
 ```python
-from finance_services.posting_orchestrator import PostingOrchestrator
+from finance_services import PostingOrchestrator
 from finance_kernel.db.engine import get_session
 
 with get_session() as session:
-    orchestrator = PostingOrchestrator(session)
-
-    result = orchestrator.post_event(
-        event_id=uuid4(),
-        event_type="sales.invoice.created",
-        occurred_at=datetime.now(UTC),
-        effective_date=date.today(),
-        actor_id=user_id,
-        producer="sales-module",
-        payload={"invoice_id": "INV-001", "amount": "1000.00", "currency": "USD"},
-    )
-
-    if result.is_success:
-        print(f"Posted: {result.journal_entry_id}")
+    orchestrator = PostingOrchestrator(session)  # or from_config(...)
+    result = orchestrator.post_event(...)
 ```
 
 ### Creating an Accounting Policy
@@ -642,30 +754,20 @@ PolicySelector.register(profile)
 
 ---
 
-## Engine Status
+## Engine status and kernel capabilities
 
-### All Engines Complete
+**Pure engines (catalog and status):** see **finance_engines/README.md**. That file is the single source of truth for the engine list; update it when adding or changing engines.
 
-| Engine | Status | Description |
-|--------|--------|-------------|
-| **EconomicLink** | ✅ Done | First-class pointer connecting artifacts (Receipt→PO, Payment→Invoice). Includes `LinkGraphService` with cycle detection, graph traversal, and unconsumed value calculation. |
-| **Variance** | ✅ Done | PPV, quantity variance, FX variance, sales price variance. |
-| **Allocation** | ✅ Done | FIFO, LIFO, pro-rata, weighted, equal, specific allocation methods. |
-| **AllocationCascade** | ✅ Done | DCAA multi-step indirect cost allocation (Fringe → Overhead → G&A). |
-| **Matching** | ✅ Done | 3-way match (PO↔Receipt↔Invoice), 2-way match, bank reconciliation. |
-| **Aging** | ✅ Done | AP/AR aging buckets, configurable periods, slow-moving inventory. |
-| **Tax** | ✅ Done | VAT, GST, withholding, compound (tax-on-tax), inclusive/exclusive. |
-| **Subledger** | ✅ Done | Base subledger pattern for AP, AR, Bank, Inventory, Fixed Assets. |
-| **ReconciliationManager** | ✅ Done | Payment application, document matching, open/matched state tracking. |
-| **ValuationLayer** | ✅ Done | FIFO/LIFO/weighted average/standard cost lot tracking. |
-| **CorrectionEngine** | ✅ Done | Cascade unwind, compensating entries via EconomicLink graph. |
-| **BillingEngine** | ✅ Done | Government contract billing (CPFF, T&M, FFP, cost-plus). Pure engine in `finance_engines/billing.py`. |
-| **ICE Engine** | ✅ Done | DCAA Incurred Cost Electronically submission (Schedules A-J). Pure engine in `finance_engines/ice.py`. |
-| **Interpretation Layer** | ✅ Done | AccountingPolicy, MeaningBuilder, AccountingIntent, JournalWriter, OutcomeRecorder with L1-L5/P1/P11/P15 invariants. |
-| **Schema System** | ✅ Done | 11 schema definition files covering all ERP domains. |
-| **Profile System** | ✅ Done | 10 profile files including DCAA allocation and guards. |
+**Kernel capabilities** (not in finance_engines):
 
-### Potential Future Extensions
+| Capability | Location | Description |
+|------------|----------|-------------|
+| **EconomicLink** | finance_kernel | First-class artifact links (Receipt→PO, Payment→Invoice); LinkGraphService, cycle detection. |
+| **Interpretation layer** | finance_kernel | AccountingPolicy, MeaningBuilder, JournalWriter, OutcomeRecorder (L1–L5, P1/P11/P15). |
+| **Schema system** | finance_kernel.domain.schemas | Event schema definitions per domain. |
+| **Profile system** | finance_modules/*/profiles | AccountingPolicy profiles and guards. |
+
+### Potential future extensions
 
 | Engine | Assessment | Recommendation |
 |--------|-----------|----------------|
@@ -678,7 +780,7 @@ PolicySelector.register(profile)
 
 ## Invariant Test Coverage
 
-All invariants have comprehensive test coverage:
+All invariants have comprehensive test coverage. Counts below are approximate; run `python3 -m pytest tests/ --collect-only -q` for current numbers.
 
 | Category | Directory | Files | Test Classes |
 |----------|-----------|-------|--------------|
@@ -707,5 +809,13 @@ All invariants have comprehensive test coverage:
 
 ## See Also
 
+- `invariants.py` - Kernel invariant enum and R25–R27 notes
 - `db/README.md` - Database layer details
+- `../finance_engines/README.md` - Engine catalog (single source of truth for pure engines)
+- `../finance_services/README.md` - Orchestration and DI; consumes kernel and config
+- `../finance_config/README.md` - Configuration single entrypoint; no kernel import of config
+- `../CLAUDE.md` - Full invariant table (R1–R29), layers, rules
 - `../docs/MODULE_DEVELOPMENT_GUIDE.md` - How to build ERP modules
+- `../docs/TRACE.md` - Trace bundle and audit investigation (TraceSelector, LogQueryPort)
+- `../docs/EXTENSIBILITY.md` - Custom features without changing core (config, modules, strategies, engines)
+- `../finance_ingestion/README.md` - ERP data ingestion (staging, mapping, promotion); distinct from kernel event ingestion

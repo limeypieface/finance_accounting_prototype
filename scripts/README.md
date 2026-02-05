@@ -290,6 +290,8 @@ python3 scripts/trace.py --event-id <uuid> --json
 
 Shared trace renderer used by `interactive.py` (T menu), `cli/views/trace.py`, and `tests/trace/show_trace.py`. Not run directly.
 
+Full documentation: **docs/TRACE.md** (trace bundle, TraceSelector, LogQueryPort, decision journal).
+
 ## Diagnostics and audit
 
 These scripts help compare DB state to QBO or debug import/journal counts.

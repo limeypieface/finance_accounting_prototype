@@ -52,23 +52,31 @@ from finance_config.schema import (
     AccountingConfigurationSet,
     ApprovalPolicyDef,
     ApprovalRuleDef,
+    AuthorityRulesDef,
     BatchScheduleDef,
     ConfigScope,
     ControlRule,
     EngineConfigDef,
     GuardDef,
+    HierarchyRulesDef,
     ImportFieldDef,
     ImportMappingDef,
     ImportValidationDef,
     LedgerDefinition,
     LedgerEffectDef,
     LineMappingDef,
+    OverrideRoleDef,
+    PermissionConflictsDef,
     PolicyDefinition,
     PolicyMeaningDef,
     PolicyTriggerDef,
     PrecedenceDef,
     PrecedenceRule,
+    RbacConfigDef,
+    RbacConfigMetadata,
     RoleBinding,
+    RoleDef,
+    SegregationOfDutiesDef,
     SubledgerContractDef,
 )
 from finance_kernel.domain.schemas.base import EventFieldType
@@ -372,6 +380,127 @@ def parse_batch_schedule(data: dict[str, Any]) -> BatchScheduleDef:
         max_retries=data.get("max_retries", 3),
         is_active=data.get("is_active", True),
         legal_entity=data.get("legal_entity"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# RBAC
+# ---------------------------------------------------------------------------
+
+
+def parse_rbac_config_metadata(data: dict[str, Any]) -> RbacConfigMetadata:
+    """Parse RbacConfigMetadata from rbac_config section."""
+    return RbacConfigMetadata(
+        version=data["version"],
+        effective_from=parse_date(data["effective_from"]),
+        supersedes=data.get("supersedes"),
+    )
+
+
+def parse_authority_rules(data: dict[str, Any]) -> AuthorityRulesDef:
+    """Parse AuthorityRulesDef from authority_rules section."""
+    return AuthorityRulesDef(
+        authority_role_required=data.get("authority_role_required", True),
+        multi_role_actions_allowed=data.get("multi_role_actions_allowed", False),
+    )
+
+
+def parse_role_def(name: str, data: dict[str, Any]) -> RoleDef:
+    """Parse a single RoleDef from roles section (name is key)."""
+    perms = data.get("permissions") or []
+    return RoleDef(
+        name=name,
+        permissions=tuple(perms) if isinstance(perms, list) else (str(perms),),
+        inherits=tuple(data.get("inherits") or ()),
+    )
+
+
+def parse_permission_conflicts(data: dict[str, Any]) -> PermissionConflictsDef:
+    """Parse PermissionConflictsDef (hard_block / soft_warn lists)."""
+    def _tuples(v: Any) -> tuple[tuple[str, ...], ...]:
+        if not v:
+            return ()
+        return tuple(tuple(x) if isinstance(x, (list, tuple)) else (str(x),) for x in v)
+    return PermissionConflictsDef(
+        hard_block=_tuples(data.get("hard_block")),
+        soft_warn=_tuples(data.get("soft_warn")),
+    )
+
+
+def parse_segregation_of_duties(data: dict[str, Any]) -> SegregationOfDutiesDef:
+    """Parse SegregationOfDutiesDef from segregation_of_duties section."""
+    def _role_tuples(v: Any) -> tuple[tuple[str, ...], ...]:
+        if not v:
+            return ()
+        return tuple(tuple(x) if isinstance(x, (list, tuple)) else (str(x),) for x in v)
+    role_conflicts = _role_tuples(data.get("role_conflicts"))
+    perm_data = data.get("permission_conflicts") or {}
+    permission_conflicts = parse_permission_conflicts(perm_data)
+    lifecycle_raw = data.get("lifecycle_conflicts") or {}
+    lifecycle_conflicts: list[tuple[str, tuple[str, ...]]] = []
+    for obj_type, pairs in lifecycle_raw.items():
+        for pair in pairs or []:
+            actions = tuple(pair) if isinstance(pair, (list, tuple)) else (str(pair),)
+            lifecycle_conflicts.append((obj_type, actions))
+    return SegregationOfDutiesDef(
+        role_conflicts=role_conflicts,
+        permission_conflicts=permission_conflicts,
+        lifecycle_conflicts=tuple(lifecycle_conflicts),
+    )
+
+
+def parse_override_role(name: str, data: dict[str, Any]) -> OverrideRoleDef:
+    """Parse a single OverrideRoleDef from override_roles section."""
+    perms = data.get("permissions") or []
+    return OverrideRoleDef(
+        name=name,
+        permissions=tuple(perms) if isinstance(perms, list) else (str(perms),),
+        expiry=data.get("expiry", "24h"),
+        requires_dual_approval=data.get("requires_dual_approval", True),
+    )
+
+
+def parse_hierarchy_rules(data: dict[str, Any]) -> HierarchyRulesDef:
+    """Parse HierarchyRulesDef from hierarchy_rules section."""
+    return HierarchyRulesDef(
+        inheritance_depth_limit=data.get("inheritance_depth_limit", 2),
+    )
+
+
+def parse_rbac_config(data: dict[str, Any]) -> RbacConfigDef:
+    """Parse full RbacConfigDef from rbac.yaml root."""
+    rbac_config_data = data.get("rbac_config") or {}
+    effective_from = rbac_config_data.get("effective_from")
+    rbac_config = RbacConfigMetadata(
+        version=rbac_config_data.get("version", "v1"),
+        effective_from=parse_date(effective_from) if effective_from else date(2026, 1, 1),
+        supersedes=rbac_config_data.get("supersedes"),
+    )
+    authority_rules_data = data.get("authority_rules") or {}
+    authority_rules = parse_authority_rules(authority_rules_data)
+    roles_data = data.get("roles") or {}
+    roles = tuple(
+        parse_role_def(name, role_data)
+        for name, role_data in roles_data.items()
+        if isinstance(role_data, dict)
+    )
+    sod_data = data.get("segregation_of_duties") or {}
+    segregation_of_duties = parse_segregation_of_duties(sod_data)
+    override_data = data.get("override_roles") or {}
+    override_roles = tuple(
+        parse_override_role(name, ov_data)
+        for name, ov_data in override_data.items()
+        if isinstance(ov_data, dict)
+    )
+    hierarchy_data = data.get("hierarchy_rules") or {}
+    hierarchy_rules = parse_hierarchy_rules(hierarchy_data)
+    return RbacConfigDef(
+        rbac_config=rbac_config,
+        authority_rules=authority_rules,
+        roles=roles,
+        segregation_of_duties=segregation_of_duties,
+        override_roles=override_roles,
+        hierarchy_rules=hierarchy_rules,
     )
 
 

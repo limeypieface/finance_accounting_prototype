@@ -63,6 +63,7 @@ from finance_config.loader import (
     parse_import_mapping,
     parse_ledger_definition,
     parse_policy,
+    parse_rbac_config,
     parse_role_binding,
     parse_scope,
     parse_subledger_contract,
@@ -78,6 +79,7 @@ from finance_config.schema import (
     PolicyDefinition,
     PrecedenceRule,
     RoleBinding,
+    RbacConfigDef,
     SubledgerContractDef,
 )
 from finance_kernel.exceptions import FinanceKernelError
@@ -244,6 +246,14 @@ def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:
 
     batch_schedules: tuple[BatchScheduleDef, ...] = tuple(batch_schedules_list)
 
+    # 8d. Load rbac.yaml (optional)
+    rbac: RbacConfigDef | None = None
+    rbac_path = fragment_dir / "rbac.yaml"
+    if rbac_path.exists():
+        rbac_data = load_yaml_file(rbac_path)
+        if rbac_data:
+            rbac = parse_rbac_config(rbac_data)
+
     # 9. Parse root metadata
     scope = parse_scope(root_data["scope"])
     capabilities = root_data.get("capabilities", {})
@@ -272,6 +282,7 @@ def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:
         "capabilities": capabilities,
         "import_mappings": [im.name for im in import_mappings],
         "batch_schedules": [bs.name for bs in batch_schedules],
+        "rbac": rbac.rbac_config.version if rbac else None,
     }
     checksum = compute_checksum(all_data)
 
@@ -298,4 +309,5 @@ def assemble_from_directory(fragment_dir: Path) -> AccountingConfigurationSet:
         approval_policies=approval_policies,
         import_mappings=import_mappings,
         batch_schedules=batch_schedules,
+        rbac=rbac,
     )

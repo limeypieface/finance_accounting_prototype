@@ -87,7 +87,7 @@ from finance_kernel.services.reference_snapshot_service import ReferenceSnapshot
 from finance_kernel.services.reversal_service import ReversalService
 from finance_services.engine_dispatcher import EngineDispatcher
 from finance_services.pack_policy_source import PackPolicySource
-from finance_services.workflow_executor import WorkflowExecutor
+from finance_services.workflow_executor import StaticRoleProvider, WorkflowExecutor
 from finance_services.subledger_ap import APSubledgerService
 from finance_services.subledger_ar import ARSubledgerService
 from finance_services.subledger_bank import BankSubledgerService
@@ -125,6 +125,7 @@ class PostingOrchestrator:
         role_resolver: RoleResolver,
         policy_authority: PolicyAuthority | None = None,
         clock: Clock | None = None,
+        org_hierarchy: StaticRoleProvider | None = None,
     ) -> None:
         self._session = session
         self._clock = clock or SystemClock()
@@ -182,6 +183,8 @@ class PostingOrchestrator:
             approval_service=self.approval_service,
             approval_policies=approval_policy_map,
             clock=self._clock,
+            org_hierarchy=org_hierarchy,
+            compiled_rbac=compiled_pack.compiled_rbac,
         )
 
         # Outcome recording
@@ -396,6 +399,7 @@ def build_posting_orchestrator(
     as_of_date: "date",
     config_dir: "Path | None" = None,
     clock: "Clock | None" = None,
+    org_hierarchy: StaticRoleProvider | None = None,
 ) -> PostingOrchestrator:
     """Build a PostingOrchestrator from config (single entrypoint for production).
 
@@ -410,6 +414,8 @@ def build_posting_orchestrator(
         as_of_date: Date for effective config and policies.
         config_dir: Optional path to config sets directory.
         clock: Optional clock; default SystemClock.
+        org_hierarchy: Optional role provider for RBAC; when None, no actor
+            roles are assigned and RBAC checks fail-open.
 
     Returns:
         PostingOrchestrator with policy_source, control_rules, and approval
@@ -428,4 +434,5 @@ def build_posting_orchestrator(
         compiled_pack=pack,
         role_resolver=role_resolver,
         clock=clock or SystemClock(),
+        org_hierarchy=org_hierarchy,
     )
